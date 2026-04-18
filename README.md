@@ -274,7 +274,7 @@ Why it matters in containers	Your app is PID 1, must handle signals and reap zom
 
 Zombies don't consume CPU or memory but they occupy slots in the process table. The limit is defined by:
 
-cat /proc/sys/kernel/pid\_max
+cat /proc/sys/kernel/pid_max
 
 Once that's exhausted, no new processes can be created. Your system can't fork anything. SSH stops working. Cron jobs fail. Services can't restart. Complete meltdown.
 
@@ -290,25 +290,25 @@ You kill the PARENT.
 
 
 
-\# Find the zombie
+Find the zombie
 
 ps aux | awk '\\$8 == "Z"'
 
 
 
-\# Find its parent PID
+Find its parent PID
 
 ps -eo pid,ppid,stat,cmd | grep Z
 
 
 
-\# Kill the PARENT process
+Kill the PARENT process
 
-kill -SIGCHLD <parent\_pid>    # First try: nudge the parent to reap
+kill -SIGCHLD <parent_pid>    # First try: nudge the parent to reap
 
-kill <parent\_pid>              # Second try: terminate the parent
+kill <parent_pid>              # Second try: terminate the parent
 
-kill -9 <parent\_pid>           # Last resort: force kill the parent
+kill -9 <parent_pid>           # Last resort: force kill the parent
 
 
 
@@ -829,15 +829,15 @@ SIGUSR1/2	10/12		User-defined — app decides what to do		✅ Yes				Terminate
 
 6\. Application is expected to:
 
-&#x20;  - Stop accepting new requests
+ - Stop accepting new requests
 
-&#x20;  - Finish processing in-flight requests
+ - Finish processing in-flight requests
 
-&#x20;  - Close database connections
+ - Close database connections
 
-&#x20;  - Flush caches/buffers
+ - Flush caches/buffers
 
-&#x20;  - Exit cleanly
+ - Exit cleanly
 
 7\. If process hasn't exited after grace period → SIGKILL
 
@@ -865,27 +865,27 @@ Your app handles SIGTERM but needs 60 seconds to drain connections. SIGKILL arri
 
 **spec:**
 
-&#x20; **terminationGracePeriodSeconds: 90  # Give it enough time**
+**terminationGracePeriodSeconds: 90  # Give it enough time**
 
-&#x20; **containers:**
+**containers:**
 
-&#x20; **- name: my-app**
+**- name: my-app**
 
-&#x20;   **lifecycle:**
+  **lifecycle:**
 
-&#x20;     **preStop:**
+    **preStop:**
 
-&#x20;       **exec:**
+      **exec:**
 
-&#x20;         **command: \["/bin/sh", "-c", "sleep 5"]**
+        **command: \["/bin/sh", "-c", "sleep 5"]**
 
-&#x20;         **# Why sleep 5? Because step 4 (endpoint removal)**
+        **# Why sleep 5? Because step 4 (endpoint removal)**
 
-&#x20;         **# is ASYNCHRONOUS. This gives kube-proxy time to**
+        **# is ASYNCHRONOUS. This gives kube-proxy time to**
 
-&#x20;         **# update iptables rules so new traffic stops**
+        **# update iptables rules so new traffic stops**
 
-&#x20;         **# arriving BEFORE your app starts shutting down.**
+        **# arriving BEFORE your app starts shutting down.**
 
 
 
@@ -901,13 +901,13 @@ Your app catches SIGTERM, runs cleanup, but has a bug — it never calls exit().
 
 Many daemons use SIGHUP to reload configuration without restarting:
 
-\# Reload Nginx config without downtime
+Reload Nginx config without downtime
 
 kill -SIGHUP $(cat /var/run/nginx.pid)
 
 
 
-\# Same as
+Same as
 
 nginx -s reload
 
@@ -923,13 +923,13 @@ This is how you do zero-downtime config changes on traditional servers. Promethe
 
 These are custom signals. Applications define their own behavior:
 
-\# Tell dd to print progress
+Tell dd to print progress
 
 kill -USR1 $(pgrep dd)
 
 
 
-\# Tell Golang apps to dump goroutine stack traces
+Tell Golang apps to dump goroutine stack traces
 
 kill -USR1 <go-app-pid>
 
@@ -939,7 +939,7 @@ kill -USR1 <go-app-pid>
 
 The kill Command — It's Not Just For Killing:
 
-Despite the name, kill is really send\_signal:
+Despite the name, kill is really send_signal:
 
 
 
@@ -1025,13 +1025,13 @@ kill -0 <pid>       # Sends nothing — just checks if process exists
 
 5\. Dying pod is either:
 
-&#x20;  - Already closed its listener → CONNECTION REFUSED → 502
+ - Already closed its listener → CONNECTION REFUSED → 502
 
-&#x20;  - Processing shutdown → SLOW/TIMEOUT → 502
+ - Processing shutdown → SLOW/TIMEOUT → 502
 
 6\. kube-proxy finally updates → traffic stops flowing to old pod
 
-&#x20;  But damage is done.
+ But damage is done.
 
 
 
@@ -1041,11 +1041,11 @@ The Fix — preStop Hook:
 
 lifecycle:
 
-&#x20; preStop:
+preStop:
 
-&#x20;   exec:
+  exec:
 
-&#x20;     command: \["/bin/sh", "-c", "sleep 5"]
+    command: \["/bin/sh", "-c", "sleep 5"]
 
 
 
@@ -1141,9 +1141,9 @@ Dockerfile
 
 download
 
-content\_copy
+content_copy
 
-expand\_less
+expand_less
 
 CMD \["node", "server.js"]
 
@@ -1165,15 +1165,15 @@ Dockerfile
 
 download
 
-content\_copy
+content_copy
 
-expand\_less
+expand_less
 
 FROM node:18
 
 
 
-\# Install tini
+Install tini
 
 RUN apt-get update \&\& apt-get install -y tini
 
@@ -1185,7 +1185,7 @@ RUN npm install
 
 
 
-\# Use tini as the entrypoint to manage signals
+Use tini as the entrypoint to manage signals
 
 ENTRYPOINT \["/usr/bin/tini", "--"]
 
@@ -1225,27 +1225,27 @@ When your app writes logs, opens database connections, opens files — each one 
 
 
 
-\# How many FDs is a process using?
+How many FDs is a process using?
 
 ls /proc/<pid>/fd | wc -l
 
 
 
-\# What is each FD pointing to?
+What is each FD pointing to?
 
 ls -la /proc/<pid>/fd
 
-\# You'll see symlinks like:
+You'll see symlinks like:
 
-\# 0 -> /dev/pts/0 (terminal)
+0 -> /dev/pts/0 (terminal)
 
-\# 1 -> /dev/pts/0 (terminal)
+1 -> /dev/pts/0 (terminal)
 
-\# 2 -> /dev/pts/0 (terminal)
+2 -> /dev/pts/0 (terminal)
 
-\# 3 -> socket:\[12345] (a TCP connection!)
+3 -> socket:\[12345] (a TCP connection!)
 
-\# 4 -> /var/log/app.log (a log file)
+4 -> /var/log/app.log (a log file)
 
 
 
@@ -1257,23 +1257,23 @@ Every system has limits on how many FDs a process can open:
 
 
 
-\# Soft limit (what's enforced by default)
+Soft limit (what's enforced by default)
 
 ulimit -Sn
 
-\# Usually 1024
+Usually 1024
 
 
 
-\# Hard limit (maximum the soft limit can be raised to)
+Hard limit (maximum the soft limit can be raised to)
 
 ulimit -Hn
 
-\# Usually 65536
+Usually 65536
 
 
 
-\# System-wide maximum
+System-wide maximum
 
 cat /proc/sys/fs/file-max
 
@@ -1323,17 +1323,17 @@ In Kubernetes, this matters too:
 
 
 
-\# You can set this in your pod spec
+You can set this in your pod spec
 
 securityContext:
 
-&#x20; ulimits:
+ulimits:
 
-&#x20; - name: nofile
+- name: nofile
 
-&#x20;   soft: 65536
+  soft: 65536
 
-&#x20;   hard: 65536
+  hard: 65536
 
 
 
@@ -1343,53 +1343,53 @@ You probably know > and >>. But do you know ALL of these?
 
 
 
-\# stdout to file (overwrite)
+stdout to file (overwrite)
 
 command > file.txt
 
 
 
-\# stdout to file (append)
+stdout to file (append)
 
 command >> file.txt
 
 
 
-\# stderr to file
+stderr to file
 
 command 2> errors.txt
 
 
 
-\# stdout AND stderr to same file
+stdout AND stderr to same file
 
 command > all.txt 2>\&1
 
-\# OR (modern bash)
+OR (modern bash)
 
 command \&> all.txt
 
 
 
-\# stderr to stdout (merge streams)
+stderr to stdout (merge streams)
 
 command 2>\&1
 
 
 
-\# Discard all output (the black hole)
+Discard all output (the black hole)
 
 command > /dev/null 2>\&1
 
 
 
-\# Send stdout to one file, stderr to another
+Send stdout to one file, stderr to another
 
 command > output.txt 2> errors.txt
 
 
 
-\# Pipe only stderr
+Pipe only stderr
 
 command 2>\&1 1>/dev/null | grep "error"
 
@@ -1397,23 +1397,23 @@ command 2>\&1 1>/dev/null | grep "error"
 
 ###### The 2>\&1 Order Matters:
 
-\# WRONG — stderr still goes to terminal
+WRONG — stderr still goes to terminal
 
 command 2>\&1 > file.txt
 
-\# This says: "redirect stderr to where stdout currently points (terminal),
+This says: "redirect stderr to where stdout currently points (terminal),
 
-\# THEN redirect stdout to file." Stderr still hits terminal.
+THEN redirect stdout to file." Stderr still hits terminal.
 
 
 
-\# RIGHT — both go to file
+RIGHT — both go to file
 
 command > file.txt 2>\&1
 
-\# This says: "redirect stdout to file, THEN redirect stderr to
+This says: "redirect stdout to file, THEN redirect stderr to
 
-\# where stdout currently points (file)." Both go to file.
+where stdout currently points (file)." Both go to file.
 
 
 
@@ -1429,49 +1429,49 @@ Per-Process Information (/proc/<pid>/):
 
 
 
-\# Command that started this process
+Command that started this process
 
 cat /proc/<pid>/cmdline | tr '\\0' ' '
 
 
 
-\# Environment variables of the process
+Environment variables of the process
 
 cat /proc/<pid>/environ | tr '\\0' '\\n'
 
 
 
-\# Current working directory
+Current working directory
 
 ls -la /proc/<pid>/cwd
 
 
 
-\# What binary is running
+What binary is running
 
 ls -la /proc/<pid>/exe
 
 
 
-\# Open file descriptors (we covered this)
+Open file descriptors (we covered this)
 
 ls -la /proc/<pid>/fd
 
 
 
-\# Memory map
+Memory map
 
 cat /proc/<pid>/maps
 
 
 
-\# Process status (state, memory usage, threads)
+Process status (state, memory usage, threads)
 
 cat /proc/<pid>/status
 
 
 
-\# Network connections this process has
+Network connections this process has
 
 cat /proc/<pid>/net/tcp
 
@@ -1479,43 +1479,43 @@ cat /proc/<pid>/net/tcp
 
 System-Wide Information:
 
-\# CPU info
+CPU info
 
 cat /proc/cpuinfo
 
 
 
-\# Memory info
+Memory info
 
 cat /proc/meminfo
 
 
 
-\# Kernel version
+Kernel version
 
 cat /proc/version
 
 
 
-\# Mount points
+Mount points
 
 cat /proc/mounts
 
 
 
-\# Network statistics
+Network statistics
 
 cat /proc/net/dev
 
 
 
-\# Current load average
+Current load average
 
 cat /proc/loadavg
 
 
 
-\# System uptime in seconds
+System uptime in seconds
 
 cat /proc/uptime
 
@@ -1527,19 +1527,19 @@ Scenario 1: An app is misbehaving but you can't find its config file. Where is i
 
 
 
-\# Check what files it has open
+Check what files it has open
 
 ls -la /proc/<pid>/fd | grep -i config
 
 
 
-\# Check its environment variables for config paths
+Check its environment variables for config paths
 
 cat /proc/<pid>/environ | tr '\\0' '\\n' | grep -i config
 
 
 
-\# Check its command line arguments
+Check its command line arguments
 
 cat /proc/<pid>/cmdline | tr '\\0' ' '
 
@@ -1549,13 +1549,13 @@ Scenario 2: You suspect a process has been secretly modified (security incident)
 
 
 
-\# What binary is the process actually running?
+What binary is the process actually running?
 
 ls -la /proc/<pid>/exe
 
-\# If this points to "(deleted)" — someone replaced
+If this points to "(deleted)" — someone replaced
 
-\# the binary on disk while it was running. RED FLAG. 🚩
+the binary on disk while it was running. RED FLAG. 🚩
 
 
 
@@ -1565,13 +1565,13 @@ Scenario 3: You need to know what environment variables a running Java process h
 
 cat /proc/<pid>/environ | tr '\\0' '\\n'
 
-\# Now you can see every env var including secrets,
+Now you can see every env var including secrets,
 
-\# DB connection strings, API keys — everything the
+DB connection strings, API keys — everything the
 
-\# process was given at startup.
+process was given at startup.
 
-\# (This is also why /proc permissions matter for security)
+(This is also why /proc permissions matter for security)
 
 
 
@@ -1683,21 +1683,21 @@ The inode does NOT store the filename. The filename is stored in the directory e
 
 
 
-\# See inode number of a file
+See inode number of a file
 
 ls -i file.txt
 
-\# 1234567 file.txt
+1234567 file.txt
 
 
 
-\# See inode usage
+See inode usage
 
 df -i
 
-\# Filesystem    Inodes   IUsed   IFree  IUse%  Mounted on
+Filesystem    Inodes   IUsed   IFree  IUse%  Mounted on
 
-\# /dev/sda1    6553600  6553600      0   100%  /
+/dev/sda1    6553600  6553600      0   100%  /
 
 
 
@@ -1723,7 +1723,7 @@ The #1 cause: Millions of tiny files. Common culprits:
 
 
 
-\- Session files (/tmp/sess\_\*)
+\- Session files (/tmp/sess_\*)
 
 \- Mail queue files
 
@@ -1739,25 +1739,25 @@ The #1 cause: Millions of tiny files. Common culprits:
 
 ###### How to Investigate:
 
-\# Check inode usage
+Check inode usage
 
 df -i
 
 
 
-\# Find which directory has the most files
+Find which directory has the most files
 
 find / -xdev -printf '%h\\n' | sort | uniq -c | sort -rn | head -20
 
 
 
-\# Count files in a specific directory
+Count files in a specific directory
 
 find /var/log -type f | wc -l
 
 
 
-\# Find and delete old files
+Find and delete old files
 
 find /tmp -type f -mtime +7 -delete
 
@@ -1791,19 +1791,19 @@ Reading iostat:
 
 iostat -xz 1
 
-\# -x: extended stats
+-x: extended stats
 
-\# -z: skip idle devices
+-z: skip idle devices
 
-\# 1: refresh every 1 second
+1: refresh every 1 second
 
 
 
-\# Output:
+Output:
 
-\# Device  r/s    w/s    rkB/s   wkB/s  rrqm/s  wrqm/s  %util  await  avgqu-sz
+Device  r/s    w/s    rkB/s   wkB/s  rrqm/s  wrqm/s  %util  await  avgqu-sz
 
-\# sda     150    300    2400    4800    10      50      98.5   45.2   12.3
+sda     150    300    2400    4800    10      50      98.5   45.2   12.3
 
 
 
@@ -1827,11 +1827,11 @@ r/s + w/s = 450 → 450 IOPS. Compare against disk capability.
 
 top
 
-\# %Cpu(s): 5.2 us, 2.1 sy, 0.0 ni, 30.5 id, 62.0 wa, 0.0 hi, 0.2 si
+%Cpu(s): 5.2 us, 2.1 sy, 0.0 ni, 30.5 id, 62.0 wa, 0.0 hi, 0.2 si
 
-\#                                                 ^^^^^^
+                                                ^^^^^^
 
-\#                                                 62% iowait!
+                                                62% iowait!
 
 
 
@@ -1861,35 +1861,35 @@ Finding the Guilty Process:
 
 
 
-\# Hard link — same inode, different name
+Hard link — same inode, different name
 
 ln original.txt hardlink.txt
 
 
 
-\# Both point to the SAME inode
+Both point to the SAME inode
 
-\# Deleting original.txt doesn't affect hardlink.txt
+Deleting original.txt doesn't affect hardlink.txt
 
-\# Cannot cross filesystem boundaries
+Cannot cross filesystem boundaries
 
-\# Cannot link directories
+Cannot link directories
 
 
 
-\# Soft link (symlink) — pointer to a path
+Soft link (symlink) — pointer to a path
 
 ln -s original.txt symlink.txt
 
 
 
-\# Separate inode, points to the PATH of original
+Separate inode, points to the PATH of original
 
-\# Deleting original.txt BREAKS symlink (dangling link)
+Deleting original.txt BREAKS symlink (dangling link)
 
-\# Can cross filesystem boundaries
+Can cross filesystem boundaries
 
-\# Can link directories
+Can link directories
 
 
 
@@ -1905,9 +1905,9 @@ When Kubernetes mounts a Secret as a volume:
 
 /etc/secrets/
 
-├── ..data -> ..2024\_01\_15\_12\_00\_00.123456789   (symlink)
+├── ..data -> ..2024_01_15_12_00_00.123456789   (symlink)
 
-├── ..2024\_01\_15\_12\_00\_00.123456789/            (actual directory)
+├── ..2024_01_15_12_00_00.123456789/            (actual directory)
 
 │   └── db-password
 
@@ -1933,21 +1933,21 @@ This is an atomic update — applications either see the old value or the new va
 
 
 
-\# See all mounted filesystems
+See all mounted filesystems
 
 mount
 
 
 
-\# Or cleaner
+Or cleaner
 
 findmnt
 
 
 
-\# /etc/fstab — filesystems to mount at boot
+/etc/fstab — filesystems to mount at boot
 
-\# <device>        <mount point>  <type>  <options>        <dump>  <pass>
+<device>        <mount point>  <type>  <options>        <dump>  <pass>
 
 /dev/sda1         /              ext4    defaults          0       1
 
@@ -1993,53 +1993,53 @@ nfs		Network-attached storage	Shared across machines, can cause D-state processe
 
 CAPACITY CHECKS:
 
-&#x20; df -h          → Disk space
+df -h          → Disk space
 
-&#x20; df -i          → Inode usage (THE ONE EVERYONE FORGETS)
+df -i          → Inode usage (THE ONE EVERYONE FORGETS)
 
-&#x20; du -sh /path   → Directory size
+du -sh /path   → Directory size
 
-&#x20; ncdu /         → Interactive disk usage explorer
+ncdu /         → Interactive disk usage explorer
 
 
 
 PERFORMANCE CHECKS:
 
-&#x20; iostat -xz 1   → Disk I/O metrics
+iostat -xz 1   → Disk I/O metrics
 
-&#x20; iotop -oP      → Per-process I/O
+iotop -oP      → Per-process I/O
 
-&#x20; pidstat -d 1   → Per-process I/O (alternative)
+pidstat -d 1   → Per-process I/O (alternative)
 
-&#x20; top → %iowait  → CPU waiting on disk
+top → %iowait  → CPU waiting on disk
 
 
 
 INVESTIGATION:
 
-&#x20; lsof +D /path  → What processes have files open in this directory
+lsof +D /path  → What processes have files open in this directory
 
-&#x20; lsof -p <pid>  → All files a process has open
+lsof -p <pid>  → All files a process has open
 
-&#x20; find / -xdev -printf '%h\\n' | sort | uniq -c | sort -rn | head
+find / -xdev -printf '%h\\n' | sort | uniq -c | sort -rn | head
 
-&#x20;                → Find directories with most files (inode investigation)
+               → Find directories with most files (inode investigation)
 
 
 
 KUBERNETES:
 
-&#x20; Secrets use symlinks for atomic updates
+Secrets use symlinks for atomic updates
 
-&#x20; emptyDir with medium: Memory uses tmpfs
+emptyDir with medium: Memory uses tmpfs
 
-&#x20; PV/PVC abstract storage from pods
-
-
+PV/PVC abstract storage from pods
 
 
 
-##### \# Symlinks Across the Entire DevOps/SRE Landscape
+
+
+##### Symlinks Across the Entire DevOps/SRE Landscape
 
 
 
@@ -2215,7 +2215,7 @@ that Nginx/Apache is configured to read from
 
 
 
-\*\*Why this matters:\*\* Nginx config says `ssl \_certificate /etc/letsencrypt/live/example.com/fullchain.pem`. When the cert renews, the symlink silently points to the new cert. Nginx reload picks it up. Zero config changes.
+\*\*Why this matters:\*\* Nginx config says `ssl _certificate /etc/letsencrypt/live/example.com/fullchain.pem`. When the cert renews, the symlink silently points to the new cert. Nginx reload picks it up. Zero config changes.
 
 
 
@@ -2315,7 +2315,7 @@ The entire systemd enable/disable mechanism IS symlinks
 
 .terraform directory symlinks to provider binaries in plugin cache
 
- \~/.terraform.d/plugin-cache/registry.terraform.io/hashicorp/aws/5.0.0/linux \_amd64/
+ \~/.terraform.d/plugin-cache/registry.terraform.io/hashicorp/aws/5.0.0/linux _amd64/
 
 Terraform creates symlinks from .terraform/providers → cache
 
@@ -2383,7 +2383,7 @@ Centralize scripts in one place, symlink into cron directories
 
 
 
-\# Now — The Troubleshooting Concepts I Should Have TAUGHT, Not Asked
+Now — The Troubleshooting Concepts I Should Have TAUGHT, Not Asked
 
 
 
@@ -2613,7 +2613,7 @@ docker system prune -af   # On Docker hosts
 
  2. Monitor inode usage in Prometheus
 
- node \_exporter exposes: node \_filesystem \_files \_free
+ node _exporter exposes: node _filesystem _files _free
 
 
 
@@ -2637,7 +2637,7 @@ mkfs.ext4 -N 10000000 /dev/sdb1
 
 
 
-\# 🔥 NOW — Fair Troubleshooting Questions
+🔥 NOW — Fair Troubleshooting Questions
 
 
 
@@ -2681,19 +2681,19 @@ When nothing else tells you why a process is misbehaving, strace shows you every
 
 bash
 
-\# Trace a running process
+Trace a running process
 
 strace -p <pid>
 
 
 
-\# Trace with timestamps
+Trace with timestamps
 
 strace -tt -p <pid>
 
 
 
-\# Trace only specific system calls
+Trace only specific system calls
 
 strace -e open,read,write -p <pid>    # File operations
 
@@ -2703,25 +2703,25 @@ strace -e openat -p <pid>             # What files is it opening?
 
 
 
-\# Trace a new command from start
+Trace a new command from start
 
 strace -f -o /tmp/trace.log command args
 
-\# -f: follow child processes (forks)
+-f: follow child processes (forks)
 
-\# -o: write to file instead of stderr
+-o: write to file instead of stderr
 
 
 
-\# Count system calls (summary)
+Count system calls (summary)
 
 strace -c -p <pid>
 
-\# Shows a table of which syscalls were called how many times
+Shows a table of which syscalls were called how many times
 
-\# and how much time was spent in each
+and how much time was spent in each
 
-\# INCREDIBLE for finding bottlenecks
+INCREDIBLE for finding bottlenecks
 
 Real-World Uses:
 
@@ -2733,15 +2733,15 @@ bash
 
 strace -f ./myapp 2>\&1 | tail -50
 
-\# Look for the LAST system call before it dies
+Look for the LAST system call before it dies
 
-\# Often you'll see:
+Often you'll see:
 
-\# openat(AT\_FDCWD, "/etc/myapp/config.yml", O\_RDONLY) = -1 ENOENT
+openat(AT_FDCWD, "/etc/myapp/config.yml", O_RDONLY) = -1 ENOENT
 
-\# (No such file or directory)
+(No such file or directory)
 
-\# AH HA — it's looking for a config file that doesn't exist
+AH HA — it's looking for a config file that doesn't exist
 
 "App is slow but CPU and memory are fine":
 
@@ -2751,19 +2751,19 @@ bash
 
 strace -c -p <pid>
 
-\# % time     seconds  usecs/call     calls    syscall
+% time     seconds  usecs/call     calls    syscall
 
-\# ------ ----------- ----------- --------- ---------
+------ ----------- ----------- --------- ---------
 
-\#  89.42    4.234567        4234      1000    futex
+ 89.42    4.234567        4234      1000    futex
 
-\#   5.21    0.246789         246      1000    read
+  5.21    0.246789         246      1000    read
 
 \#
 
-\# 89% of time in futex = lock contention
+89% of time in futex = lock contention
 
-\# The app is spending most of its time waiting on locks
+The app is spending most of its time waiting on locks
 
 "App can't connect to the database":
 
@@ -2773,17 +2773,17 @@ bash
 
 strace -e connect -p <pid>
 
-\# connect(5, {sa\_family=AF\_INET, sin\_port=htons(5432),
+connect(5, {sa_family=AF_INET, sin_port=htons(5432),
 
-\#   sin\_addr=inet\_addr("10.0.0.5")}, 16) = -1 ETIMEDOUT
+  sin_addr=inet_addr("10.0.0.5")}, 16) = -1 ETIMEDOUT
 
 \#
 
-\# Now you know the EXACT IP and port it's trying to reach
+Now you know the EXACT IP and port it's trying to reach
 
-\# And that it's timing out — not connection refused
+And that it's timing out — not connection refused
 
-\# This tells you it's a NETWORK/FIREWALL issue, not a service-down issue
+This tells you it's a NETWORK/FIREWALL issue, not a service-down issue
 
 ⚠️ WARNING: strace adds significant overhead to the traced process. It can slow it down 10-100x. Never leave strace attached to a production process longer than necessary. Attach, get your data, detach.
 
@@ -2799,27 +2799,27 @@ When a process crashes with a segfault or abort, Linux can write a core dump —
 
 bash
 
-\# Check if core dumps are enabled
+Check if core dumps are enabled
 
 ulimit -c
 
-\# 0 = disabled
+0 = disabled
 
-\# unlimited = enabled with no size limit ← DANGEROUS
+unlimited = enabled with no size limit ← DANGEROUS
 
 
 
-\# Where do core dumps go?
+Where do core dumps go?
 
-cat /proc/sys/kernel/core\_pattern
+cat /proc/sys/kernel/core_pattern
 
-\# Possible values:
+Possible values:
 
-\# core                          → in the process's working directory
+core                          → in the process's working directory
 
-\# /var/crash/core.%e.%p.%t     → centralized with metadata
+/var/crash/core.%e.%p.%t     → centralized with metadata
 
-\# |/usr/lib/systemd/systemd-coredump  → systemd manages them
+|/usr/lib/systemd/systemd-coredump  → systemd manages them
 
 The Production Disaster:
 
@@ -2831,19 +2831,19 @@ The Fix:
 
 bash
 
-\# Option 1: Disable core dumps entirely (common in production)
+Option 1: Disable core dumps entirely (common in production)
 
-echo 0 > /proc/sys/kernel/core\_pattern
+echo 0 > /proc/sys/kernel/core_pattern
 
-\# Or in limits.conf:
+Or in limits.conf:
 
 \* hard core 0
 
 
 
-\# Option 2: Let systemd manage them with size limits
+Option 2: Let systemd manage them with size limits
 
-\# /etc/systemd/coredump.conf
+/etc/systemd/coredump.conf
 
 \[Coredump]
 
@@ -2871,19 +2871,19 @@ bash
 
 ls -la /usr/bin/passwd
 
-\# -rwsr-xr-x 1 root root 68208 /usr/bin/passwd
+-rwsr-xr-x 1 root root 68208 /usr/bin/passwd
 
-\#    ^
+   ^
 
-\#    s = setuid bit
+   s = setuid bit
 
 
 
-\# When ANY user runs 'passwd', it executes as ROOT
+When ANY user runs 'passwd', it executes as ROOT
 
-\# This is how regular users can change their own password
+This is how regular users can change their own password
 
-\# (because /etc/shadow is only writable by root)
+(because /etc/shadow is only writable by root)
 
 The Security Danger:
 
@@ -2895,15 +2895,15 @@ If an attacker can place a setuid-root binary on your system, they have instant 
 
 bash
 
-\# Finding all setuid binaries (security audit)
+Finding all setuid binaries (security audit)
 
 find / -perm -4000 -type f 2>/dev/null
 
-\# Review this list. Any unexpected setuid binaries = compromised system
+Review this list. Any unexpected setuid binaries = compromised system
 
 
 
-\# Remove setuid from a binary
+Remove setuid from a binary
 
 chmod u-s /path/to/binary
 
@@ -2913,19 +2913,19 @@ In production/containers:
 
 yaml
 
-\# Kubernetes — drop ALL capabilities and prevent privilege escalation
+Kubernetes — drop ALL capabilities and prevent privilege escalation
 
 securityContext:
 
-&#x20; allowPrivilegeEscalation: false  # Prevents setuid from working
+allowPrivilegeEscalation: false  # Prevents setuid from working
 
-&#x20; runAsNonRoot: true
+runAsNonRoot: true
 
-&#x20; capabilities:
+capabilities:
 
-&#x20;   drop:
+  drop:
 
-&#x20;     - ALL
+    - ALL
 
 
 
@@ -2941,7 +2941,7 @@ On directories: This is where it's actually useful. Any file created inside the 
 
 bash
 
-\# Shared project directory
+Shared project directory
 
 mkdir /opt/project
 
@@ -2949,23 +2949,23 @@ chgrp developers /opt/project
 
 chmod 2775 /opt/project
 
-\#     ^
+    ^
 
-\#     2 = setgid bit
+    2 = setgid bit
 
 
 
-\# Now when anyone in the developers group creates a file:
+Now when anyone in the developers group creates a file:
 
 touch /opt/project/newfile.txt
 
 ls -la /opt/project/newfile.txt
 
-\# -rw-rw-r-- 1 deploy developers ...
+-rw-rw-r-- 1 deploy developers ...
 
-\#                     ^^^^^^^^^^
+                    ^^^^^^^^^^
 
-\#                     Inherited from directory, not user's primary group
+                    Inherited from directory, not user's primary group
 
 This is essential for shared directories where multiple users need to read/write each other's files.
 
@@ -2981,29 +2981,29 @@ bash
 
 ls -ld /tmp
 
-\# drwxrwxrwt 15 root root 4096 Jan 15 03:00 /tmp
+drwxrwxrwt 15 root root 4096 Jan 15 03:00 /tmp
 
-\#          ^
+         ^
 
-\#          t = sticky bit
-
-
-
-\# Everyone can write to /tmp
-
-\# But user A can't delete user B's files in /tmp
-
-\# Only the file owner or root can delete
+         t = sticky bit
 
 
 
-\# Set sticky bit
+Everyone can write to /tmp
+
+But user A can't delete user B's files in /tmp
+
+Only the file owner or root can delete
+
+
+
+Set sticky bit
 
 chmod 1777 /tmp
 
-\#     ^
+    ^
 
-\#     1 = sticky bit
+    1 = sticky bit
 
 Numeric Special Permission Bits:
 
@@ -3017,7 +3017,7 @@ text
 
 
 
-\# Combined with regular permissions:
+Combined with regular permissions:
 
 chmod 4755 binary      # setuid + rwxr-xr-x
 
@@ -3035,27 +3035,27 @@ bash
 
 umask
 
-\# 0022
+0022
 
 
 
-\# For files:   666 - 022 = 644 (rw-r--r--)
+For files:   666 - 022 = 644 (rw-r--r--)
 
-\# For directories: 777 - 022 = 755 (rwxr-xr-x)
+For directories: 777 - 022 = 755 (rwxr-xr-x)
 
 
 
-\# More restrictive umask
+More restrictive umask
 
 umask 077
 
-\# Files: 666 - 077 = 600 (rw-------)
+Files: 666 - 077 = 600 (rw-------)
 
-\# Dirs:  777 - 077 = 700 (rwx------)
+Dirs:  777 - 077 = 700 (rwx------)
 
 
 
-\# Set in /etc/profile or \~/.bashrc for persistence
+Set in /etc/profile or \~/.bashrc for persistence
 
 Why base is 666 for files and not 777: Linux deliberately doesn't give execute permission by default. You must explicitly chmod +x. This prevents accidentally creating executable files.
 
@@ -3065,79 +3065,79 @@ sudo — Privilege Escalation Done Right
 
 bash
 
-\# The sudo config file
+The sudo config file
 
 visudo   # ALWAYS use visudo to edit — it validates syntax
 
-&#x20;        # A syntax error in sudoers = NOBODY can sudo = locked out
+       # A syntax error in sudoers = NOBODY can sudo = locked out
 
 
 
-\# /etc/sudoers format:
+/etc/sudoers format:
 
-\# user   HOST=(RUNAS\_USER:RUNAS\_GROUP)  COMMANDS
+user   HOST=(RUNAS_USER:RUNAS_GROUP)  COMMANDS
 
 deploy   ALL=(ALL:ALL)                  ALL           # Full sudo access
 
 nginx    ALL=(ALL)                      NOPASSWD: /bin/systemctl reload nginx
 
-\#                                       ^^^^^^^^
+                                      ^^^^^^^^
 
-\#                                       No password required for this specific command
+                                      No password required for this specific command
 
 
 
-\# Group-based sudo (recommended)
+Group-based sudo (recommended)
 
 %sudo    ALL=(ALL:ALL) ALL
 
 %devops  ALL=(ALL) NOPASSWD: ALL
 
-\# % means group
+% means group
 
 sudo Best Practices in Production:
 
 bash
 
-\# 1. NEVER give blanket NOPASSWD: ALL to individual users
+1. NEVER give blanket NOPASSWD: ALL to individual users
 
-\# Use specific commands:
+Use specific commands:
 
 deploy ALL=(ALL) NOPASSWD: /bin/systemctl restart myapp, /bin/journalctl
 
 
 
-\# 2. Use groups, not individual users
+2. Use groups, not individual users
 
-\# /etc/sudoers.d/devops
+/etc/sudoers.d/devops
 
 %devops ALL=(ALL) NOPASSWD: ALL
 
 
 
-\# 3. Drop files in /etc/sudoers.d/ instead of editing /etc/sudoers directly
+3. Drop files in /etc/sudoers.d/ instead of editing /etc/sudoers directly
 
-\# Easier to manage with Ansible/Puppet/Chef
+Easier to manage with Ansible/Puppet/Chef
 
 
 
-\# 4. Log all sudo commands (usually enabled by default)
+4. Log all sudo commands (usually enabled by default)
 
-\# Check: /var/log/auth.log or /var/log/secure
+Check: /var/log/auth.log or /var/log/secure
 
 grep sudo /var/log/auth.log
 
 
 
-\# 5. Restrict root login
+5. Restrict root login
 
-\# /etc/ssh/sshd\_config
+/etc/ssh/sshd_config
 
 PermitRootLogin no
 
-\# Force everyone to use their own account + sudo
+Force everyone to use their own account + sudo
 
-\# This gives you an AUDIT TRAIL of who did what
+This gives you an AUDIT TRAIL of who did what
 
 Production Scenarios — Permission Issues
 
@@ -3145,41 +3145,41 @@ Scenario 1: Application Can't Write Logs After Deployment
 
 bash
 
-\# Ansible deploys new code as root
+Ansible deploys new code as root
 
-\# Files now owned by root:root
+Files now owned by root:root
 
-\# Application runs as 'appuser'
+Application runs as 'appuser'
 
-\# Application can't write to /var/log/app/
+Application can't write to /var/log/app/
 
 
 
-\# The fix — in your Ansible playbook:
+The fix — in your Ansible playbook:
 
 \- name: Set correct ownership
 
-&#x20; file:
+file:
 
-&#x20;   path: /var/log/app/
+  path: /var/log/app/
 
-&#x20;   owner: appuser
+  owner: appuser
 
-&#x20;   group: appgroup
+  group: appgroup
 
-&#x20;   mode: '0755'
+  mode: '0755'
 
-&#x20;   recurse: yes
+  recurse: yes
 
 
 
-\# Or better — use logrotate with create directive:
+Or better — use logrotate with create directive:
 
 /var/log/app/\*.log {
 
-&#x20;   create 0644 appuser appgroup
+  create 0644 appuser appgroup
 
-&#x20;   # New log files created with correct ownership
+  # New log files created with correct ownership
 
 }
 
@@ -3187,123 +3187,123 @@ Scenario 2: Docker Volume Mount Permission Denied
 
 bash
 
-\# Container runs as UID 1000 (appuser inside container)
+Container runs as UID 1000 (appuser inside container)
 
-\# Host directory /data owned by root:root with 755
+Host directory /data owned by root:root with 755
 
-\# Container tries to write to /data → Permission denied
+Container tries to write to /data → Permission denied
 
 
 
-\# Fix 1: Match UIDs
+Fix 1: Match UIDs
 
 chown 1000:1000 /data
 
 
 
-\# Fix 2: Run container as specific user
+Fix 2: Run container as specific user
 
 docker run -u 1000:1000 -v /data:/data myapp
 
 
 
-\# Fix 3: Use init container in Kubernetes to fix permissions
+Fix 3: Use init container in Kubernetes to fix permissions
 
 initContainers:
 
 \- name: fix-permissions
 
-&#x20; image: busybox
+image: busybox
 
-&#x20; command: \['sh', '-c', 'chown -R 1000:1000 /data']
+command: \['sh', '-c', 'chown -R 1000:1000 /data']
 
-&#x20; volumeMounts:
+volumeMounts:
 
-&#x20; - name: data
+- name: data
 
-&#x20;   mountPath: /data
+  mountPath: /data
 
 Scenario 3: SSH Key Authentication Fails Despite Correct Key
 
 bash
 
-\# SSH is EXTREMELY strict about permissions
+SSH is EXTREMELY strict about permissions
 
-\# If any of these are wrong, key auth silently fails:
+If any of these are wrong, key auth silently fails:
 
 
 
 chmod 700 \~/.ssh
 
-chmod 600 \~/.ssh/authorized\_keys
+chmod 600 \~/.ssh/authorized_keys
 
-chmod 600 \~/.ssh/id\_rsa          # Private key
+chmod 600 \~/.ssh/id_rsa          # Private key
 
-chmod 644 \~/.ssh/id\_rsa.pub      # Public key
+chmod 644 \~/.ssh/id_rsa.pub      # Public key
 
 chown -R user:user \~/.ssh
 
 
 
-\# Debug SSH auth failures:
+Debug SSH auth failures:
 
 ssh -vvv user@host   # Verbose output shows exactly where auth fails
 
 
 
-\# Server-side logs:
+Server-side logs:
 
 tail -f /var/log/auth.log
 
-\# "Authentication refused: bad ownership or modes for directory /home/user/.ssh"
+"Authentication refused: bad ownership or modes for directory /home/user/.ssh"
 
 Scenario 4: Cron Job Works Manually But Fails in Crontab
 
 bash
 
-\# Common causes:
+Common causes:
 
 
 
-\# 1. PATH is different in cron environment
+1. PATH is different in cron environment
 
-\# Cron has minimal PATH: /usr/bin:/bin
+Cron has minimal PATH: /usr/bin:/bin
 
-\# Your script uses /usr/local/bin/terraform → not found
+Your script uses /usr/local/bin/terraform → not found
 
-\# Fix: Use full paths in cron scripts
+Fix: Use full paths in cron scripts
 
 0 2 \* \* \* /usr/local/bin/terraform apply -auto-approve
 
 
 
-\# 2. Script not executable
+2. Script not executable
 
 chmod +x /opt/scripts/backup.sh
 
 
 
-\# 3. Permission to write output
+3. Permission to write output
 
-\# Cron tries to email output but sendmail isn't configured
+Cron tries to email output but sendmail isn't configured
 
-\# Redirect output explicitly:
+Redirect output explicitly:
 
 0 2 \* \* \* /opt/scripts/backup.sh >> /var/log/backup.log 2>\&1
 
 
 
-\# 4. Environment variables not available
+4. Environment variables not available
 
-\# Cron doesn't load .bashrc or .profile
+Cron doesn't load .bashrc or .profile
 
-\# Define needed vars in the crontab:
+Define needed vars in the crontab:
 
 SHELL=/bin/bash
 
 PATH=/usr/local/bin:/usr/bin:/bin
 
-AWS\_DEFAULT\_REGION=us-east-1
+AWS_DEFAULT_REGION=us-east-1
 
 0 2 \* \* \* /opt/scripts/backup.sh
 
@@ -3311,51 +3311,51 @@ Scenario 5: "Operation not permitted" Even as Root
 
 bash
 
-\# You're root. You try to delete a file. Permission denied.
+You're root. You try to delete a file. Permission denied.
 
 rm -f /etc/important.conf
 
-\# rm: cannot remove '/etc/important.conf': Operation not permitted
+rm: cannot remove '/etc/important.conf': Operation not permitted
 
 
 
-\# What? You're ROOT. How?
+What? You're ROOT. How?
 
 
 
-\# Answer: File has IMMUTABLE attribute set
+Answer: File has IMMUTABLE attribute set
 
 lsattr /etc/important.conf
 
-\# ----i--------e-- /etc/important.conf
+----i--------e-- /etc/important.conf
 
-\#     ^
+    ^
 
-\#     i = immutable — even root can't modify or delete
+    i = immutable — even root can't modify or delete
 
 
 
-\# Remove immutable attribute
+Remove immutable attribute
 
 chattr -i /etc/important.conf
 
 
 
-\# Now you can delete/modify it
+Now you can delete/modify it
 
 
 
-\# Set immutable (useful for protecting critical configs)
+Set immutable (useful for protecting critical configs)
 
 chattr +i /etc/important.conf
 
 
 
-\# Other useful attributes:
+Other useful attributes:
 
 chattr +a /var/log/audit.log    # Append-only — can add but not delete/modify
 
-&#x20;                                 # Perfect for audit logs
+                                # Perfect for audit logs
 
 Summary — Permission Debugging Checklist:
 
@@ -3375,7 +3375,7 @@ When "Permission denied" hits, check IN THIS ORDER:
 
 5\. SELinux/AppArmor:             getenforce        (is MAC enforcing?)
 
-&#x20;                                 ls -laZ <path>   (SELinux context)
+                                ls -laZ <path>   (SELinux context)
 
 6\. ACLs:                         getfacl <path>    (extended ACLs overriding?)
 
@@ -3397,41 +3397,41 @@ SELinux (Red Hat, CentOS, Fedora, Amazon Linux):
 
 bash
 
-\# Check status
+Check status
 
 getenforce
 
-\# Enforcing = actively blocking violations
+Enforcing = actively blocking violations
 
-\# Permissive = logging violations but not blocking
+Permissive = logging violations but not blocking
 
-\# Disabled = off completely
+Disabled = off completely
 
 
 
-\# View SELinux context of files
+View SELinux context of files
 
 ls -laZ /var/www/html/
 
-\# -rw-r--r--. root root unconfined\_u:object\_r:httpd\_sys\_content\_t:s0 index.html
+-rw-r--r--. root root unconfined_u:object_r:httpd_sys_content_t:s0 index.html
 
-\#                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-\#                        SELinux context
+                       SELinux context
 
 
 
-\# View SELinux context of processes
+View SELinux context of processes
 
 ps auxZ | grep httpd
 
-\# system\_u:system\_r:httpd\_t:s0  root  1234 ... /usr/sbin/httpd
+system_u:system_r:httpd_t:s0  root  1234 ... /usr/sbin/httpd
 
-\#                   ^^^^^^^^
+                  ^^^^^^^^
 
-\#                   httpd runs in httpd\_t domain
+                  httpd runs in httpd_t domain
 
-\#                   It can ONLY access files labeled httpd\_sys\_content\_t
+                  It can ONLY access files labeled httpd_sys_content_t
 
 The Classic SELinux Production Disaster:
 
@@ -3439,97 +3439,97 @@ The Classic SELinux Production Disaster:
 
 bash
 
-\# You deploy a new app that writes to /opt/myapp/data/
+You deploy a new app that writes to /opt/myapp/data/
 
-\# App runs fine on your dev box (SELinux disabled)
+App runs fine on your dev box (SELinux disabled)
 
-\# Deploy to production (SELinux enforcing) → Permission denied
+Deploy to production (SELinux enforcing) → Permission denied
 
-\# rwx permissions look correct
+rwx permissions look correct
 
-\# Ownership looks correct
+Ownership looks correct
 
-\# You spend 3 hours going insane
+You spend 3 hours going insane
 
 
 
-\# Check the audit log:
+Check the audit log:
 
 ausearch -m AVC -ts recent
 
-\# type=AVC msg=audit: avc:  denied  { write } for pid=1234
+type=AVC msg=audit: avc:  denied  { write } for pid=1234
 
-\# comm="myapp" name="data" scontext=system\_u:system\_r:myapp\_t
+comm="myapp" name="data" scontext=system_u:system_r:myapp_t
 
-\# tcontext=system\_u:object\_r:default\_t
+tcontext=system_u:object_r:default_t
 
 
 
-\# The directory has default\_t context — wrong!
+The directory has default_t context — wrong!
 
-\# Fix:
+Fix:
 
-semanage fcontext -a -t myapp\_data\_t "/opt/myapp/data(/.\*)?"
+semanage fcontext -a -t myapp_data_t "/opt/myapp/data(/.\*)?"
 
 restorecon -Rv /opt/myapp/data/
 
 
 
-\# Or if you don't have a custom policy:
+Or if you don't have a custom policy:
 
-chcon -R -t httpd\_sys\_rw\_content\_t /opt/myapp/data/
+chcon -R -t httpd_sys_rw_content_t /opt/myapp/data/
 
 
 
-\# QUICK DIAGNOSTIC: Temporarily set permissive to confirm SELinux is the issue
+QUICK DIAGNOSTIC: Temporarily set permissive to confirm SELinux is the issue
 
 setenforce 0    # Permissive (logs but doesn't block)
 
-\# Test your app — if it works now, SELinux was the problem
+Test your app — if it works now, SELinux was the problem
 
 setenforce 1    # Back to enforcing
 
-\# Then fix the contexts properly
+Then fix the contexts properly
 
 AppArmor (Ubuntu, Debian, SUSE):
 
 bash
 
-\# Check status
+Check status
 
 aa-status
 
 
 
-\# Profiles can be in:
+Profiles can be in:
 
-\# enforce — blocking violations
+enforce — blocking violations
 
-\# complain — logging violations (like SELinux permissive)
+complain — logging violations (like SELinux permissive)
 
 
 
-\# View loaded profiles
+View loaded profiles
 
 cat /sys/kernel/security/apparmor/profiles
 
 
 
-\# If AppArmor blocks your app:
+If AppArmor blocks your app:
 
-\# Check logs
+Check logs
 
 journalctl | grep apparmor
 
 
 
-\# Temporarily disable profile for a binary
+Temporarily disable profile for a binary
 
 aa-complain /usr/sbin/nginx
 
 
 
-\# Create/modify profile
+Create/modify profile
 
 aa-genprof /usr/sbin/myapp
 
@@ -3541,51 +3541,51 @@ When standard owner/group/others isn't enough, ACLs let you set permissions for 
 
 bash
 
-\# View ACLs
+View ACLs
 
 getfacl /opt/project/
 
 
 
-\# Set ACL — give 'deploy' user read+write, without changing ownership
+Set ACL — give 'deploy' user read+write, without changing ownership
 
 setfacl -m u:deploy:rw /opt/project/data.txt
 
 
 
-\# Set ACL — give 'devops' group full access
+Set ACL — give 'devops' group full access
 
 setfacl -m g:devops:rwx /opt/project/
 
 
 
-\# Set default ACL (inherited by new files created in directory)
+Set default ACL (inherited by new files created in directory)
 
 setfacl -d -m g:devops:rwx /opt/project/
 
 
 
-\# Remove ACL
+Remove ACL
 
 setfacl -x u:deploy /opt/project/data.txt
 
 
 
-\# Remove ALL ACLs
+Remove ALL ACLs
 
 setfacl -b /opt/project/data.txt
 
 
 
-\# A + sign in ls -la indicates ACLs are set:
+A + sign in ls -la indicates ACLs are set:
 
 ls -la /opt/project/
 
-\# drwxrwx---+ 2 root root 4096 ...
+drwxrwx---+ 2 root root 4096 ...
 
-\#           ^
+          ^
 
-\#           + means ACLs exist — check with getfacl
+          + means ACLs exist — check with getfacl
 
 Real-world use: Shared CI/CD build directories where multiple service accounts need different levels of access but you don't want to create a group for every combination.
 
@@ -3599,53 +3599,53 @@ Instead of giving a process full root access, Linux capabilities let you grant s
 
 bash
 
-\# View capabilities of a binary
+View capabilities of a binary
 
 getcap /usr/bin/ping
 
-\# /usr/bin/ping = cap\_net\_raw+ep
+/usr/bin/ping = cap_net_raw+ep
 
-\# This is why regular users can run ping without root
+This is why regular users can run ping without root
 
-\# It only has the NET\_RAW capability, not full root
-
-
-
-\# Common capabilities:
-
-\# CAP\_NET\_BIND\_SERVICE — bind to ports below 1024
-
-\# CAP\_NET\_RAW — raw sockets (ping, tcpdump)
-
-\# CAP\_SYS\_ADMIN — various admin operations (almost as powerful as root)
-
-\# CAP\_CHOWN — change file ownership
-
-\# CAP\_DAC\_OVERRIDE — bypass file permission checks
+It only has the NET_RAW capability, not full root
 
 
 
-\# Set capability on a binary
+Common capabilities:
 
-setcap cap\_net\_bind\_service+ep /usr/local/bin/myapp
+CAP_NET_BIND_SERVICE — bind to ports below 1024
 
-\# Now myapp can bind to port 80 without running as root
+CAP_NET_RAW — raw sockets (ping, tcpdump)
+
+CAP_SYS_ADMIN — various admin operations (almost as powerful as root)
+
+CAP_CHOWN — change file ownership
+
+CAP_DAC_OVERRIDE — bypass file permission checks
 
 
 
-\# In Kubernetes:
+Set capability on a binary
+
+setcap cap_net_bind_service+ep /usr/local/bin/myapp
+
+Now myapp can bind to port 80 without running as root
+
+
+
+In Kubernetes:
 
 securityContext:
 
-&#x20; capabilities:
+capabilities:
 
-&#x20;   add:
+  add:
 
-&#x20;     - NET\_BIND\_SERVICE    # Only this specific privilege
+    - NET_BIND_SERVICE    # Only this specific privilege
 
-&#x20;   drop:
+  drop:
 
-&#x20;     - ALL                 # Drop everything else
+    - ALL                 # Drop everything else
 
 Why this matters: Running containers as root is a massive security risk. Capabilities let you give containers ONLY the specific privileges they need. In FAANG-level security reviews, drop: ALL + selective add is mandatory.
 
@@ -3655,137 +3655,137 @@ Why this matters: Running containers as root is a massive security risk. Capabil
 
 USERS \& GROUPS:
 
-&#x20; whoami / id                              → Current user info
+whoami / id                              → Current user info
 
-&#x20; useradd -m -s /bin/bash <user>          → Create user
+useradd -m -s /bin/bash <user>          → Create user
 
-&#x20; usermod -aG <group> <user>              → Add to group (ALWAYS use -a!)
+usermod -aG <group> <user>              → Add to group (ALWAYS use -a!)
 
-&#x20; /etc/passwd                              → User accounts
+/etc/passwd                              → User accounts
 
-&#x20; /etc/shadow                              → Password hashes
+/etc/shadow                              → Password hashes
 
-&#x20; /etc/group                               → Group memberships
+/etc/group                               → Group memberships
 
 
 
 PERMISSIONS:
 
-&#x20; chmod 755 file        → rwxr-xr-x
+chmod 755 file        → rwxr-xr-x
 
-&#x20; chmod 600 file        → rw-------
+chmod 600 file        → rw-------
 
-&#x20; chown user:group file → Change ownership
+chown user:group file → Change ownership
 
-&#x20; r=4, w=2, x=1        → Octal math
+r=4, w=2, x=1        → Octal math
 
 
 
 SPECIAL BITS:
 
-&#x20; 4000 = setuid         → Runs as file owner (DANGEROUS)
+4000 = setuid         → Runs as file owner (DANGEROUS)
 
-&#x20; 2000 = setgid         → Inherits directory group
+2000 = setgid         → Inherits directory group
 
-&#x20; 1000 = sticky bit     → Only owner can delete (e.g., /tmp)
+1000 = sticky bit     → Only owner can delete (e.g., /tmp)
 
 
 
 UMASK:
 
-&#x20; umask 022             → Files: 644, Dirs: 755
+umask 022             → Files: 644, Dirs: 755
 
-&#x20; umask 077             → Files: 600, Dirs: 700
+umask 077             → Files: 600, Dirs: 700
 
 
 
 SUDO:
 
-&#x20; visudo                → ALWAYS use this to edit sudoers
+visudo                → ALWAYS use this to edit sudoers
 
-&#x20; usermod -aG sudo user → Grant sudo via group
+usermod -aG sudo user → Grant sudo via group
 
-&#x20; /etc/sudoers.d/       → Drop-in files (Ansible-friendly)
+/etc/sudoers.d/       → Drop-in files (Ansible-friendly)
 
 
 
 SPECIAL ATTRIBUTES:
 
-&#x20; lsattr / chattr       → Immutable (+i), append-only (+a)
+lsattr / chattr       → Immutable (+i), append-only (+a)
 
-&#x20; chattr +i file        → Even root can't delete
+chattr +i file        → Even root can't delete
 
 
 
 SELINUX:
 
-&#x20; getenforce            → Check status
+getenforce            → Check status
 
-&#x20; setenforce 0          → Permissive (test mode)
+setenforce 0          → Permissive (test mode)
 
-&#x20; ls -Z                 → View SELinux contexts
+ls -Z                 → View SELinux contexts
 
-&#x20; restorecon -Rv /path  → Fix contexts
+restorecon -Rv /path  → Fix contexts
 
-&#x20; ausearch -m AVC       → Check denial logs
+ausearch -m AVC       → Check denial logs
 
 
 
 APPARMOR:
 
-&#x20; aa-status             → Check status
+aa-status             → Check status
 
-&#x20; aa-complain <profile> → Switch to complain mode
+aa-complain <profile> → Switch to complain mode
 
 
 
 ACLS:
 
-&#x20; getfacl / setfacl     → Fine-grained per-user/group permissions
+getfacl / setfacl     → Fine-grained per-user/group permissions
 
-&#x20; setfacl -m u:user:rwx → Grant specific user access
+setfacl -m u:user:rwx → Grant specific user access
 
-&#x20; + in ls -la           → Indicates ACLs present
++ in ls -la           → Indicates ACLs present
 
 
 
 CAPABILITIES:
 
-&#x20; getcap / setcap       → View/set granular root privileges
+getcap / setcap       → View/set granular root privileges
 
-&#x20; cap\_net\_bind\_service  → Bind to port <1024 without root
+cap_net_bind_service  → Bind to port <1024 without root
 
 
 
 KUBERNETES SECURITY:
 
-&#x20; runAsNonRoot: true
+runAsNonRoot: true
 
-&#x20; runAsUser: 1000
+runAsUser: 1000
 
-&#x20; allowPrivilegeEscalation: false
+allowPrivilegeEscalation: false
 
-&#x20; readOnlyRootFilesystem: true
+readOnlyRootFilesystem: true
 
-&#x20; capabilities: drop: \[ALL]
+capabilities: drop: \[ALL]
 
 
 
 PERMISSION DEBUGGING ORDER:
 
-&#x20; 1. ls -la             → ownership \& permissions
+1. ls -la             → ownership \& permissions
 
-&#x20; 2. ls -la parent dir  → traversal (x bit)
+2. ls -la parent dir  → traversal (x bit)
 
-&#x20; 3. lsattr             → immutable/append-only
+3. lsattr             → immutable/append-only
 
-&#x20; 4. getenforce / ls -Z → SELinux
+4. getenforce / ls -Z → SELinux
 
-&#x20; 5. getfacl             → ACLs
+5. getfacl             → ACLs
 
-&#x20; 6. mount               → read-only mount?
+6. mount               → read-only mount?
 
-&#x20; 7. getcap              → capabilities
+7. getcap              → capabilities
 
 ================================================================
 
@@ -3831,21 +3831,21 @@ Namespaces partition kernel resources so that one set of processes sees one set 
 
 |-----------|------|-----------------|------------------|
 
-| \*\*PID\*\* | CLONE\_NEWPID | Process IDs | Container sees only its own processes. PID 1 inside = your app |
+| \*\*PID\*\* | CLONE_NEWPID | Process IDs | Container sees only its own processes. PID 1 inside = your app |
 
-| \*\*NET\*\* | CLONE\_NEWNET | Network stack | Container gets its own IP, ports, routing table, iptables |
+| \*\*NET\*\* | CLONE_NEWNET | Network stack | Container gets its own IP, ports, routing table, iptables |
 
-| \*\*MNT\*\* | CLONE\_NEWNS | Mount points | Container sees its own filesystem, not the host's |
+| \*\*MNT\*\* | CLONE_NEWNS | Mount points | Container sees its own filesystem, not the host's |
 
-| \*\*UTS\*\* | CLONE\_NEWUTS | Hostname \& domain | Container can have its own hostname |
+| \*\*UTS\*\* | CLONE_NEWUTS | Hostname \& domain | Container can have its own hostname |
 
-| \*\*IPC\*\* | CLONE\_NEWIPC | Inter-process communication | Shared memory, semaphores isolated between containers |
+| \*\*IPC\*\* | CLONE_NEWIPC | Inter-process communication | Shared memory, semaphores isolated between containers |
 
-| \*\*USER\*\* | CLONE\_NEWUSER | User/Group IDs | UID 0 inside container can map to UID 1000 on host (rootless containers) |
+| \*\*USER\*\* | CLONE_NEWUSER | User/Group IDs | UID 0 inside container can map to UID 1000 on host (rootless containers) |
 
-| \*\*CGROUP\*\* | CLONE\_NEWCGROUP | Cgroup root view | Container sees only its own cgroup hierarchy |
+| \*\*CGROUP\*\* | CLONE_NEWCGROUP | Cgroup root view | Container sees only its own cgroup hierarchy |
 
-| \*\*TIME\*\* | CLONE\_NEWTIME | System clocks | Container can have different boot/monotonic clocks (Linux 5.6+) |
+| \*\*TIME\*\* | CLONE_NEWTIME | System clocks | Container can have different boot/monotonic clocks (Linux 5.6+) |
 
 
 
@@ -4233,9 +4233,9 @@ cat /sys/fs/cgroup/system.slice/docker-<container-id>.scope/memory.current
 
  cgroup v1 — separate directories per controller
 
-cat /sys/fs/cgroup/memory/docker/<container-id>/memory.limit                                      \_in                                      \_bytes
+cat /sys/fs/cgroup/memory/docker/<container-id>/memory.limit                                      _in                                      _bytes
 
-cat /sys/fs/cgroup/memory/docker/<container-id>/memory.usage                                      \_in                                      \_bytes
+cat /sys/fs/cgroup/memory/docker/<container-id>/memory.usage                                      _in                                      _bytes
 
 cat /sys/fs/cgroup/cpu/docker/<container-id>/cpu.shares
 
@@ -4357,17 +4357,17 @@ resources:
 
 cat /sys/fs/cgroup/.../cpu.stat
 
- usage \_usec 123456789
+ usage _usec 123456789
 
- user \_usec 100000000
+ user _usec 100000000
 
- system \_usec 23456789
+ system _usec 23456789
 
- nr \_periods 50000
+ nr _periods 50000
 
- nr \_throttled 12000    ← THROTTLED 12,000 times!
+ nr _throttled 12000    ← THROTTLED 12,000 times!
 
- throttled \_usec 600000000  ← 600 seconds total throttle time
+ throttled _usec 600000000  ← 600 seconds total throttle time
 
 
 
@@ -4383,9 +4383,9 @@ cat /sys/fs/cgroup/.../cpu.stat
 
  Prometheus metric:
 
- container \_cpu \_cfs \_throttled \_periods \_total
+ container _cpu _cfs _throttled _periods _total
 
- container \_cpu \_cfs \_throttled \_seconds \_total
+ container _cpu _cfs _throttled _seconds _total
 
 
 
@@ -4583,7 +4583,7 @@ unshare --mount --uts --ipc --net --pid --fork /bin/bash
 
  3. Change root filesystem
 
-pivot \_root /path/to/new/root /path/to/put/old/root
+pivot _root /path/to/new/root /path/to/put/old/root
 
 
 
@@ -4645,9 +4645,9 @@ cat /sys/fs/cgroup/<path>/memory.stat       # Detailed breakdown
 
 cat /sys/fs/cgroup/<path>/cpu.stat
 
- nr \_throttled → how many times CPU was throttled
+ nr _throttled → how many times CPU was throttled
 
- throttled \_usec → total throttle time
+ throttled _usec → total throttle time
 
 ```
 
@@ -4795,11 +4795,11 @@ java -XX:ActiveProcessorCount=2 -jar app.jar
 
  Read from cgroup instead of /proc/cpuinfo:
 
- Python: os.sched \_getaffinity(0)
+ Python: os.sched _getaffinity(0)
 
  Go: runtime.GOMAXPROCS() — automatically reads cgroup since Go 1.19
 
- Node.js: doesn't auto-detect, use UV \_THREADPOOL \_SIZE env var
+ Node.js: doesn't auto-detect, use UV _THREADPOOL _SIZE env var
 
 ```
 
@@ -4809,7 +4809,7 @@ java -XX:ActiveProcessorCount=2 -jar app.jar
 
 
 
-\# 📋 LESSON 6 QUICK REFERENCE — cgroups \& Namespaces
+📋 LESSON 6 QUICK REFERENCE — cgroups \& Namespaces
 
 
 
@@ -4871,7 +4871,7 @@ CGROUPS (What processes can USE):
 
    memory.stat                     → detailed breakdown (anon, file, etc.)
 
-   cpu.stat                        → nr \_throttled, throttled \_usec
+   cpu.stat                        → nr _throttled, throttled _usec
 
    pids.max / pids.current        → process limit and count
 
@@ -4919,9 +4919,9 @@ EXIT CODES:
 
 CPU THROTTLING:
 
- Check: cat cpu.stat → nr \_throttled
+ Check: cat cpu.stat → nr _throttled
 
- Monitor: container \_cpu \_cfs \_throttled \_periods \_total
+ Monitor: container _cpu _cfs _throttled _periods _total
 
  FAANG approach: remove CPU limits, keep only requests
 
@@ -4961,7 +4961,7 @@ NSENTER (top 1% debugging):
 
 
 
-\# 📝 Retention Questions — Lesson 6 ONLY
+📝 Retention Questions — Lesson 6 ONLY
 
 
 
@@ -5427,13 +5427,13 @@ Often used with RemainAfterExit=yes
 
 Type=notify
 
-Service tells systemd when it's ready via sd \_notify().
+Service tells systemd when it's ready via sd _notify().
 
 Most reliable for complex services with initialization phases.
 
 Example: PostgreSQL, systemd-aware services
 
-Requires the application to call sd \_notify("READY=1")
+Requires the application to call sd _notify("READY=1")
 
 
 
@@ -5469,7 +5469,7 @@ Legacy daemon that forks           → Type=forking + PIDFile=
 
 One-time script                    → Type=oneshot + RemainAfterExit=yes
 
-App with slow initialization       → Type=notify (if app supports sd \_notify)
+App with slow initialization       → Type=notify (if app supports sd _notify)
 
 ```
 
@@ -5677,9 +5677,9 @@ SendSIGKILL=yes
 
   Inline environment variables
 
-Environment=NODE \_ENV=production
+Environment=NODE _ENV=production
 
-Environment=PORT=8080 DB \_HOST=localhost
+Environment=PORT=8080 DB _HOST=localhost
 
 
 
@@ -5689,11 +5689,11 @@ EnvironmentFile=/etc/myapp/env
 
   The file format:
 
-  NODE \_ENV=production
+  NODE _ENV=production
 
-  DB \_HOST=postgres.internal
+  DB _HOST=postgres.internal
 
-  DB \_PASSWORD=supersecret
+  DB _PASSWORD=supersecret
 
 
 
@@ -5793,9 +5793,9 @@ ReadWritePaths=/opt/myapp/data /var/log/myapp
 
 NoNewPrivileges=yes      # Process can't gain new privileges (setuid won't work)
 
-CapabilityBoundingSet=CAP \_NET \_BIND \_SERVICE
+CapabilityBoundingSet=CAP _NET _BIND _SERVICE
 
-AmbientCapabilities=CAP \_NET \_BIND \_SERVICE
+AmbientCapabilities=CAP _NET _BIND _SERVICE
 
   Only allow binding to ports below 1024
 
@@ -5803,7 +5803,7 @@ AmbientCapabilities=CAP \_NET \_BIND \_SERVICE
 
   Network restrictions
 
-RestrictAddressFamilies=AF \_INET AF \_INET6 AF \_UNIX
+RestrictAddressFamilies=AF _INET AF _INET6 AF _UNIX
 
   Only allow IPv4, IPv6, and Unix sockets
 
@@ -6189,9 +6189,9 @@ journalctl -p warning..err       # Show only warning through err
 
 journalctl -u nginx -u myapp    # Logs from multiple services
 
-journalctl \_PID=1234            # Logs from specific PID
+journalctl _PID=1234            # Logs from specific PID
 
-journalctl \_UID=1000            # Logs from specific user
+journalctl _UID=1000            # Logs from specific user
 
 
 
@@ -6549,7 +6549,7 @@ ExecStart=/opt/myapp/bin/server
 
   The application must be written to accept the socket from systemd
 
-  via file descriptor inheritance (sd \_listen \_fds)
+  via file descriptor inheritance (sd _listen _fds)
 
 ```
 
@@ -6717,7 +6717,7 @@ systemctl restart myapp    # Now restart with new config
 
     state: restarted
 
-    daemon \_reload: yes
+    daemon _reload: yes
 
 ```
 
@@ -6813,7 +6813,7 @@ KillMode=mixed
 
   2. Environment variables missing
 
-  CLI inherits your shell's env (JAVA \_HOME, AWS \_REGION, etc.)
+  CLI inherits your shell's env (JAVA _HOME, AWS _REGION, etc.)
 
   systemd has almost no env vars
 
@@ -6971,7 +6971,7 @@ WatchdogSec=30          # Process must notify systemd every 30s
 
 
 
-  For apps that don't support watchdog/sd \_notify:
+  For apps that don't support watchdog/sd _notify:
 
   Use a simple restart schedule as a workaround
 
@@ -7033,9 +7033,9 @@ WorkingDirectory=/opt/nodeapp
 
 EnvironmentFile=/etc/nodeapp/env
 
-Environment=NODE \_ENV=production
+Environment=NODE _ENV=production
 
-Environment=NODE \_OPTIONS="--max-old-space-size=1536"
+Environment=NODE _OPTIONS="--max-old-space-size=1536"
 
 
 
@@ -7143,15 +7143,15 @@ WorkingDirectory=/opt/springapp
 
 EnvironmentFile=/etc/springapp/env
 
-Environment=JAVA \_HOME=/usr/lib/jvm/java-17
+Environment=JAVA _HOME=/usr/lib/jvm/java-17
 
-Environment=JAVA \_OPTS="-Xms512m -Xmx1536m -XX:+UseG1GC -XX:+UseContainerSupport"
+Environment=JAVA _OPTS="-Xms512m -Xmx1536m -XX:+UseG1GC -XX:+UseContainerSupport"
 
 
 
 ExecStart=/usr/lib/jvm/java-17/bin/java 
 
-    $JAVA \_OPTS  \\
+    $JAVA _OPTS  \\
 
     -jar /opt/springapp/app.jar  \\
 
@@ -7209,7 +7209,7 @@ WantedBy=multi-user.target
 
 
 
-\# 📝 Retention Questions — Lesson 7 ONLY
+📝 Retention Questions — Lesson 7 ONLY
 
 
 
@@ -7267,15 +7267,15 @@ The Linux kernel ships with defaults optimized for \*\*general purpose desktop u
 
  View a kernel parameter
 
-sysctl net.ipv4.tcp \_tw \_reuse
+sysctl net.ipv4.tcp _tw _reuse
 
- net.ipv4.tcp \_tw \_reuse = 0
+ net.ipv4.tcp _tw _reuse = 0
 
 
 
  Same thing via /proc
 
-cat /proc/sys/net/ipv4/tcp \_tw \_reuse
+cat /proc/sys/net/ipv4/tcp _tw _reuse
 
  0
 
@@ -7285,16 +7285,16 @@ cat /proc/sys/net/ipv4/tcp \_tw \_reuse
 
  sysctl dots = filesystem slashes
 
- net.ipv4.tcp \_tw \_reuse → /proc/sys/net/ipv4/tcp \_tw \_reuse
+ net.ipv4.tcp _tw _reuse → /proc/sys/net/ipv4/tcp _tw _reuse
 
 
  Set a parameter (temporary — lost on reboot)
 
-sysctl -w net.ipv4.tcp \_tw \_reuse=1
+sysctl -w net.ipv4.tcp _tw _reuse=1
 
  OR
 
-echo 1 > /proc/sys/net/ipv4/tcp \_tw \_reuse
+echo 1 > /proc/sys/net/ipv4/tcp _tw _reuse
 
 
 
@@ -7390,7 +7390,7 @@ net.core.somaxconn = 65535
 
 
 
-net.core.netdev \_max \_backlog = 65535
+net.core.netdev _max _backlog = 65535
 
  Maximum packets queued on the INPUT side when interface receives
 
@@ -7404,9 +7404,9 @@ net.core.netdev \_max \_backlog = 65535
 
 
 
-net.ipv4.tcp \_max \_syn \_backlog = 65535
+net.ipv4.tcp _max _syn _backlog = 65535
 
- Maximum number of half-open connections (SYN \_RECV state)
+ Maximum number of half-open connections (SYN _RECV state)
 
  DEFAULT: 128 or 1024 depending on distro
 
@@ -7418,15 +7418,15 @@ net.ipv4.tcp \_max \_syn \_backlog = 65535
 
 
 
-net.ipv4.tcp \_max \_tw \_buckets = 2000000
+net.ipv4.tcp _max _tw _buckets = 2000000
 
- Maximum number of TIME \_WAIT sockets
+ Maximum number of TIME _WAIT sockets
 
  DEFAULT: varies (often 32768)
 
- We covered TIME \_WAIT exhaustion in Lesson 4
+ We covered TIME _WAIT exhaustion in Lesson 4
 
- If you hit this limit, kernel DESTROYS TIME \_WAIT sockets prematurely
+ If you hit this limit, kernel DESTROYS TIME _WAIT sockets prematurely
 
  That's actually dangerous — can cause connection confusion
 
@@ -7438,15 +7438,15 @@ net.ipv4.tcp \_max \_tw \_buckets = 2000000
 
 
 
-\#### TIME\_WAIT and Connection Reuse
+\#### TIME_WAIT and Connection Reuse
 
 
 
 ```bash
 
-net.ipv4.tcp \_tw \_reuse = 1
+net.ipv4.tcp _tw _reuse = 1
 
- Allow reusing TIME \_WAIT sockets for new OUTBOUND connections
+ Allow reusing TIME _WAIT sockets for new OUTBOUND connections
 
  DEFAULT: 0 (disabled)
 
@@ -7458,7 +7458,7 @@ net.ipv4.tcp \_tw \_reuse = 1
 
 
 
- NOTE: tcp \_tw \_recycle was REMOVED from Linux 4.12+
+ NOTE: tcp _tw _recycle was REMOVED from Linux 4.12+
 
  It was dangerous behind NAT (broke connections from same source IP)
 
@@ -7474,7 +7474,7 @@ net.ipv4.tcp \_tw \_reuse = 1
 
 ```bash
 
-net.ipv4.tcp \_keepalive \_time = 300
+net.ipv4.tcp _keepalive _time = 300
 
  How many SECONDS before sending the first keepalive probe
 
@@ -7488,7 +7488,7 @@ net.ipv4.tcp \_keepalive \_time = 300
 
 
 
-net.ipv4.tcp \_keepalive \_intvl = 30
+net.ipv4.tcp _keepalive _intvl = 30
 
  Seconds between subsequent keepalive probes
 
@@ -7496,7 +7496,7 @@ net.ipv4.tcp \_keepalive \_intvl = 30
 
 
 
-net.ipv4.tcp \_keepalive \_probes = 5
+net.ipv4.tcp _keepalive _probes = 5
 
  Number of failed probes before declaring connection dead
 
@@ -7514,7 +7514,7 @@ net.ipv4.tcp \_keepalive \_probes = 5
 
  ALB default: 60 seconds
 
- If your keepalive \_time (7200s) > ALB idle timeout (60s):
+ If your keepalive _time (7200s) > ALB idle timeout (60s):
 
    ALB silently drops the connection
 
@@ -7524,7 +7524,7 @@ net.ipv4.tcp \_keepalive \_probes = 5
 
    This causes intermittent "connection reset" errors
 
- FIX: Set keepalive \_time LOWER than your load balancer's idle timeout
+ FIX: Set keepalive _time LOWER than your load balancer's idle timeout
 
 ```
 
@@ -7540,7 +7540,7 @@ net.ipv4.tcp \_keepalive \_probes = 5
 
 
 
-net.core.rmem \_max = 16777216
+net.core.rmem _max = 16777216
 
  Maximum receive buffer size (16MB)
 
@@ -7548,7 +7548,7 @@ net.core.rmem \_max = 16777216
 
 
 
-net.core.wmem \_max = 16777216
+net.core.wmem _max = 16777216
 
  Maximum send buffer size (16MB)
 
@@ -7556,15 +7556,15 @@ net.core.wmem \_max = 16777216
 
 
 
-net.core.rmem \_default = 1048576
+net.core.rmem _default = 1048576
 
-net.core.wmem \_default = 1048576
+net.core.wmem _default = 1048576
 
  Default buffer sizes (1MB)
 
 
 
-net.ipv4.tcp \_rmem = 4096 1048576 16777216
+net.ipv4.tcp _rmem = 4096 1048576 16777216
 
  TCP receive buffer: min  default  max
 
@@ -7574,7 +7574,7 @@ net.ipv4.tcp \_rmem = 4096 1048576 16777216
 
 
 
-net.ipv4.tcp \_wmem = 4096 1048576 16777216
+net.ipv4.tcp _wmem = 4096 1048576 16777216
 
  TCP send buffer: min  default  max
 
@@ -7582,7 +7582,7 @@ net.ipv4.tcp \_wmem = 4096 1048576 16777216
 
 
 
-net.ipv4.tcp \_mem = 786432 1048576 1572864
+net.ipv4.tcp _mem = 786432 1048576 1572864
 
  Total TCP memory in PAGES (not bytes): low  pressure  high
 
@@ -7622,7 +7622,7 @@ net.ipv4.tcp \_mem = 786432 1048576 1572864
 
 ```bash
 
-net.ipv4.ip \_local \_port \_range = 1024 65535
+net.ipv4.ip _local _port _range = 1024 65535
 
  Range of ports used for outbound connections
 
@@ -7632,7 +7632,7 @@ net.ipv4.ip \_local \_port \_range = 1024 65535
 
  Critical for reverse proxies and microservices making many outbound calls
 
- We covered this in TIME \_WAIT lesson — doubling ports = doubling headroom
+ We covered this in TIME _WAIT lesson — doubling ports = doubling headroom
 
 ```
 
@@ -7644,7 +7644,7 @@ net.ipv4.ip \_local \_port \_range = 1024 65535
 
 ```bash
 
-net.ipv4.tcp \_window \_scaling = 1
+net.ipv4.tcp _window _scaling = 1
 
  Enable TCP window scaling (RFC 1323)
 
@@ -7656,13 +7656,13 @@ net.ipv4.tcp \_window \_scaling = 1
 
 
 
-net.ipv4.tcp \_timestamps = 1
+net.ipv4.tcp _timestamps = 1
 
  Enable TCP timestamps (RFC 1323)
 
  DEFAULT: 1
 
- Required for tcp \_tw \_reuse to work safely
+ Required for tcp _tw _reuse to work safely
 
  Also helps with RTT measurement and PAWS protection
 
@@ -7670,7 +7670,7 @@ net.ipv4.tcp \_timestamps = 1
 
 
 
-net.ipv4.tcp \_sack = 1
+net.ipv4.tcp _sack = 1
 
  Selective Acknowledgment
 
@@ -7688,7 +7688,7 @@ net.ipv4.tcp \_sack = 1
 
 
 
-net.ipv4.tcp \_fastopen = 3
+net.ipv4.tcp _fastopen = 3
 
  TCP Fast Open — send data in the SYN packet
 
@@ -7704,7 +7704,7 @@ net.ipv4.tcp \_fastopen = 3
 
 
 
-net.ipv4.tcp \_slow \_start \_after \_idle = 0
+net.ipv4.tcp _slow _start _after _idle = 0
 
  DEFAULT: 1
 
@@ -7724,7 +7724,7 @@ net.ipv4.tcp \_slow \_start \_after \_idle = 0
 
 
 
-net.ipv4.tcp \_mtu \_probing = 1
+net.ipv4.tcp _mtu _probing = 1
 
  Enable Path MTU discovery
 
@@ -7748,7 +7748,7 @@ net.ipv4.tcp \_mtu \_probing = 1
 
 ```bash
 
-net.ipv4.tcp \_syncookies = 1
+net.ipv4.tcp _syncookies = 1
 
  Enable SYN cookies
 
@@ -7764,7 +7764,7 @@ net.ipv4.tcp \_syncookies = 1
 
 
 
-net.ipv4.tcp \_synack \_retries = 2
+net.ipv4.tcp _synack _retries = 2
 
  Number of times to retry SYN-ACK
 
@@ -7778,7 +7778,7 @@ net.ipv4.tcp \_synack \_retries = 2
 
 
 
-net.ipv4.tcp \_syn \_retries = 3
+net.ipv4.tcp _syn _retries = 3
 
  Number of times to retry SYN for outbound connections
 
@@ -7790,7 +7790,7 @@ net.ipv4.tcp \_syn \_retries = 3
 
 
 
-net.ipv4.tcp \_abort \_on  \_overflow = 0
+net.ipv4.tcp _abort _on  _overflow = 0
 
  DEFAULT: 0
 
@@ -7852,7 +7852,7 @@ vm.swappiness = 10
 
 
 
-vm.overcommit \_memory = 0
+vm.overcommit _memory = 0
 
  Memory overcommit policy
 
@@ -7884,11 +7884,11 @@ vm.overcommit \_memory = 0
 
 
 
-vm.overcommit \_ratio = 80
+vm.overcommit _ratio = 80
 
- Only used when overcommit \_memory = 2
+ Only used when overcommit _memory = 2
 
- System allows: swap + (physical \_RAM × ratio/100) total memory
+ System allows: swap + (physical _RAM × ratio/100) total memory
 
  With 32GB RAM, 8GB swap, ratio=80:
 
@@ -7896,7 +7896,7 @@ vm.overcommit \_ratio = 80
 
 
 
-vm.dirty \_ratio = 15
+vm.dirty _ratio = 15
 
  Percentage of total memory that can be dirty (waiting to be written to disk)
 
@@ -7914,7 +7914,7 @@ vm.dirty \_ratio = 15
 
 
 
-vm.dirty \_background \_ratio = 5
+vm.dirty _background _ratio = 5
 
 
  Percentage of total memory that can be dirty before the kernel
@@ -7925,9 +7925,9 @@ vm.dirty \_background \_ratio = 5
 
  Background flushing doesn't block the application
 
- Set lower than dirty \_ratio to start background flush early
+ Set lower than dirty _ratio to start background flush early
 
- Prevents hitting dirty \_ratio (which blocks the app)
+ Prevents hitting dirty _ratio (which blocks the app)
 
 
 
@@ -7935,9 +7935,9 @@ vm.dirty \_background \_ratio = 5
 
  Lower both ratios to reduce flush storms:
 
-vm.dirty \_ratio = 10
+vm.dirty _ratio = 10
 
-vm.dirty \_backgroun \_ratio = 3
+vm.dirty _backgroun _ratio = 3
 
  This ensures smaller, more frequent flushes instead of
 
@@ -7945,7 +7945,7 @@ vm.dirty \_backgroun \_ratio = 3
 
 
 
-vm.min \_free \_kbytes = 524288
+vm.min _free _kbytes = 524288
 
  Minimum free memory the kernel maintains (in KB)
 
@@ -7965,13 +7965,13 @@ vm.min \_free \_kbytes = 524288
 
 
 
-vm.panic \_on \_oom = 0
+vm.panic _on _oom = 0
 
  DEFAULT: 0
 
  0 = OOM killer picks a process to kill
 
- 1 = kernel panics (reboots if panic \_on \_oom \_timeout is set)
+ 1 = kernel panics (reboots if panic _on _oom _timeout is set)
 
  Use 1 for Kubernetes nodes where you'd rather reboot than
 
@@ -7983,7 +7983,7 @@ vm.panic \_on \_oom = 0
 
 
 
-vm.vfs \_cache \_pressure = 50
+vm.vfs _cache _pressure = 50
 
  How aggressively kernel reclaims inode/dentry cache
 
@@ -8027,7 +8027,7 @@ fs.file-max = 2097152
 
 
 
-fs.inotify.max \_user \_watches = 524288
+fs.inotify.max _user _watches = 524288
 
  Maximum inotify file watches per user
 
@@ -8035,7 +8035,7 @@ fs.inotify.max \_user \_watches = 524288
 
  inotify = kernel facility to watch files/directories for changes
 
- Used by: file sync tools, IDEs, webpack, log collectors, Prometheus node \_exporter
+ Used by: file sync tools, IDEs, webpack, log collectors, Prometheus node _exporter
 
  8192 is laughably low for any development or monitoring server
 
@@ -8047,7 +8047,7 @@ fs.inotify.max \_user \_watches = 524288
 
 
 
-fs.inotify.max \_user \_instances = 8192
+fs.inotify.max _user _instances = 8192
 
  Maximum inotify instances per user
 
@@ -8105,7 +8105,7 @@ net.bridge.bridge-nf-call-ip6tables = 1
 
 
 
-net.ipv4.ip \_forward = 1
+net.ipv4.ip _forward = 1
 
  Enable IP forwarding (routing)
 
@@ -8135,7 +8135,7 @@ net.ipv6.conf.all.forwarding = 1
 
 
 
-net.netfilter.nf \_conntrack \_max = 1048576
+net.netfilter.nf _conntrack _max = 1048576
 
  Maximum entries in the connection tracking table
 
@@ -8145,15 +8145,15 @@ net.netfilter.nf \_conntrack \_max = 1048576
 
  On busy K8s nodes with many services, this fills up FAST
 
- Symptom: "nf \_conntrack: table full, dropping packet"
+ Symptom: "nf _conntrack: table full, dropping packet"
 
  This causes RANDOM packet drops — one of the hardest issues to debug
 
- Monitor: cat /proc/sys/net/netfilter/nf \_conntrack \_count
+ Monitor: cat /proc/sys/net/netfilter/nf _conntrack _count
 
 
 
-net.netfilter.nf \_conntrack \_tcp \_timeout \_established = 86400
+net.netfilter.nf _conntrack _tcp _timeout _established = 86400
 
  How long to keep conntrack entries for established connections
 
@@ -8165,10 +8165,10 @@ net.netfilter.nf \_conntrack \_tcp \_timeout \_established = 86400
 
 
 
-net.netfilter.nf \_conntrack \_tcp \_timeout \_time \_wait = 30
+net.netfilter.nf _conntrack _tcp _timeout _time _wait = 30
 
 
- Conntrack timeout for TIME \_WAIT connections
+ Conntrack timeout for TIME _WAIT connections
 
  DEFAULT: 120
 
@@ -8216,21 +8216,21 @@ net.netfilter.nf \_conntrack \_tcp \_timeout \_time \_wait = 30
 
 dmesg -T | grep conntrack
 
-  \[Jan 15 14:23:45] nf \_conntrack: table full, dropping packet
+  \[Jan 15 14:23:45] nf _conntrack: table full, dropping packet
 
-  \[Jan 15 14:23:45] nf \_conntrack: table full, dropping packet
+  \[Jan 15 14:23:45] nf _conntrack: table full, dropping packet
 
-  \[Jan 15 14:23:46] nf \_conntrack: table full, dropping packet
+  \[Jan 15 14:23:46] nf _conntrack: table full, dropping packet
 
   \\\\#
 
  Check current usage:
 
-cat /proc/sys/net/netfilter/nf \_conntrack \_count
+cat /proc/sys/net/netfilter/nf _conntrack _count
 
  65432
 
-cat /proc/sys/net/netfilter/nf \_conntrack \_max
+cat /proc/sys/net/netfilter/nf _conntrack _max
 
  65536
 
@@ -8240,13 +8240,13 @@ cat /proc/sys/net/netfilter/nf \_conntrack \_max
 
  Immediate fix:
 
-sysctl -w net.netfilter.nf \_conntrack \_max=1048576
+sysctl -w net.netfilter.nf _conntrack _max=1048576
 
   \\\\#
 
  Permanent fix:
 
-echo "net.netfilter.nf \_conntrack \_max = 1048576" >> /etc/sysctl.d/40-kubernetes.conf
+echo "net.netfilter.nf _conntrack _max = 1048576" >> /etc/sysctl.d/40-kubernetes.conf
 
 sysctl --system
 
@@ -8254,7 +8254,7 @@ sysctl --system
 
  Monitor in Prometheus:
 
- node \_nf \_conntrack \_entries / node \_nf \_conntrack \_entries \_limit
+ node _nf _conntrack _entries / node _nf _conntrack _entries _limit
 
  Alert when > 75%
 
@@ -8276,7 +8276,7 @@ sysctl --system
 
 
 
-net.ipv4.conf.all.rp \_filter = 1
+net.ipv4.conf.all.rp _filter = 1
 
  Reverse Path Filtering — anti-spoofing
 
@@ -8290,15 +8290,15 @@ net.ipv4.conf.all.rp \_filter = 1
 
 
 
-net.ipv4.conf.default.rp \_filter = 1
+net.ipv4.conf.default.rp _filter = 1
 
  Same for new interfaces created after boot
 
 
 
-net.ipv4.conf.all.accept \_redirects = 0
+net.ipv4.conf.all.accept _redirects = 0
 
-net.ipv6.conf.all.accept \_redirects = 0
+net.ipv6.conf.all.accept _redirects = 0
 
  Don't accept ICMP redirects
 
@@ -8308,19 +8308,19 @@ net.ipv6.conf.all.accept \_redirects = 0
 
 
 
-net.ipv4.conf.all.send \_redirects = 0
+net.ipv4.conf.all.send _redirects = 0
 
  Don't send ICMP redirects
 
  Only routers should send redirects
 
- Your server is not a router (even if ip \_forward is enabled for K8s)
+ Your server is not a router (even if ip _forward is enabled for K8s)
 
 
 
-net.ipv4.conf.all.accept \_source \_route = 0
+net.ipv4.conf.all.accept _source _route = 0
 
-net.ipv6.conf.all.accept \_source \_route = 0
+net.ipv6.conf.all.accept _source _route = 0
 
  Reject source-routed packets
 
@@ -8328,7 +8328,7 @@ net.ipv6.conf.all.accept \_source \_route = 0
 
 
 
-net.ipv4.icmp \_echo \_ignore \_broadcasts = 1
+net.ipv4.icmp _echo _ignore _broadcasts = 1
 
  Ignore broadcast ICMP echo (ping)
 
@@ -8336,7 +8336,7 @@ net.ipv4.icmp \_echo \_ignore \_broadcasts = 1
 
 
 
-net.ipv4.icmp \_ignore \_bogus \_error \_responses = 1
+net.ipv4.icmp _ignore _bogus _error _responses = 1
 
  Ignore bogus ICMP error messages
 
@@ -8344,7 +8344,7 @@ net.ipv4.icmp \_ignore \_bogus \_error \_responses = 1
 
 
 
-net.ipv4.conf.all.log \_martians = 1
+net.ipv4.conf.all.log _martians = 1
 
  Log packets with impossible source addresses
 
@@ -8358,7 +8358,7 @@ net.ipv4.conf.all.log \_martians = 1
 
 
 
-kernel.randomize \_va \_space = 2
+kernel.randomize _va _space = 2
 
  Address Space Layout Randomization (ASLR)
 
@@ -8374,7 +8374,7 @@ kernel.randomize \_va \_space = 2
 
 
 
-kernel.dmesg \_restrict = 1
+kernel.dmesg _restrict = 1
 
  Restrict dmesg to root only
 
@@ -8386,7 +8386,7 @@ kernel.dmesg \_restrict = 1
 
 
 
-kernel.kptr \_restrict = 2
+kernel.kptr _restrict = 2
 
  Hide kernel pointers in /proc/kallsyms
 
@@ -8400,7 +8400,7 @@ kernel.kptr \_restrict = 2
 
 
 
-kernel.yama.ptrace \_scope = 2
+kernel.yama.ptrace _scope = 2
 
  Restrict ptrace (used by debuggers, strace)
 
@@ -8410,7 +8410,7 @@ kernel.yama.ptrace \_scope = 2
 
  1 = only parent can ptrace child
 
- 2 = only root with CAP \_SYS \_PTRACE can ptrace
+ 2 = only root with CAP _SYS _PTRACE can ptrace
 
  3 = no process can ptrace (maximum security)
 
@@ -8454,33 +8454,33 @@ kernel.sysrq = 0
 
 net.core.somaxconn = 65535
 
-net.core.netdev \_max \_backlog = 65535
+net.core.netdev _max _backlog = 65535
 
-net.ipv4.tcp \_max \_syn \_backlog = 65535
+net.ipv4.tcp _max _syn _backlog = 65535
 
-net.ipv4.tcp \_tw \_reuse = 1
+net.ipv4.tcp _tw _reuse = 1
 
-net.ipv4.ip \_local \_port \_range = 1024 65535
+net.ipv4.ip _local _port _range = 1024 65535
 
-net.ipv4.tcp \_keepalive \_time = 60
+net.ipv4.tcp _keepalive _time = 60
 
-net.ipv4.tcp \_keepalive \_intvl = 10
+net.ipv4.tcp _keepalive _intvl = 10
 
-net.ipv4.tcp \_keepalive \_probes = 6
+net.ipv4.tcp _keepalive _probes = 6
 
-net.ipv4.tcp \_slow \_start \_after \_idle = 0
+net.ipv4.tcp _slow _start _after _idle = 0
 
-net.ipv4.tcp \_fastopen = 3
+net.ipv4.tcp _fastopen = 3
 
-net.ipv4.tcp \_syncookies = 1
+net.ipv4.tcp _syncookies = 1
 
-net.core.rmem \_max = 16777216
+net.core.rmem _max = 16777216
 
-net.core.wmem \_max = 16777216
+net.core.wmem _max = 16777216
 
-net.ipv4.tcp \_rmem = 4096 1048576 16777216
+net.ipv4.tcp _rmem = 4096 1048576 16777216
 
-net.ipv4.tcp \_wmem = 4096 1048576 16777216
+net.ipv4.tcp _wmem = 4096 1048576 16777216
 
 fs.file-max = 2097152
 
@@ -8498,29 +8498,29 @@ fs.file-max = 2097152
 
 vm.swappiness = 1
 
-vm.dirty \_ratio = 10
+vm.dirty _ratio = 10
 
-vm.dirty \_background \_ratio = 3
+vm.dirty _background _ratio = 3
 
-vm.overcommit \_memory = 2
+vm.overcommit _memory = 2
 
-vm.overcommit \_ratio = 90
+vm.overcommit _ratio = 90
 
 net.core.somaxconn = 65535
 
-net.ipv4.tcp \_keepalive \_time = 300
+net.ipv4.tcp _keepalive _time = 300
 
-net.ipv4.tcp \_keepalive \_intvl = 30
+net.ipv4.tcp _keepalive _intvl = 30
 
-net.ipv4.tcp \_keepalive \_probes = 5
+net.ipv4.tcp _keepalive _probes = 5
 
 fs.file-max = 2097152
 
 fs.aio-max-nr = 1048576
 
- Also: set huge pages for large shared \_buffers
+ Also: set huge pages for large shared _buffers
 
-vm.nr \_hugepages = 1024    # 1024 × 2MB = 2GB huge pages
+vm.nr _hugepages = 1024    # 1024 × 2MB = 2GB huge pages
 
  Huge pages = locked in RAM, never swapped, lower TLB pressure
 
@@ -8540,11 +8540,11 @@ vm.nr \_hugepages = 1024    # 1024 × 2MB = 2GB huge pages
 
 vm.swappiness = 0              # NEVER swap Redis memory
 
-vm.overcommit \_memory = 1       # REQUIRED by Redis for fork/COW
+vm.overcommit _memory = 1       # REQUIRED by Redis for fork/COW
 
 net.core.somaxconn = 65535     # Redis accept queue
 
-net.ipv4.tcp \_max \_syn \_backlog = 65535
+net.ipv4.tcp _max _syn _backlog = 65535
 
  Also in Redis config:
 
@@ -8568,29 +8568,29 @@ net.bridge.bridge-nf-call-iptables = 1
 
 net.bridge.bridge-nf-call-ip6tables = 1
 
-net.ipv4.ip \_forward = 1
+net.ipv4.ip _forward = 1
 
 net.ipv4.conf.all.forwarding = 1
 
 net.ipv6.conf.all.forwarding = 1
 
-net.ipv4.tcp \_tw \_reuse = 1
+net.ipv4.tcp _tw _reuse = 1
 
-net.ipv4.ip \_local \_port \_range = 1024 65535
+net.ipv4.ip _local _port _range = 1024 65535
 
 net.core.somaxconn = 65535
 
-net.ipv4.tcp \_keepalive \_time = 60
+net.ipv4.tcp _keepalive _time = 60
 
 
 
  Conntrack
 
-net.netfilter.nf \_conntrack \_max = 1048576
+net.netfilter.nf _conntrack _max = 1048576
 
-net.netfilter.nf \_conntrack \_tcp \_timeout \_established = 86400
+net.netfilter.nf _conntrack _tcp _timeout _established = 86400
 
-net.netfilter.nf \_conntrack \_tcp \_timeout \_time \_wait = 30
+net.netfilter.nf _conntrack _tcp _timeout _time _wait = 30
 
 
 
@@ -8598,9 +8598,9 @@ net.netfilter.nf \_conntrack \_tcp \_timeout \_time \_wait = 30
 
 vm.swappiness = 10
 
-vm.panic \_on \_oom = 0
+vm.panic _on _oom = 0
 
-vm.min \_free \_kbytes = 524288
+vm.min _free _kbytes = 524288
 
 
 
@@ -8608,19 +8608,19 @@ vm.min \_free \_kbytes = 524288
 
 fs.file-max = 2097152
 
-fs.inotify.max \_user \_watches = 524288
+fs.inotify.max _user _watches = 524288
 
-fs.inotify.max \_user \_instances = 8192
+fs.inotify.max _user _instances = 8192
 
 
 
  Security
 
-net.ipv4.conf.all.rp \_filter = 1
+net.ipv4.conf.all.rp _filter = 1
 
-net.ipv4.conf.all.accept \_redirects = 0
+net.ipv4.conf.all.accept _redirects = 0
 
-net.ipv4.conf.all.send \_redirects = 0
+net.ipv4.conf.all.send _redirects = 0
 
 kernel.panic = 10    # Auto-reboot 10 seconds after kernel panic
 
@@ -8662,7 +8662,7 @@ spec:
 
      value: "65535"
 
-   - name: net.ipv4.tcp \_keepalive \_time
+   - name: net.ipv4.tcp _keepalive _time
 
      value: "60"
 
@@ -8686,9 +8686,9 @@ spec:
 
  SAFE — namespaced, doesn't affect other pods
 
-   net.ipv4.ping \_group \_range
+   net.ipv4.ping _group _range
 
-   net.ipv4.ip \_unprivileged \_port \_start
+   net.ipv4.ip _unprivileged _port _start
 
   \\\\#
 
@@ -8696,7 +8696,7 @@ spec:
 
    net.core.somaxconn
 
-   net.ipv4.tcp \_keepalive \_time
+   net.ipv4.tcp _keepalive _time
 
    (most useful ones are "unsafe")
 
@@ -8704,7 +8704,7 @@ spec:
 
  To allow unsafe sysctls, kubelet must be configured:
 
- --allowed-unsafe-sysctls="net.core.somaxconn,net.ipv4.tcp \_keepalive \_time"
+ --allowed-unsafe-sysctls="net.core.somaxconn,net.ipv4.tcp _keepalive _time"
 
 
 
@@ -8718,9 +8718,9 @@ allowedUnsafeSysctls:
 
  - "net.core.somaxconn"
 
- - "net.ipv4.tcp \_keepalive \_time"
+ - "net.ipv4.tcp _keepalive _time"
 
- - "net.ipv4.tcp \_tw \_reuse"
+ - "net.ipv4.tcp _tw _reuse"
 
 
 
@@ -8754,7 +8754,7 @@ allowedUnsafeSysctls:
 
    value: "{{ item.value }}"
 
-   sysctl \_file: /etc/sysctl.d/10-production.conf
+   sysctl _file: /etc/sysctl.d/10-production.conf
 
    reload: yes
 
@@ -8764,9 +8764,9 @@ allowedUnsafeSysctls:
 
    - { name: 'net.core.somaxconn', value: '65535' }
 
-   - { name: 'net.ipv4.tcp \_tw \_reuse', value: '1' }
+   - { name: 'net.ipv4.tcp _tw _reuse', value: '1' }
 
-   - { name: 'net.ipv4.ip \_local \_port \_range', value: '1024 65535' }
+   - { name: 'net.ipv4.ip _local _port _range', value: '1024 65535' }
 
    - { name: 'vm.swappiness', value: '10' }
 
@@ -8784,11 +8784,11 @@ allowedUnsafeSysctls:
 
 ```hcl
 
- In the EKS node group launch template user \_data:
+ In the EKS node group launch template user _data:
 
-resource "aws \_launch \_template" "eks \_nodes" {
+resource "aws _launch _template" "eks _nodes" {
 
- user \_data = base64encode(<<-USERDATA
+ user _data = base64encode(<<-USERDATA
 
    #!/bin/bash
 
@@ -8796,15 +8796,15 @@ resource "aws \_launch \_template" "eks \_nodes" {
 
    net.bridge.bridge-nf-call-iptables = 1
 
-   net.ipv4.ip \_forward = 1
+   net.ipv4.ip _forward = 1
 
-   net.netfilter.nf \_conntrack \_max = 1048576
+   net.netfilter.nf _conntrack _max = 1048576
 
    vm.swappiness = 10
 
    fs.file-max = 2097152
 
-   fs.inotify.max \_user \_watches = 524288
+   fs.inotify.max _user _watches = 524288
 
    EOF
 
@@ -8918,11 +8918,11 @@ sysctl -w net.core.somaxconn=65535
 
  Investigation:
 
-cat /proc/sys/vm/dirty \_ratio
+cat /proc/sys/vm/dirty _ratio
 
  20
 
-cat /proc/sys/vm/dirty \_background \_ratio
+cat /proc/sys/vm/dirty _background _ratio
 
  10
 
@@ -8946,9 +8946,9 @@ cat /proc/sys/vm/dirty \_background \_ratio
 
  Fix:
 
-sysctl -w vm.dirty \_ratio=10
+sysctl -w vm.dirty _ratio=10
 
-sysctl -w vm.dirty \_background \_ratio=3
+sysctl -w vm.dirty _background _ratio=3
 
  Now: background flush starts at 3% (1.9GB) — much smaller flushes
 
@@ -8984,17 +8984,17 @@ sysctl -w vm.dirty \_background \_ratio=3
 
 dmesg -T | tail -50
 
- \[Jan 15 03:42:11] nf \_conntrack: table full, dropping packet
+ \[Jan 15 03:42:11] nf _conntrack: table full, dropping packet
 
- \[Jan 15 03:42:11] nf \_conntrack: table full, dropping packet
+ \[Jan 15 03:42:11] nf _conntrack: table full, dropping packet
 
 
 
-cat /proc/sys/net/netfilter/nf \_conntrack \_count
+cat /proc/sys/net/netfilter/nf _conntrack _count
 
  131072
 
-cat /proc/sys/net/netfilter/nf \_conntrack \_max
+cat /proc/sys/net/netfilter/nf _conntrack _max
 
  131072
 
@@ -9022,9 +9022,9 @@ cat /proc/sys/net/netfilter/nf \_conntrack \_max
 
  Immediate fix:
 
-sysctl -w net.netfilter.nf \_conntrack \_max=1048576
+sysctl -w net.netfilter.nf _conntrack _max=1048576
 
-sysctl -w net.netfilter.nf \_conntrack \_tcp \_timeout \_established=86400
+sysctl -w net.netfilter.nf _conntrack _tcp _timeout _established=86400
 
  Reduce timeout from 5 days to 1 day → stale entries expire faster
 
@@ -9060,7 +9060,7 @@ sysctl -w net.netfilter.nf \_conntrack \_tcp \_timeout \_established=86400
 
  Kernel sees: "process wants 20GB, I only have 8GB free"
 
- With overcommit \_memory=0: kernel denies the fork
+ With overcommit _memory=0: kernel denies the fork
 
  Even though COW means it would only use a fraction of that
 
@@ -9068,7 +9068,7 @@ sysctl -w net.netfilter.nf \_conntrack \_tcp \_timeout \_established=86400
 
  Fix:
 
-sysctl -w vm.overcommit \_memory=1
+sysctl -w vm.overcommit _memory=1
 
  Now kernel allows the fork
 
@@ -9100,15 +9100,15 @@ sysctl -w vm.overcommit \_memory=1
 
 ```bash
 
- Prometheus node \_exporter exposes many of these automatically:
+ Prometheus node _exporter exposes many of these automatically:
 
 
 
  Conntrack:
 
- node \_nf \_conntrack \_entries        → current count
+ node _nf _conntrack _entries        → current count
 
- node \_nf \_conntrack \_entries \_limit  → max limit
+ node _nf _conntrack _entries _limit  → max limit
 
  Alert: entries/limit > 0.75
 
@@ -9116,45 +9116,45 @@ sysctl -w vm.overcommit \_memory=1
 
  Network:
 
- node \_sockstat \_TCP \_tw             → TIME \_WAIT socket count
+ node _sockstat _TCP _tw             → TIME _WAIT socket count
 
- node \_netstat \_Tcp \_ListenOverflows → listen queue overflows
+ node _netstat _Tcp _ListenOverflows → listen queue overflows
 
- node \_netstat \_Tcp \_ListenDrops     → listen queue drops
+ node _netstat _Tcp _ListenDrops     → listen queue drops
 
 
 
  Memory:
 
- node \_memory \_Dirty \_bytes          → current dirty pages
+ node _memory _Dirty _bytes          → current dirty pages
 
- node \_vmstat \_pgmajfault           → major page faults (reading from disk)
+ node _vmstat _pgmajfault           → major page faults (reading from disk)
 
 
 
  File descriptors:
 
- node \_filefd \_allocated            → current system-wide FDs
+ node _filefd _allocated            → current system-wide FDs
 
- node \_filefd \_maximum              → system-wide FD limit
+ node _filefd _maximum              → system-wide FD limit
 
  Alert: allocated/maximum > 0.75
 
 
 
- Custom check script (for parameters not in node \_exporter):
+ Custom check script (for parameters not in node _exporter):
 
   \\\\#!/bin/bash
 
-echo "conntrack \_usage $(cat /proc/sys/net/netfilter/nf \_conntrack \_count)"
+echo "conntrack _usage $(cat /proc/sys/net/netfilter/nf _conntrack _count)"
 
-echo "conntrack \_max $(cat /proc/sys/net/netfilter/nf \_conntrack \_max)"
+echo "conntrack _max $(cat /proc/sys/net/netfilter/nf _conntrack _max)"
 
 echo "somaxconn $(cat /proc/sys/net/core/somaxconn)"
 
-echo "file \_max $(cat /proc/sys/fs/file-max)"
+echo "file _max $(cat /proc/sys/fs/file-max)"
 
-echo "tcp \_tw \_reuse $(cat /proc/sys/net/ipv4/tcp \_tw \_reuse)"
+echo "tcp _tw _reuse $(cat /proc/sys/net/ipv4/tcp _tw _reuse)"
 
 ```
 
@@ -9206,7 +9206,7 @@ diff <(sort /etc/sysctl.d/40-kubernetes.conf | grep -v '^#' | grep -v '^$')     
 
  register: result
 
- failed \_when: "item.value not in result.stdout"
+ failed _when: "item.value not in result.stdout"
 
  loop:
 
@@ -9238,7 +9238,7 @@ diff <(sort /etc/sysctl.d/40-kubernetes.conf | grep -v '^#' | grep -v '^$')     
 
 
 
- MISTAKE 2: Setting net.ipv4.tcp \_tw \_recycle=1
+ MISTAKE 2: Setting net.ipv4.tcp _tw _recycle=1
 
  REMOVED from kernel 4.12+ because it breaks connections behind NAT
 
@@ -9256,7 +9256,7 @@ diff <(sort /etc/sysctl.d/40-kubernetes.conf | grep -v '^#' | grep -v '^$')     
 
 
 
- MISTAKE 4: Enabling ip \_forward without firewall rules
+ MISTAKE 4: Enabling ip _forward without firewall rules
 
  You just turned your server into a router
 
@@ -9280,7 +9280,7 @@ diff <(sort /etc/sysctl.d/40-kubernetes.conf | grep -v '^#' | grep -v '^$')     
 
  Every parameter is workload-specific
 
- Redis needs overcommit \_memory=1, but a general server shouldn't
+ Redis needs overcommit _memory=1, but a general server shouldn't
 
  Database needs swappiness=1, but a CI runner might want 60
 
@@ -9310,7 +9310,7 @@ One addition I should make:
 
  Check status:
 
-cat /sys/kernel/mm/transparent \_hugepage/enabled
+cat /sys/kernel/mm/transparent _hugepage/enabled
 
       \[always] madvise never
 
@@ -9318,9 +9318,9 @@ cat /sys/kernel/mm/transparent \_hugepage/enabled
 
  Disable for database servers (Redis, MongoDB, PostgreSQL):
 
-echo never > /sys/kernel/mm/transparent \_hugepage/enabled
+echo never > /sys/kernel/mm/transparent _hugepage/enabled
 
-echo never > /sys/kernel/mm/transparent \_hugepage/defrag
+echo never > /sys/kernel/mm/transparent _hugepage/defrag
 
 
 
@@ -9334,7 +9334,7 @@ echo never > /sys/kernel/mm/transparent \_hugepage/defrag
 
 
 
-\# 📋 LESSON 8 QUICK REFERENCE — Kernel Tuning (sysctl)
+📋 LESSON 8 QUICK REFERENCE — Kernel Tuning (sysctl)
 
 
 
@@ -9356,25 +9356,25 @@ NETWORK TUNING:
 
  net.core.somaxconn = 65535                    → Accept queue size
 
- net.core.netdev \_max \_backlog = 65535          → NIC input queue
+ net.core.netdev _max _backlog = 65535          → NIC input queue
 
- net.ipv4.tcp \_max \_syn \_backlog = 65535         → Half-open connection queue
+ net.ipv4.tcp _max _syn _backlog = 65535         → Half-open connection queue
 
- net.ipv4.tcp \_tw \_reuse = 1                    → Reuse TIME \_WAIT sockets
+ net.ipv4.tcp _tw _reuse = 1                    → Reuse TIME _WAIT sockets
 
- net.ipv4.ip \_local \_port \_range = 1024 65535    → Ephemeral port range
+ net.ipv4.ip _local _port _range = 1024 65535    → Ephemeral port range
 
- net.ipv4.tcp \_keepalive \_time = 300            → First keepalive probe
+ net.ipv4.tcp _keepalive _time = 300            → First keepalive probe
 
- net.ipv4.tcp \_slow \_start \_after \_idle = 0       → Maintain window after idle
+ net.ipv4.tcp _slow _start _after _idle = 0       → Maintain window after idle
 
- net.ipv4.tcp \_fastopen = 3                    → TCP Fast Open (client+server)
+ net.ipv4.tcp _fastopen = 3                    → TCP Fast Open (client+server)
 
- net.ipv4.tcp \_syncookies = 1                  → SYN flood protection
+ net.ipv4.tcp _syncookies = 1                  → SYN flood protection
 
- net.core.rmem \_max/wmem \_max = 16777216        → Max buffer 16MB
+ net.core.rmem _max/wmem _max = 16777216        → Max buffer 16MB
 
- net.ipv4.tcp \_mtu \_probing = 1                 → Path MTU discovery
+ net.ipv4.tcp _mtu _probing = 1                 → Path MTU discovery
 
 
 
@@ -9382,17 +9382,17 @@ MEMORY TUNING:
 
  vm.swappiness = 10 (server), 1 (database), 0 (Redis)
 
- vm.overcommit \_memory = 0 (default), 1 (Redis), 2 (strict)
+ vm.overcommit _memory = 0 (default), 1 (Redis), 2 (strict)
 
- vm.dirty \_ratio = 10-15              → Block process above this %
+ vm.dirty _ratio = 10-15              → Block process above this %
 
- vm.dirty \_background \_ratio = 3-5     → Background flush above this %
+ vm.dirty _background _ratio = 3-5     → Background flush above this %
 
- vm.min \_free \_kbytes = 524288         → 512MB reserved free memory
+ vm.min _free _kbytes = 524288         → 512MB reserved free memory
 
- vm.panic \_on \_oom = 0 or 1            → Reboot vs OOM kill
+ vm.panic _on _oom = 0 or 1            → Reboot vs OOM kill
 
- Disable THP for databases: echo never > .../transparent \_hugepage/enabled
+ Disable THP for databases: echo never > .../transparent _hugepage/enabled
 
 
 
@@ -9400,9 +9400,9 @@ FILESYSTEM:
 
  fs.file-max = 2097152               → System-wide FD limit
 
- fs.inotify.max \_user \_watches = 524288 → File watchers (K8s needs this)
+ fs.inotify.max _user _watches = 524288 → File watchers (K8s needs this)
 
- fs.inotify.max \_user \_instances = 8192
+ fs.inotify.max _user _instances = 8192
 
  fs.aio-max-nr = 1048576             → Async I/O (databases)
 
@@ -9412,9 +9412,9 @@ KUBERNETES REQUIRED:
 
  net.bridge.bridge-nf-call-iptables = 1
 
- net.ipv4.ip \_forward = 1
+ net.ipv4.ip _forward = 1
 
- net.netfilter.nf \_conntrack \_max = 1048576
+ net.netfilter.nf _conntrack _max = 1048576
 
  kernel.panic = 10                    → Auto-reboot after panic
 
@@ -9422,25 +9422,25 @@ KUBERNETES REQUIRED:
 
 SECURITY:
 
- net.ipv4.conf.all.rp \_filter = 1     → Anti-spoofing
+ net.ipv4.conf.all.rp _filter = 1     → Anti-spoofing
 
- net.ipv4.conf.all.accept \_redirects = 0
+ net.ipv4.conf.all.accept _redirects = 0
 
- net.ipv4.conf.all.send \_redirects = 0
+ net.ipv4.conf.all.send _redirects = 0
 
- kernel.randomize \_va \_space = 2        → ASLR
+ kernel.randomize _va _space = 2        → ASLR
 
- kernel.dmesg \_restrict = 1            → Root-only dmesg
+ kernel.dmesg _restrict = 1            → Root-only dmesg
 
- kernel.yama.ptrace \_scope = 2         → Restrict ptrace
+ kernel.yama.ptrace _scope = 2         → Restrict ptrace
 
 
 
 CONNTRACK MONITORING:
 
- /proc/sys/net/netfilter/nf \_conntrack \_count  → Current
+ /proc/sys/net/netfilter/nf _conntrack _count  → Current
 
- /proc/sys/net/netfilter/nf \_conntrack \_max    → Limit
+ /proc/sys/net/netfilter/nf _conntrack _max    → Limit
 
  Alert when count/max > 75%
 
@@ -9450,11 +9450,11 @@ CONNTRACK MONITORING:
 
 COMMON MISTAKES:
 
- - tcp \_tw \_recycle removed in kernel 4.12+ → NEVER use
+ - tcp _tw _recycle removed in kernel 4.12+ → NEVER use
 
  - swappiness=0 without swap = instant OOM kill
 
- - ip \_forward=1 without firewall = open router
+ - ip _forward=1 without firewall = open router
 
  - sysctl -w without writing config file = lost on reboot
 
@@ -9466,7 +9466,7 @@ COMMON MISTAKES:
 
 
 
-\# 📝 Retention Questions — Lesson 8
+📝 Retention Questions — Lesson 8
 
 
 
@@ -9482,7 +9482,7 @@ COMMON MISTAKES:
 
 
 
-\*\*Q4:\*\* A Kubernetes node running 80+ pods suddenly starts dropping random packets. `dmesg` shows "nf\_conntrack: table full, dropping packet." What is conntrack, why did it fill up, what's your immediate fix, and how do you monitor this going forward?
+\*\*Q4:\*\* A Kubernetes node running 80+ pods suddenly starts dropping random packets. `dmesg` shows "nf_conntrack: table full, dropping packet." What is conntrack, why did it fill up, what's your immediate fix, and how do you monitor this going forward?
 
 
 
@@ -9504,7 +9504,7 @@ COMMON MISTAKES:
 
 
 
-### \# 🌐 PHASE 1 — NETWORKING FUNDAMENTALS
+### 🌐 PHASE 1 — NETWORKING FUNDAMENTALS
 
 
 
@@ -9804,7 +9804,7 @@ iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN  \\
 
  Option 3: Enable MTU path discovery (we covered this in sysctl)
 
-sysctl -w net.ipv4.tcp \_mtu \_probing=1
+sysctl -w net.ipv4.tcp _mtu _probing=1
 
 ```
 
@@ -9888,7 +9888,7 @@ CIDR (Classless Inter-Domain Routing) defines network ranges:
 
 ```
 
-Format: IP/prefix \_length
+Format: IP/prefix _length
 
 The prefix = number of bits that define the NETWORK portion
 
@@ -10248,7 +10248,7 @@ MX Record:
 
 TXT Record:
 
- example.com → "v=spf1 include: \_spf.google.com      \~all"
+ example.com → "v=spf1 include: _spf.google.com      \~all"
 
  Arbitrary text — used for:
 
@@ -10284,7 +10284,7 @@ SOA Record:
 
 SRV Record:
 
-  \_http. \_tcp.example.com → 10 60 8080 web1.example.com
+  _http. _tcp.example.com → 10 60 8080 web1.example.com
 
  Service location — port and host for a service
 
@@ -10516,7 +10516,7 @@ spec:
 
 java -Dsun.net.inetaddress.ttl=60 -jar app.jar
 
- Or in $JAVA \_HOME/conf/security/java.security:
+ Or in $JAVA _HOME/conf/security/java.security:
 
 networkaddress.cache.ttl=60
 
@@ -11074,7 +11074,7 @@ hosts: files dns myhostname
 
 
 
-\# 📋 LESSONS 1-3 QUICK REFERENCE — Networking Foundations
+📋 LESSONS 1-3 QUICK REFERENCE — Networking Foundations
 
 
 
@@ -11108,7 +11108,7 @@ MTU:
 
  Debug: ping -M do -s 1472 <dest> (reduce until works)
 
- Fix: tcp \_mtu \_probing=1 or MSS clamping
+ Fix: tcp _mtu _probing=1 or MSS clamping
 
 
 
@@ -11202,7 +11202,7 @@ GOTCHAS:
 
 
 
-\# 📝 Retention Questions — Networking Lessons 1-3
+📝 Retention Questions — Networking Lessons 1-3
 
 
 
@@ -11228,7 +11228,7 @@ GOTCHAS:
 
 
 
-#### \# 🌐 PHASE 1 — NETWORKING
+#### 🌐 PHASE 1 — NETWORKING
 
 
 
@@ -11328,13 +11328,13 @@ CLIENT                          SERVER
 
  |  ──── SYN (seq=100) ────►     |  Step 1: Client says "I want to connect"
 
- |                                |           Client moves to SYN\_SENT state
+ |                                |           Client moves to SYN_SENT state
 
  |                                |
 
  |  ◄── SYN-ACK (seq=300,        |  Step 2: Server says "OK, I acknowledge"
 
- |        ack=101) ────           |           Server moves to SYN\_RECV state
+ |        ack=101) ────           |           Server moves to SYN_RECV state
 
  |                                |
 
@@ -11380,7 +11380,7 @@ CLIENT                          SERVER
 
  Symptom: "connection timed out" (not "connection refused")
 
- The client retries SYN based on tcp\_syn\_retries (default 6 = \\\~127 seconds!)
+ The client retries SYN based on tcp_syn_retries (default 6 = \\\~127 seconds!)
 
 
 
@@ -11396,11 +11396,11 @@ CLIENT                          SERVER
 
  SYN-ACK received but ACK dropped:
 
- → Connection stuck in SYN\_RECV on server
+ → Connection stuck in SYN_RECV on server
 
- → SYN flood attack fills SYN\_RECV queue
+ → SYN flood attack fills SYN_RECV queue
 
- → This is why tcp\_syncookies exists (covered in sysctl lesson)
+ → This is why tcp_syncookies exists (covered in sysctl lesson)
 
 ```
 
@@ -11466,13 +11466,13 @@ CLIENT                          SERVER
 
  |  ──── FIN (seq=500) ────►     |  Step 1: Client says "I'm done sending"
 
- |                                |           Client → FIN\_WAIT\_1
+ |                                |           Client → FIN_WAIT_1
 
  |                                |
 
  |  ◄── ACK (ack=501) ────       |  Step 2: Server acknowledges
 
- |                                |           Client → FIN\_WAIT\_2
+ |                                |           Client → FIN_WAIT_2
 
  |                                |           Server can still send data!
 
@@ -11480,13 +11480,13 @@ CLIENT                          SERVER
 
  |  ◄── FIN (seq=700) ────       |  Step 3: Server says "I'm done too"
 
- |                                |           Server → LAST\_ACK
+ |                                |           Server → LAST_ACK
 
  |                                |
 
  |  ──── ACK (ack=701) ────►     |  Step 4: Client confirms
 
- |                                |           Client → TIME\_WAIT (2×MSL)
+ |                                |           Client → TIME_WAIT (2×MSL)
 
  |                                |           Server → CLOSED
 
@@ -11498,11 +11498,11 @@ CLIENT                          SERVER
 
 
 
-\*\*Why TIME\_WAIT exists:\*\*
+\*\*Why TIME_WAIT exists:\*\*
 
 
 
-TIME\_WAIT lasts for 2×MSL (Maximum Segment Lifetime), typically 60 seconds on Linux. It exists for two reasons:
+TIME_WAIT lasts for 2×MSL (Maximum Segment Lifetime), typically 60 seconds on Linux. It exists for two reasons:
 
 
 
@@ -11520,9 +11520,9 @@ TIME\_WAIT lasts for 2×MSL (Maximum Segment Lifetime), typically 60 seconds on 
 
 2\\. LOST FINAL ACK: If the final ACK (Step 4) is lost, the server
 
-  retransmits its FIN. The client needs to be in TIME\_WAIT to
+  retransmits its FIN. The client needs to be in TIME_WAIT to
 
-  respond with another ACK. Without TIME\_WAIT, the client sends
+  respond with another ACK. Without TIME_WAIT, the client sends
 
   RST → server gets a confusing error.
 
@@ -11530,7 +11530,7 @@ TIME\_WAIT lasts for 2×MSL (Maximum Segment Lifetime), typically 60 seconds on 
 
 
 
-\*\*The TIME\_WAIT accumulation problem (revisited with full understanding):\*\*
+\*\*The TIME_WAIT accumulation problem (revisited with full understanding):\*\*
 
 
 
@@ -11544,19 +11544,19 @@ ss -tan state time-wait | wc -l
 
 
 
- Each TIME\_WAIT socket holds:
+ Each TIME_WAIT socket holds:
 
  - A source port (from ephemeral range)
 
- - A 4-tuple: src\_ip:src\_port → dst\_ip:dst\_port
+ - A 4-tuple: src_ip:src_port → dst_ip:dst_port
 
 \\#
 
- You can only have ONE TIME\_WAIT per unique 4-tuple
+ You can only have ONE TIME_WAIT per unique 4-tuple
 
  With one destination IP:port, you're limited by source ports
 
- \\\~28,000 default ephemeral ports, 60s TIME\_WAIT:
+ \\\~28,000 default ephemeral ports, 60s TIME_WAIT:
 
  Max new connections: 28000/60 = \\\~467/second to a SINGLE destination
 
@@ -11564,7 +11564,7 @@ ss -tan state time-wait | wc -l
 
  If you need more:
 
- 1. tcp\_tw\_reuse=1 (reuse TIME\_WAIT for outbound, uses timestamps for safety)
+ 1. tcp_tw_reuse=1 (reuse TIME_WAIT for outbound, uses timestamps for safety)
 
  2. Expand ephemeral port range (1024-65535)
 
@@ -11592,21 +11592,21 @@ State           Meaning                                      Who's In It
 
 LISTEN          Waiting for incoming connections             Server
 
-SYN\_SENT        SYN sent, waiting for SYN-ACK               Client
+SYN_SENT        SYN sent, waiting for SYN-ACK               Client
 
-SYN\_RECV        SYN received, SYN-ACK sent, waiting ACK     Server
+SYN_RECV        SYN received, SYN-ACK sent, waiting ACK     Server
 
 ESTABLISHED     Connection active, data flowing              Both
 
-FIN\_WAIT\_1      FIN sent, waiting for ACK                   Closer (initiator)
+FIN_WAIT_1      FIN sent, waiting for ACK                   Closer (initiator)
 
-FIN\_WAIT\_2      FIN acknowledged, waiting for peer's FIN    Closer
+FIN_WAIT_2      FIN acknowledged, waiting for peer's FIN    Closer
 
-CLOSE\_WAIT      Received FIN, waiting for app to close      Receiver (DANGEROUS)
+CLOSE_WAIT      Received FIN, waiting for app to close      Receiver (DANGEROUS)
 
-LAST\_ACK        FIN sent, waiting for final ACK             Receiver
+LAST_ACK        FIN sent, waiting for final ACK             Receiver
 
-TIME\_WAIT       Waiting 2×MSL before fully closing          Closer
+TIME_WAIT       Waiting 2×MSL before fully closing          Closer
 
 CLOSING         Both sides sent FIN simultaneously (rare)   Both
 
@@ -11616,13 +11616,13 @@ CLOSED          Connection fully terminated                 N/A
 
 
 
-\### CLOSE\_WAIT — The State That Tells You Your App Is Buggy
+\### CLOSE_WAIT — The State That Tells You Your App Is Buggy
 
 
 
 ```bash
 
- CLOSE\_WAIT means:
+ CLOSE_WAIT means:
 
  - The REMOTE side closed the connection (sent FIN)
 
@@ -11656,7 +11656,7 @@ ss -tan state close-wait | wc -l
 
 
 
- If CLOSE\_WAIT sockets accumulate:
+ If CLOSE_WAIT sockets accumulate:
 
  - File descriptors exhausted (EMFILE)
 
@@ -11666,11 +11666,11 @@ ss -tan state close-wait | wc -l
 
 
 
- CLOSE\_WAIT never times out on its own
+ CLOSE_WAIT never times out on its own
 
  It stays until the application closes the socket or the process dies
 
- This is fundamentally different from TIME\_WAIT which auto-expires
+ This is fundamentally different from TIME_WAIT which auto-expires
 
 
 
@@ -11728,13 +11728,13 @@ Flow control prevents the sender from overwhelming the receiver.
 
  Original TCP header only has 16 bits for window = max 64KB
 
- Window scaling multiplies by 2^scale\_factor
+ Window scaling multiplies by 2^scale_factor
 
  Scale factor negotiated during handshake
 
  Max window with scaling: 64KB × 2^14 = 1GB
 
- This is why tcp\_window\_scaling=1 in sysctl is critical
+ This is why tcp_window_scaling=1 in sysctl is critical
 
  Without it: max 64KB window = terrible throughput on high-latency links
 
@@ -11800,7 +11800,7 @@ Flow control protects the receiver. Congestion control protects the \*\*network\
 
  This is why new connections start slow!
 
- And why tcp\_slow\_start\_after\_idle=0 matters (covered in sysctl)
+ And why tcp_slow_start_after_idle=0 matters (covered in sysctl)
 
  Without it, idle connections reset to slow start
 
@@ -11836,7 +11836,7 @@ Flow control protects the receiver. Congestion control protects the \*\*network\
 
  Check current algorithm:
 
-sysctl net.ipv4.tcp\_congestion\_control
+sysctl net.ipv4.tcp_congestion_control
 
  cubic
 
@@ -11844,15 +11844,15 @@ sysctl net.ipv4.tcp\_congestion\_control
 
  Switch to BBR:
 
-sysctl -w net.core.default\_qdisc=fq
+sysctl -w net.core.default_qdisc=fq
 
-sysctl -w net.ipv4.tcp\_congestion\_control=bbr
+sysctl -w net.ipv4.tcp_congestion_control=bbr
 
 
 
  Available algorithms:
 
-sysctl net.ipv4.tcp\_available\_congestion\_control
+sysctl net.ipv4.tcp_available_congestion_control
 
  reno cubic bbr
 
@@ -12018,7 +12018,7 @@ tcpdump -i eth0 'tcp\\\[tcpflags] \\\& (tcp-syn|tcp-fin) != 0'
 
  2. Set application keepalive LOWER than ALB timeout
 
-    tcp\_keepalive\_time=30 < ALB timeout=60
+    tcp_keepalive_time=30 < ALB timeout=60
 
  3. Application-level heartbeats/pings on the connection
 
@@ -12520,7 +12520,7 @@ spec:
 
  How to check certificate expiry:
 
-echo | openssl s\_client -servername example.com -connect example.com:443 2>/dev/null | openssl x509 -noout -dates
+echo | openssl s_client -servername example.com -connect example.com:443 2>/dev/null | openssl x509 -noout -dates
 
  notBefore=Jan  1 00:00:00 2024 GMT
 
@@ -12536,11 +12536,11 @@ curl -vI https://example.com 2>\\\&1 | grep "expire"
 
  Monitoring:
 
- Prometheus blackbox\_exporter probes HTTPS endpoints:
+ Prometheus blackbox_exporter probes HTTPS endpoints:
 
- probe\_ssl\_earliest\_cert\_expiry — timestamp of cert expiry
+ probe_ssl_earliest_cert_expiry — timestamp of cert expiry
 
- Alert when: (probe\_ssl\_earliest\_cert\_expiry - time()) < 30\\\*86400
+ Alert when: (probe_ssl_earliest_cert_expiry - time()) < 30\\\*86400
 
  "Certificate expires in less than 30 days"
 
@@ -12554,7 +12554,7 @@ curl -vI https://example.com 2>\\\&1 | grep "expire"
 
  3. Use certbot with auto-renewal timer
 
- 4. Monitor ALL certificates with Prometheus/blackbox\_exporter
+ 4. Monitor ALL certificates with Prometheus/blackbox_exporter
 
  5. Alert at 30 days, 14 days, 7 days, 3 days, 1 day
 
@@ -12582,19 +12582,19 @@ nmap --script ssl-enum-ciphers -p 443 example.com
 
  Or:
 
-openssl s\_client -tls1\_2 -connect example.com:443
+openssl s_client -tls1_2 -connect example.com:443
 
-openssl s\_client -tls1\_3 -connect example.com:443
+openssl s_client -tls1_3 -connect example.com:443
 
 
 
  Nginx TLS configuration:
 
-ssl\_protocols TLSv1.2 TLSv1.3;
+ssl_protocols TLSv1.2 TLSv1.3;
 
-ssl\_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256';
+ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256';
 
-ssl\_prefer\_server\_ciphers on;
+ssl_prefer_server_ciphers on;
 
 
 
@@ -12604,9 +12604,9 @@ ssl\_prefer\_server\_ciphers on;
 
  Apply via Terraform:
 
-resource "aws\_lb\_listener" "https" {
+resource "aws_lb_listener" "https" {
 
- ssl\_policy = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+ ssl_policy = "ELBSecurityPolicy-TLS13-1-2-2021-06"
 
 }
 
@@ -12650,15 +12650,15 @@ resource "aws\_lb\_listener" "https" {
 
  Nginx:
 
-keepalive\_timeout 55;  # < ALB's 60s
+keepalive_timeout 55;  # < ALB's 60s
 
 
 
  Or increase ALB timeout:
 
-resource "aws\_lb" "main" {
+resource "aws_lb" "main" {
 
- idle\_timeout = 120  # seconds
+ idle_timeout = 120  # seconds
 
 }
 
@@ -12844,7 +12844,7 @@ LEAST CONNECTIONS:
 
  Better for long-lived connections or uneven request processing times
 
- Used by: HAProxy, Nginx (least\_conn)
+ Used by: HAProxy, Nginx (least_conn)
 
 
 
@@ -12854,7 +12854,7 @@ IP HASH:
 
  Same client always goes to same server (poor man's sticky sessions)
 
- Used by: Nginx (ip\_hash), when session affinity needed without cookies
+ Used by: Nginx (ip_hash), when session affinity needed without cookies
 
 
 
@@ -12902,9 +12902,9 @@ MAGLEV/CONSISTENT HASHING:
 
  ALB Health Check Configuration:
 
-resource "aws\_lb\_target\_group" "api" {
+resource "aws_lb_target_group" "api" {
 
- health\_check {
+ health_check {
 
  path                = "/health"
 
@@ -12912,9 +12912,9 @@ resource "aws\_lb\_target\_group" "api" {
 
  protocol            = "HTTP"
 
- healthy\_threshold   = 3    # Consecutive successes to mark healthy
+ healthy_threshold   = 3    # Consecutive successes to mark healthy
 
- unhealthy\_threshold = 2    # Consecutive failures to mark unhealthy
+ unhealthy_threshold = 2    # Consecutive failures to mark unhealthy
 
  timeout             = 5    # Seconds to wait for response
 
@@ -12976,11 +12976,11 @@ resource "aws\_lb\_target\_group" "api" {
 
 
 
-upstream api\_backends {
+upstream api_backends {
 
  # Load balancing algorithm
 
- least\_conn;
+ least_conn;
 
  
 
@@ -13000,9 +13000,9 @@ upstream api\_backends {
 
  keepalive 64;
 
- keepalive\_timeout 60s;
+ keepalive_timeout 60s;
 
- keepalive\_requests 1000;
+ keepalive_requests 1000;
 
 }
 
@@ -13014,15 +13014,15 @@ server {
 
  listen 443 ssl http2;
 
- server\_name api.example.com;
+ server_name api.example.com;
 
  
 
- ssl\_certificate /etc/letsencrypt/live/api.example.com/fullchain.pem;
+ ssl_certificate /etc/letsencrypt/live/api.example.com/fullchain.pem;
 
- ssl\_certificate\_key /etc/letsencrypt/live/api.example.com/privkey.pem;
+ ssl_certificate_key /etc/letsencrypt/live/api.example.com/privkey.pem;
 
- ssl\_protocols TLSv1.2 TLSv1.3;
+ ssl_protocols TLSv1.2 TLSv1.3;
 
  
 
@@ -13030,51 +13030,51 @@ server {
 
  location /api/ {
 
-     proxy\_pass http://api\_backends;
+     proxy_pass http://api_backends;
 
-     proxy\_http\_version 1.1;
+     proxy_http_version 1.1;
 
-     proxy\_set\_header Connection "";  # Enable keepalive to upstream
+     proxy_set_header Connection "";  # Enable keepalive to upstream
 
-     proxy\_set\_header Host $host;
+     proxy_set_header Host $host;
 
-     proxy\_set\_header X-Real-IP $remote\_addr;
+     proxy_set_header X-Real-IP $remote_addr;
 
-     proxy\_set\_header X-Forwarded-For $proxy\_add\_x\_forwarded\_for;
+     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 
-     proxy\_set\_header X-Forwarded-Proto $scheme;
+     proxy_set_header X-Forwarded-Proto $scheme;
 
-     proxy\_set\_header X-Request-Id $request\_id;
+     proxy_set_header X-Request-Id $request_id;
 
      
 
      # Timeouts
 
-     proxy\_connect\_timeout 5s;    # Time to establish connection to backend
+     proxy_connect_timeout 5s;    # Time to establish connection to backend
 
-     proxy\_send\_timeout 30s;      # Time to send request to backend
+     proxy_send_timeout 30s;      # Time to send request to backend
 
-     proxy\_read\_timeout 60s;      # Time to receive response from backend
+     proxy_read_timeout 60s;      # Time to receive response from backend
 
      
 
      # Buffering
 
-     proxy\_buffering on;
+     proxy_buffering on;
 
-     proxy\_buffer\_size 8k;
+     proxy_buffer_size 8k;
 
-     proxy\_buffers 32 8k;
+     proxy_buffers 32 8k;
 
      
 
      # Retries
 
-     proxy\_next\_upstream error timeout http\_502 http\_503;
+     proxy_next_upstream error timeout http_502 http_503;
 
-     proxy\_next\_upstream\_tries 2;
+     proxy_next_upstream_tries 2;
 
-     proxy\_next\_upstream\_timeout 10s;
+     proxy_next_upstream_timeout 10s;
 
  }
 
@@ -13084,11 +13084,11 @@ server {
 
  location /health {
 
-     access\_log off;
+     access_log off;
 
      return 200 'OK';
 
-     add\_header Content-Type text/plain;
+     add_header Content-Type text/plain;
 
  }
 
@@ -13204,7 +13204,7 @@ aws elbv2 describe-target-health --target-group-arn <arn>
 
 
 
-\# 📋 LESSONS 4-6 QUICK REFERENCE
+📋 LESSONS 4-6 QUICK REFERENCE
 
 
 
@@ -13214,17 +13214,17 @@ TCP HANDSHAKE: SYN → SYN-ACK → ACK (3-way)
 
 TCP TEARDOWN: FIN → ACK → FIN → ACK (4-way)
 
-TIME\_WAIT: 60s on Linux, exists to prevent delayed packet confusion
+TIME_WAIT: 60s on Linux, exists to prevent delayed packet confusion
 
 
 
 TCP STATES TO WATCH:
 
- CLOSE\_WAIT = YOUR app isn't closing sockets (BUG)
+ CLOSE_WAIT = YOUR app isn't closing sockets (BUG)
 
- TIME\_WAIT = normal, but accumulation = port exhaustion
+ TIME_WAIT = normal, but accumulation = port exhaustion
 
- SYN\_RECV = normal, but thousands = possible SYN flood
+ SYN_RECV = normal, but thousands = possible SYN flood
 
 
 
@@ -13232,7 +13232,7 @@ CONGESTION CONTROL:
 
  Cubic (default), BBR (Google, 20-40% better on lossy networks)
 
- Switch: sysctl net.ipv4.tcp\_congestion\_control=bbr
+ Switch: sysctl net.ipv4.tcp_congestion_control=bbr
 
 
 
@@ -13264,7 +13264,7 @@ TLS:
 
  ACM (AWS), cert-manager (K8s), Certbot (servers)
 
- Monitor: probe\_ssl\_earliest\_cert\_expiry, alert at 30 days
+ Monitor: probe_ssl_earliest_cert_expiry, alert at 30 days
 
 
 
@@ -13312,11 +13312,11 @@ LOAD BALANCING:
 
 NGINX:
 
- upstream + least\_conn + keepalive pool
+ upstream + least_conn + keepalive pool
 
- proxy\_next\_upstream for automatic retry on 502/503
+ proxy_next_upstream for automatic retry on 502/503
 
- keepalive\_timeout < ALB idle timeout
+ keepalive_timeout < ALB idle timeout
 
 ```
 
@@ -13326,11 +13326,11 @@ NGINX:
 
 
 
-\# 📝 Retention Questions — Lessons 4-6
+📝 Retention Questions — Lessons 4-6
 
 
 
-\*\*Q1:\*\* You see 5,000 connections in `CLOSE\_WAIT` state on your application server. Is this a kernel issue or an application issue? What exactly is happening and what do you do?
+\*\*Q1:\*\* You see 5,000 connections in `CLOSE_WAIT` state on your application server. Is this a kernel issue or an application issue? What exactly is happening and what do you do?
 
 
 
@@ -13350,7 +13350,7 @@ NGINX:
 
 =======================================================================================================
 
-\# 💯 PERFECT SWEEP. 4/4.
+💯 PERFECT SWEEP. 4/4.
 
 
 
@@ -13366,21 +13366,21 @@ One nuance on Q2 — the timeout hierarchy has two dimensions:
 
 REQUEST/RESPONSE TIMEOUTS (who gives up first):
 
-&#x20; Client timeout > LB timeout > Backend timeout
+Client timeout > LB timeout > Backend timeout
 
-&#x20; "Each layer should timeout BEFORE the one in front of it"
+"Each layer should timeout BEFORE the one in front of it"
 
-&#x20; So the backend gives up first → clean error to LB → clean error to client
+So the backend gives up first → clean error to LB → clean error to client
 
 
 
 IDLE/KEEPALIVE TIMEOUTS (who closes idle connections first):
 
-&#x20; Backend keepalive < LB idle timeout < Client keepalive
+Backend keepalive < LB idle timeout < Client keepalive
 
-&#x20; "Backend closes idle connections BEFORE the LB silently drops them"
+"Backend closes idle connections BEFORE the LB silently drops them"
 
-&#x20; This prevents the RST problem you described
+This prevents the RST problem you described
 
 ```
 
@@ -13394,7 +13394,7 @@ Your answer was correct in principle — you want the application to close befor
 
 
 
-\# 🌐 PHASE 1 — NETWORKING
+🌐 PHASE 1 — NETWORKING
 
 
 
@@ -13418,43 +13418,43 @@ Everything in Linux network security ultimately flows through \*\*Netfilter\*\*,
 
 TABLES (what kind of processing):
 
-&#x20; filter   → Accept/drop/reject packets (DEFAULT table)
+filter   → Accept/drop/reject packets (DEFAULT table)
 
-&#x20; nat      → Network Address Translation (SNAT, DNAT, masquerade)
+nat      → Network Address Translation (SNAT, DNAT, masquerade)
 
-&#x20; mangle   → Modify packet headers (TTL, TOS, marking)
+mangle   → Modify packet headers (TTL, TOS, marking)
 
-&#x20; raw      → Bypass connection tracking (high-performance exceptions)
+raw      → Bypass connection tracking (high-performance exceptions)
 
-&#x20; security → SELinux/MAC rules
+security → SELinux/MAC rules
 
 
 
 CHAINS (when in the packet's journey):
 
-&#x20; PREROUTING  → Packet just arrived, before routing decision
+PREROUTING  → Packet just arrived, before routing decision
 
-&#x20; INPUT       → Packet destined for THIS machine
+INPUT       → Packet destined for THIS machine
 
-&#x20; FORWARD     → Packet passing THROUGH this machine (routing)
+FORWARD     → Packet passing THROUGH this machine (routing)
 
-&#x20; OUTPUT      → Packet generated BY this machine
+OUTPUT      → Packet generated BY this machine
 
-&#x20; POSTROUTING → Packet about to leave, after routing decision
+POSTROUTING → Packet about to leave, after routing decision
 
 
 
 PACKET FLOW:
 
-&#x20; Incoming packet → PREROUTING → routing decision
+Incoming packet → PREROUTING → routing decision
 
-&#x20;   → If for this host: INPUT → local process
+  → If for this host: INPUT → local process
 
-&#x20;   → If for another host: FORWARD → POSTROUTING → out
+  → If for another host: FORWARD → POSTROUTING → out
 
 
 
-&#x20; Outgoing packet → OUTPUT → routing decision → POSTROUTING → out
+Outgoing packet → OUTPUT → routing decision → POSTROUTING → out
 
 ```
 
@@ -13466,85 +13466,85 @@ PACKET FLOW:
 
 ```bash
 
-\# Basic format:
+Basic format:
 
 iptables -t <table> -A <chain> <match-criteria> -j <target>
 
 
 
-\# TARGETS (actions):
+TARGETS (actions):
 
-\# ACCEPT  → Allow the packet
+ACCEPT  → Allow the packet
 
-\# DROP    → Silently discard (no response — client times out)
+DROP    → Silently discard (no response — client times out)
 
-\# REJECT  → Discard and send error back (client gets "connection refused")
+REJECT  → Discard and send error back (client gets "connection refused")
 
-\# LOG     → Log the packet and continue processing
+LOG     → Log the packet and continue processing
 
-\# DNAT    → Destination NAT (change destination IP/port)
+DNAT    → Destination NAT (change destination IP/port)
 
-\# SNAT    → Source NAT (change source IP)
+SNAT    → Source NAT (change source IP)
 
-\# MASQUERADE → Dynamic SNAT (for outbound internet via NAT gateway)
-
-
-
-\# EXAMPLES:
+MASQUERADE → Dynamic SNAT (for outbound internet via NAT gateway)
 
 
 
-\# Allow incoming SSH
+EXAMPLES:
+
+
+
+Allow incoming SSH
 
 iptables -A INPUT -p tcp --dport 22 -j ACCEPT
 
 
 
-\# Allow incoming HTTP/HTTPS
+Allow incoming HTTP/HTTPS
 
 iptables -A INPUT -p tcp -m multiport --dports 80,443 -j ACCEPT
 
 
 
-\# Allow established/related connections (stateful)
+Allow established/related connections (stateful)
 
 iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
 
 
-\# Allow from specific CIDR
+Allow from specific CIDR
 
 iptables -A INPUT -s 10.0.0.0/8 -p tcp --dport 8080 -j ACCEPT
 
 
 
-\# Drop everything else (default deny)
+Drop everything else (default deny)
 
 iptables -A INPUT -j DROP
 
 
 
-\# Block a specific IP
+Block a specific IP
 
 iptables -I INPUT 1 -s 198.51.100.5 -j DROP
 
-\# -I INPUT 1 = Insert at position 1 (top of chain, processed first)
+-I INPUT 1 = Insert at position 1 (top of chain, processed first)
 
 
 
-\# NAT — masquerade outbound traffic (for NAT gateway)
+NAT — masquerade outbound traffic (for NAT gateway)
 
 iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
 
 
 
-\# Port forwarding (DNAT)
+Port forwarding (DNAT)
 
 iptables -t nat -A PREROUTING -p tcp --dport 80 -j DNAT --to-destination 10.0.1.5:8080
 
 
 
-\# View rules
+View rules
 
 iptables -L -n -v          # List all rules with packet counts
 
@@ -13554,13 +13554,13 @@ iptables -t nat -L -n -v   # NAT table rules
 
 
 
-\# Delete a rule
+Delete a rule
 
 iptables -D INPUT 3         # Delete rule number 3 in INPUT chain
 
 
 
-\# Flush all rules (CAREFUL!)
+Flush all rules (CAREFUL!)
 
 iptables -F                  # Flush filter table
 
@@ -13568,17 +13568,17 @@ iptables -t nat -F          # Flush nat table
 
 
 
-\# Save rules (persists across reboot)
+Save rules (persists across reboot)
 
 iptables-save > /etc/iptables/rules.v4
 
-\# Restore
+Restore
 
 iptables-restore < /etc/iptables/rules.v4
 
 
 
-\# On systemd systems, use iptables-persistent package:
+On systemd systems, use iptables-persistent package:
 
 apt install iptables-persistent
 
@@ -13594,37 +13594,37 @@ netfilter-persistent save
 
 ```bash
 
-\# Rules are processed TOP to BOTTOM
+Rules are processed TOP to BOTTOM
 
-\# First match wins — remaining rules are SKIPPED
+First match wins — remaining rules are SKIPPED
 
 
 
-\# WRONG ORDER:
+WRONG ORDER:
 
 iptables -A INPUT -j DROP            # Rule 1: Drop everything
 
 iptables -A INPUT -p tcp --dport 22 -j ACCEPT  # Rule 2: Allow SSH
 
-\# SSH is blocked because Rule 1 matches first!
+SSH is blocked because Rule 1 matches first!
 
 
 
-\# CORRECT ORDER:
+CORRECT ORDER:
 
 iptables -A INPUT -p tcp --dport 22 -j ACCEPT  # Rule 1: Allow SSH
 
 iptables -A INPUT -j DROP            # Rule 2: Drop everything else
 
-\# SSH works because Rule 1 matches first
+SSH works because Rule 1 matches first
 
 
 
-\# This is why -I (insert at top) is used for emergency blocks:
+This is why -I (insert at top) is used for emergency blocks:
 
 iptables -I INPUT 1 -s <attacker-ip> -j DROP
 
-\# Inserted at position 1, before all other rules
+Inserted at position 1, before all other rules
 
 ```
 
@@ -13636,45 +13636,45 @@ iptables -I INPUT 1 -s <attacker-ip> -j DROP
 
 ```bash
 
-\# 1. Kubernetes uses iptables (or IPVS) for Service routing
+1. Kubernetes uses iptables (or IPVS) for Service routing
 
-\#    kube-proxy creates iptables rules for every Service
+   kube-proxy creates iptables rules for every Service
 
-\#    Every ClusterIP, NodePort, LoadBalancer = iptables rules
+   Every ClusterIP, NodePort, LoadBalancer = iptables rules
 
 
 
-\# View Kubernetes-created iptables rules:
+View Kubernetes-created iptables rules:
 
 iptables -t nat -L KUBE-SERVICES -n
 
-\# Shows all Service → endpoint mappings
+Shows all Service → endpoint mappings
 
 
 
-\# 2. Docker uses iptables for port mapping
+2. Docker uses iptables for port mapping
 
-\# docker run -p 8080:80 creates:
+docker run -p 8080:80 creates:
 
 iptables -t nat -L DOCKER -n
 
-\# DNAT rule: host:8080 → container-ip:80
+DNAT rule: host:8080 → container-ip:80
 
 
 
-\# 3. Calico (K8s CNI) uses iptables for NetworkPolicies
+3. Calico (K8s CNI) uses iptables for NetworkPolicies
 
-\# Every NetworkPolicy = iptables rules on the node
+Every NetworkPolicy = iptables rules on the node
 
 
 
-\# 4. Debugging connectivity issues often requires reading iptables
+4. Debugging connectivity issues often requires reading iptables
 
-\# "Why can't pod A reach pod B?"
+"Why can't pod A reach pod B?"
 
 iptables -t filter -L -n -v | grep <pod-ip>
 
-\# Check if any DROP/REJECT rules match
+Check if any DROP/REJECT rules match
 
 ```
 
@@ -13686,27 +13686,27 @@ iptables -t filter -L -n -v | grep <pod-ip>
 
 ```bash
 
-\# nftables is the modern replacement for iptables
+nftables is the modern replacement for iptables
 
-\# Better performance, cleaner syntax, unified framework
+Better performance, cleaner syntax, unified framework
 
-\# Most modern distros include both, with iptables as a compatibility layer
+Most modern distros include both, with iptables as a compatibility layer
 
 
 
-\# Check if your system uses iptables or nftables backend:
+Check if your system uses iptables or nftables backend:
 
 iptables -V
 
-\# iptables v1.8.7 (nf\_tables)  ← nftables backend
+iptables v1.8.7 (nf_tables)  ← nftables backend
 
-\# iptables v1.8.7 (legacy)     ← real iptables
+iptables v1.8.7 (legacy)     ← real iptables
 
 
 
-\# For DevOps: understand both, but iptables knowledge is more universal
+For DevOps: understand both, but iptables knowledge is more universal
 
-\# Kubernetes and Docker still primarily use iptables interface
+Kubernetes and Docker still primarily use iptables interface
 
 ```
 
@@ -13722,91 +13722,91 @@ iptables -V
 
 ```bash
 
-\# Security Groups (SGs) are attached to ENIs (Elastic Network Interfaces)
+Security Groups (SGs) are attached to ENIs (Elastic Network Interfaces)
 
-\# Every EC2 instance, RDS instance, Lambda in VPC, EKS pod gets one
-
-
-
-\# KEY PROPERTIES:
-
-\# ✅ STATEFUL — if inbound is allowed, return traffic is automatic
-
-\# ✅ Allow rules ONLY — you cannot create deny rules
-
-\# ✅ All rules evaluated (not ordered — if ANY rule allows, traffic passes)
-
-\# ✅ Default: allow ALL outbound, deny ALL inbound
-
-\# ✅ Can reference other Security Groups as source/destination
+Every EC2 instance, RDS instance, Lambda in VPC, EKS pod gets one
 
 
 
-\# EXAMPLE — Web application architecture:
+KEY PROPERTIES:
+
+✅ STATEFUL — if inbound is allowed, return traffic is automatic
+
+✅ Allow rules ONLY — you cannot create deny rules
+
+✅ All rules evaluated (not ordered — if ANY rule allows, traffic passes)
+
+✅ Default: allow ALL outbound, deny ALL inbound
+
+✅ Can reference other Security Groups as source/destination
 
 
 
-\# SG: alb-sg (for Application Load Balancer)
-
-\# Inbound:
-
-\#   TCP 443 from 0.0.0.0/0        (HTTPS from internet)
-
-\#   TCP 80 from 0.0.0.0/0         (HTTP from internet — redirect to HTTPS)
-
-\# Outbound:
-
-\#   All traffic (default)
+EXAMPLE — Web application architecture:
 
 
 
-\# SG: app-sg (for application EC2/EKS)
+SG: alb-sg (for Application Load Balancer)
 
-\# Inbound:
+Inbound:
 
-\#   TCP 8080 from alb-sg           (only ALB can reach app port)
+  TCP 443 from 0.0.0.0/0        (HTTPS from internet)
 
-\#   TCP 22 from bastion-sg         (SSH only from bastion)
+  TCP 80 from 0.0.0.0/0         (HTTP from internet — redirect to HTTPS)
 
-\# Outbound:
+Outbound:
 
-\#   All traffic
-
-
-
-\# SG: db-sg (for RDS)
-
-\# Inbound:
-
-\#   TCP 5432 from app-sg           (only app can reach database)
-
-\# Outbound:
-
-\#   All traffic
+  All traffic (default)
 
 
 
-\# SG: bastion-sg (for jump host)
+SG: app-sg (for application EC2/EKS)
 
-\# Inbound:
+Inbound:
 
-\#   TCP 22 from <office-cidr>/32   (SSH only from office IP)
+  TCP 8080 from alb-sg           (only ALB can reach app port)
 
-\# Outbound:
+  TCP 22 from bastion-sg         (SSH only from bastion)
 
-\#   All traffic
+Outbound:
+
+  All traffic
 
 
 
-\# REFERENCING OTHER SGs:
+SG: db-sg (for RDS)
 
-\# "TCP 8080 from alb-sg" means:
+Inbound:
 
-\# "Allow TCP 8080 from any ENI that has alb-sg attached"
+  TCP 5432 from app-sg           (only app can reach database)
 
-\# This is dynamic — if ALB scales, new IPs are automatically allowed
+Outbound:
 
-\# No need to update IP ranges manually
+  All traffic
+
+
+
+SG: bastion-sg (for jump host)
+
+Inbound:
+
+  TCP 22 from <office-cidr>/32   (SSH only from office IP)
+
+Outbound:
+
+  All traffic
+
+
+
+REFERENCING OTHER SGs:
+
+"TCP 8080 from alb-sg" means:
+
+"Allow TCP 8080 from any ENI that has alb-sg attached"
+
+This is dynamic — if ALB scales, new IPs are automatically allowed
+
+No need to update IP ranges manually
 
 ```
 
@@ -13818,91 +13818,91 @@ iptables -V
 
 ```bash
 
-\# NACLs (Network Access Control Lists) operate at the SUBNET level
+NACLs (Network Access Control Lists) operate at the SUBNET level
 
-\# Every packet entering or leaving a subnet passes through the NACL
-
-
-
-\# KEY PROPERTIES:
-
-\# ❌ STATELESS — return traffic must be explicitly allowed
-
-\# ✅ Allow AND deny rules
-
-\# ✅ Rules processed IN ORDER by rule number (first match wins)
-
-\# ✅ Default NACL: allows all traffic
-
-\# ✅ Custom NACL: denies all traffic by default
+Every packet entering or leaving a subnet passes through the NACL
 
 
 
-\# NACL vs Security Group:
+KEY PROPERTIES:
+
+❌ STATELESS — return traffic must be explicitly allowed
+
+✅ Allow AND deny rules
+
+✅ Rules processed IN ORDER by rule number (first match wins)
+
+✅ Default NACL: allows all traffic
+
+✅ Custom NACL: denies all traffic by default
 
 
 
-\# Feature          | Security Group      | NACL
-
-\# Level            | Instance (ENI)      | Subnet
-
-\# State            | Stateful            | Stateless
-
-\# Rules            | Allow only          | Allow + Deny
-
-\# Processing       | All rules evaluated | First match wins (ordered)
-
-\# Default inbound  | Deny all            | Allow all (default NACL)
-
-\# Return traffic   | Automatic           | Must explicitly allow
+NACL vs Security Group:
 
 
 
-\# NACL RULE EXAMPLE:
+Feature          | Security Group      | NACL
 
-\# Rule# | Type  | Protocol | Port     | Source        | Allow/Deny
+Level            | Instance (ENI)      | Subnet
 
-\# 100   | HTTP  | TCP      | 80       | 0.0.0.0/0    | ALLOW
+State            | Stateful            | Stateless
 
-\# 110   | HTTPS | TCP      | 443      | 0.0.0.0/0    | ALLOW
+Rules            | Allow only          | Allow + Deny
 
-\# 120   | SSH   | TCP      | 22       | 10.0.0.0/8   | ALLOW
+Processing       | All rules evaluated | First match wins (ordered)
 
-\# 200   | Custom| TCP      | 1024-65535| 0.0.0.0/0   | ALLOW  ← EPHEMERAL PORTS!
+Default inbound  | Deny all            | Allow all (default NACL)
 
-\# \*     | All   | All      | All      | 0.0.0.0/0    | DENY   ← Default deny
-
-
-
-\# THE EPHEMERAL PORT TRAP:
-
-\# Because NACLs are STATELESS, you must allow return traffic
-
-\# When your server responds to an HTTP request, the RESPONSE
-
-\# goes to the CLIENT'S ephemeral port (1024-65535)
-
-\# If your OUTBOUND NACL doesn't allow high ports → responses blocked
-
-\# If your INBOUND NACL doesn't allow high ports → return traffic blocked
-
-\# This catches people ALL THE TIME
+Return traffic   | Automatic           | Must explicitly allow
 
 
 
-\# BEST PRACTICE:
+NACL RULE EXAMPLE:
 
-\# Use Security Groups as your PRIMARY firewall (easier, stateful)
+Rule# | Type  | Protocol | Port     | Source        | Allow/Deny
 
-\# Use NACLs as a COARSE secondary layer:
+100   | HTTP  | TCP      | 80       | 0.0.0.0/0    | ALLOW
 
-\#   - Block known bad CIDR ranges
+110   | HTTPS | TCP      | 443      | 0.0.0.0/0    | ALLOW
 
-\#   - Subnet-level isolation between tiers
+120   | SSH   | TCP      | 22       | 10.0.0.0/8   | ALLOW
 
-\#   - Emergency: block an attacking IP at subnet level
+200   | Custom| TCP      | 1024-65535| 0.0.0.0/0   | ALLOW  ← EPHEMERAL PORTS!
 
-\# Don't try to replicate SG rules in NACLs — it's painful and error-prone
+\*     | All   | All      | All      | 0.0.0.0/0    | DENY   ← Default deny
+
+
+
+THE EPHEMERAL PORT TRAP:
+
+Because NACLs are STATELESS, you must allow return traffic
+
+When your server responds to an HTTP request, the RESPONSE
+
+goes to the CLIENT'S ephemeral port (1024-65535)
+
+If your OUTBOUND NACL doesn't allow high ports → responses blocked
+
+If your INBOUND NACL doesn't allow high ports → return traffic blocked
+
+This catches people ALL THE TIME
+
+
+
+BEST PRACTICE:
+
+Use Security Groups as your PRIMARY firewall (easier, stateful)
+
+Use NACLs as a COARSE secondary layer:
+
+  - Block known bad CIDR ranges
+
+  - Subnet-level isolation between tiers
+
+  - Emergency: block an attacking IP at subnet level
+
+Don't try to replicate SG rules in NACLs — it's painful and error-prone
 
 ```
 
@@ -13918,57 +13918,57 @@ iptables -V
 
 ```bash
 
-\# Situation: Your WAF is being overwhelmed by traffic from a specific CIDR
+Situation: Your WAF is being overwhelmed by traffic from a specific CIDR
 
-\# You need to block it NOW, at the lowest level possible
+You need to block it NOW, at the lowest level possible
 
 
 
-\# Option 1: NACL (fastest, broadest)
+Option 1: NACL (fastest, broadest)
 
-\# Block at subnet level — packets never reach instances
+Block at subnet level — packets never reach instances
 
 aws ec2 create-network-acl-entry \\
 
-&#x20; --network-acl-id acl-12345 \\
+--network-acl-id acl-12345 \\
 
-&#x20; --rule-number 50 \\
+--rule-number 50 \\
 
-&#x20; --protocol -1 \\
+--protocol -1 \\
 
-&#x20; --rule-action deny \\
+--rule-action deny \\
 
-&#x20; --ingress \\
+--ingress \\
 
-&#x20; --cidr-block 198.51.100.0/24
-
-
-
-\# Option 2: Security Group (can't deny, so not useful here)
-
-\# SGs only have allow rules — can't block specific IPs
+--cidr-block 198.51.100.0/24
 
 
 
-\# Option 3: WAF rule
+Option 2: Security Group (can't deny, so not useful here)
 
-\# Block at Layer 7 — more granular but higher in the stack
+SGs only have allow rules — can't block specific IPs
+
+
+
+Option 3: WAF rule
+
+Block at Layer 7 — more granular but higher in the stack
 
 aws wafv2 update-ip-set --name "blocked-ips" \\
 
-&#x20; --addresses "198.51.100.0/24"
+--addresses "198.51.100.0/24"
 
 
 
-\# Option 4: Cloudflare/CDN level
+Option 4: Cloudflare/CDN level
 
-\# Block before traffic even reaches AWS — most effective for DDoS
+Block before traffic even reaches AWS — most effective for DDoS
 
 
 
-\# Order of defense (outermost to innermost):
+Order of defense (outermost to innermost):
 
-\# Cloudflare → AWS Shield → WAF → NACL → Security Group → iptables
+Cloudflare → AWS Shield → WAF → NACL → Security Group → iptables
 
 ```
 
@@ -13990,93 +13990,93 @@ aws wafv2 update-ip-set --name "blocked-ips" \\
 
 VPC (Virtual Private Cloud):
 
-&#x20; Your isolated network in AWS
+Your isolated network in AWS
 
-&#x20; Defined by a CIDR block (e.g., 10.0.0.0/16)
+Defined by a CIDR block (e.g., 10.0.0.0/16)
 
-&#x20; Spans ALL AZs in a region
+Spans ALL AZs in a region
 
 
 
 SUBNETS:
 
-&#x20; Segments of the VPC CIDR
+Segments of the VPC CIDR
 
-&#x20; Each subnet lives in ONE AZ
+Each subnet lives in ONE AZ
 
-&#x20; Public subnet: has route to Internet Gateway
+Public subnet: has route to Internet Gateway
 
-&#x20; Private subnet: no direct internet access
+Private subnet: no direct internet access
 
 
 
 INTERNET GATEWAY (IGW):
 
-&#x20; Connects VPC to the internet
+Connects VPC to the internet
 
-&#x20; 1:1 per VPC
+1:1 per VPC
 
-&#x20; Allows instances with public IPs to reach/be reached from internet
+Allows instances with public IPs to reach/be reached from internet
 
 
 
 NAT GATEWAY:
 
-&#x20; Allows PRIVATE instances to reach the internet (outbound only)
+Allows PRIVATE instances to reach the internet (outbound only)
 
-&#x20; Lives in a PUBLIC subnet
+Lives in a PUBLIC subnet
 
-&#x20; Has an Elastic IP
+Has an Elastic IP
 
-&#x20; Used for: package updates, API calls, pulling container images
+Used for: package updates, API calls, pulling container images
 
-&#x20; NO inbound connections from internet (one-way door)
+NO inbound connections from internet (one-way door)
 
-&#x20; Cost: \~$32/month + data processing charges
+Cost: \~$32/month + data processing charges
 
-&#x20; Best practice: one per AZ for high availability
+Best practice: one per AZ for high availability
 
 
 
 ROUTE TABLES:
 
-&#x20; Rules that determine where network traffic goes
+Rules that determine where network traffic goes
 
-&#x20; Each subnet is associated with ONE route table
+Each subnet is associated with ONE route table
 
-&#x20; 
 
-&#x20; # Public subnet route table:
 
-&#x20; Destination       Target
+# Public subnet route table:
 
-&#x20; 10.0.0.0/16      local          (VPC internal traffic)
+Destination       Target
 
-&#x20; 0.0.0.0/0        igw-12345      (internet via IGW)
+10.0.0.0/16      local          (VPC internal traffic)
 
-&#x20; 
+0.0.0.0/0        igw-12345      (internet via IGW)
 
-&#x20; # Private subnet route table:
 
-&#x20; Destination       Target
 
-&#x20; 10.0.0.0/16      local
+# Private subnet route table:
 
-&#x20; 0.0.0.0/0        nat-12345      (internet via NAT Gateway)
+Destination       Target
+
+10.0.0.0/16      local
+
+0.0.0.0/0        nat-12345      (internet via NAT Gateway)
 
 
 
 ELASTIC IP:
 
-&#x20; Static public IPv4 address
+Static public IPv4 address
 
-&#x20; Persists across instance stop/start
+Persists across instance stop/start
 
-&#x20; Attached to NAT Gateway or instance ENI
+Attached to NAT Gateway or instance ENI
 
-&#x20; Free while attached to running instance
+Free while attached to running instance
 
-&#x20; Charged when NOT in use ($3.65/month since Feb 2024)
+Charged when NOT in use ($3.65/month since Feb 2024)
 
 ```
 
@@ -14090,69 +14090,69 @@ ELASTIC IP:
 
 VPC PEERING:
 
-&#x20; Direct connection between two VPCs
+Direct connection between two VPCs
 
-&#x20; Works across accounts and regions
+Works across accounts and regions
 
-&#x20; Non-transitive: A↔B and B↔C does NOT mean A↔C
+Non-transitive: A↔B and B↔C does NOT mean A↔C
 
-&#x20; No bandwidth limit (uses AWS backbone)
+No bandwidth limit (uses AWS backbone)
 
-&#x20; Free within same AZ, $0.01/GB cross-AZ
+Free within same AZ, $0.01/GB cross-AZ
 
-&#x20; Max: limited by number of routes in route table
-
-&#x20; 
-
-&#x20; Use for: Simple 2-3 VPC connections
+Max: limited by number of routes in route table
 
 
 
-&#x20; # Route table entry for peered VPC:
+Use for: Simple 2-3 VPC connections
 
-&#x20; Destination       Target
 
-&#x20; 172.16.0.0/16    pcx-12345      (peering connection)
+
+# Route table entry for peered VPC:
+
+Destination       Target
+
+172.16.0.0/16    pcx-12345      (peering connection)
 
 
 
 TRANSIT GATEWAY:
 
-&#x20; Hub-and-spoke model — central router for multiple VPCs
+Hub-and-spoke model — central router for multiple VPCs
 
-&#x20; Transitive routing: A→TGW→B→TGW→C all works
+Transitive routing: A→TGW→B→TGW→C all works
 
-&#x20; Supports: VPCs, VPN, Direct Connect, cross-region
+Supports: VPCs, VPN, Direct Connect, cross-region
 
-&#x20; Scales to thousands of VPCs
+Scales to thousands of VPCs
 
-&#x20; $0.05/hour + $0.02/GB
+$0.05/hour + $0.02/GB
 
-&#x20; 
 
-&#x20; Use for: Enterprise with many VPCs, hybrid cloud
 
-&#x20; 
+Use for: Enterprise with many VPCs, hybrid cloud
 
-&#x20; NovaMart architecture:
 
-&#x20; ┌─────────┐    ┌──────────────┐    ┌─────────┐
 
-&#x20; │ Prod VPC │────│Transit Gateway│────│ Dev VPC  │
+NovaMart architecture:
 
-&#x20; └─────────┘    └──────┬───────┘    └─────────┘
+┌─────────┐    ┌──────────────┐    ┌─────────┐
 
-&#x20;                       │
+│ Prod VPC │────│Transit Gateway│────│ Dev VPC  │
 
-&#x20;                ┌──────▼───────┐
+└─────────┘    └──────┬───────┘    └─────────┘
 
-&#x20;                │ Shared Svc   │
+                      │
 
-&#x20;                │ VPC (logging,│
+               ┌──────▼───────┐
 
-&#x20;                │ monitoring)  │
+               │ Shared Svc   │
 
-&#x20;                └──────────────┘
+               │ VPC (logging,│
+
+               │ monitoring)  │
+
+               └──────────────┘
 
 ```
 
@@ -14166,47 +14166,47 @@ TRANSIT GATEWAY:
 
 SITE-TO-SITE VPN:
 
-&#x20; Encrypted tunnel over public internet
+Encrypted tunnel over public internet
 
-&#x20; AWS VPC ←→ On-premises network
+AWS VPC ←→ On-premises network
 
-&#x20; Uses IPsec
+Uses IPsec
 
-&#x20; \~1.25 Gbps per tunnel (2 tunnels for HA)
+\~1.25 Gbps per tunnel (2 tunnels for HA)
 
-&#x20; Cost: $0.05/hour per VPN connection
+Cost: $0.05/hour per VPN connection
 
-&#x20; Setup time: minutes
+Setup time: minutes
 
-&#x20; Latency: variable (internet-dependent)
+Latency: variable (internet-dependent)
 
 
 
-&#x20; Use for: Quick hybrid connectivity, backup to Direct Connect
+Use for: Quick hybrid connectivity, backup to Direct Connect
 
 
 
 AWS DIRECT CONNECT:
 
-&#x20; Dedicated physical connection to AWS
+Dedicated physical connection to AWS
 
-&#x20; 1 Gbps or 10 Gbps ports
+1 Gbps or 10 Gbps ports
 
-&#x20; Consistent latency, consistent bandwidth
+Consistent latency, consistent bandwidth
 
-&#x20; Cost: $0.03/GB + port hours
+Cost: $0.03/GB + port hours
 
-&#x20; Setup time: weeks to months (physical installation)
-
-&#x20; 
-
-&#x20; Use for: Large data transfers, latency-sensitive workloads,
-
-&#x20;          compliance (traffic doesn't traverse public internet)
+Setup time: weeks to months (physical installation)
 
 
 
-&#x20; NovaMart: Direct Connect primary, VPN as backup
+Use for: Large data transfers, latency-sensitive workloads,
+
+         compliance (traffic doesn't traverse public internet)
+
+
+
+NovaMart: Direct Connect primary, VPN as backup
 
 ```
 
@@ -14218,87 +14218,87 @@ AWS DIRECT CONNECT:
 
 ```bash
 
-\# Without VPC Endpoint:
+Without VPC Endpoint:
 
-\# EC2 in private subnet → NAT Gateway → Internet → S3
+EC2 in private subnet → NAT Gateway → Internet → S3
 
-\# Problem: Traffic goes over internet, costs NAT Gateway data fees
-
-
-
-\# With VPC Endpoint:
-
-\# EC2 in private subnet → VPC Endpoint → S3
-
-\# Traffic stays within AWS network, no NAT Gateway needed
+Problem: Traffic goes over internet, costs NAT Gateway data fees
 
 
 
-\# TWO TYPES:
+With VPC Endpoint:
+
+EC2 in private subnet → VPC Endpoint → S3
+
+Traffic stays within AWS network, no NAT Gateway needed
 
 
 
-\# Gateway Endpoint (free!):
-
-\#   Supported: S3, DynamoDB ONLY
-
-\#   Adds route to route table
-
-\#   No security group needed
-
-resource "aws\_vpc\_endpoint" "s3" {
-
-&#x20; vpc\_id       = aws\_vpc.main.id
-
-&#x20; service\_name = "com.amazonaws.us-east-1.s3"
-
-&#x20; vpc\_endpoint\_type = "Gateway"
-
-&#x20; route\_table\_ids = \[aws\_route\_table.private.id]
-
-}
+TWO TYPES:
 
 
 
-\# Interface Endpoint (costs money):
+Gateway Endpoint (free!):
 
-\#   Supported: Almost all other AWS services (ECR, SQS, SNS, CloudWatch, etc.)
+  Supported: S3, DynamoDB ONLY
 
-\#   Creates an ENI in your subnet
+  Adds route to route table
 
-\#   Accessible via private DNS
+  No security group needed
 
-\#   $0.01/hour + $0.01/GB
+resource "aws_vpc_endpoint" "s3" {
 
-resource "aws\_vpc\_endpoint" "ecr" {
+vpc_id       = aws_vpc.main.id
 
-&#x20; vpc\_id             = aws\_vpc.main.id
+service_name = "com.amazonaws.us-east-1.s3"
 
-&#x20; service\_name       = "com.amazonaws.us-east-1.ecr.dkr"
+vpc_endpoint_type = "Gateway"
 
-&#x20; vpc\_endpoint\_type  = "Interface"
-
-&#x20; subnet\_ids         = \[aws\_subnet.private\_a.id, aws\_subnet.private\_b.id]
-
-&#x20; security\_group\_ids = \[aws\_security\_group.vpc\_endpoint.id]
-
-&#x20; private\_dns\_enabled = true
+route_table_ids = \[aws_route_table.private.id]
 
 }
 
 
 
-\# CRITICAL FOR EKS:
+Interface Endpoint (costs money):
 
-\# EKS nodes in private subnets need to pull images from ECR
+  Supported: Almost all other AWS services (ECR, SQS, SNS, CloudWatch, etc.)
 
-\# Without VPC endpoint: traffic goes through NAT Gateway = expensive
+  Creates an ENI in your subnet
 
-\# ECR pull for 200 pods × 500MB images = significant data costs
+  Accessible via private DNS
 
-\# Interface endpoints for ECR, S3 (for ECR layers), CloudWatch, STS
+  $0.01/hour + $0.01/GB
 
-\# save thousands of dollars per month on NAT data processing
+resource "aws_vpc_endpoint" "ecr" {
+
+vpc_id             = aws_vpc.main.id
+
+service_name       = "com.amazonaws.us-east-1.ecr.dkr"
+
+vpc_endpoint_type  = "Interface"
+
+subnet_ids         = \[aws_subnet.private_a.id, aws_subnet.private_b.id]
+
+security_group_ids = \[aws_security_group.vpc_endpoint.id]
+
+private_dns_enabled = true
+
+}
+
+
+
+CRITICAL FOR EKS:
+
+EKS nodes in private subnets need to pull images from ECR
+
+Without VPC endpoint: traffic goes through NAT Gateway = expensive
+
+ECR pull for 200 pods × 500MB images = significant data costs
+
+Interface endpoints for ECR, S3 (for ECR layers), CloudWatch, STS
+
+save thousands of dollars per month on NAT data processing
 
 ```
 
@@ -14314,67 +14314,67 @@ resource "aws\_vpc\_endpoint" "ecr" {
 
 ```bash
 
-\# Symptoms:
+Symptoms:
 
-\# Pods stuck in ImagePullBackOff
+Pods stuck in ImagePullBackOff
 
-\# "failed to pull image: timeout"
+"failed to pull image: timeout"
 
-\# Only happens in private subnets
+Only happens in private subnets
 
 
 
-\# Investigation:
+Investigation:
 
-\# 1. Check if NAT Gateway exists and is healthy
+1. Check if NAT Gateway exists and is healthy
 
 aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=vpc-12345"
 
-\# State: available ✓
+State: available ✓
 
 
 
-\# 2. Check route table for private subnet
+2. Check route table for private subnet
 
 aws ec2 describe-route-tables --route-table-ids rtb-12345
 
-\# 0.0.0.0/0 → nat-12345 ✓
+0.0.0.0/0 → nat-12345 ✓
 
 
 
-\# 3. Check NAT Gateway's subnet has route to IGW
+3. Check NAT Gateway's subnet has route to IGW
 
-\# NAT GW must be in a PUBLIC subnet with IGW route
+NAT GW must be in a PUBLIC subnet with IGW route
 
-\# Common mistake: putting NAT GW in private subnet
-
-
-
-\# 4. Check Security Groups
-
-\# NAT Gateway doesn't have a SG, but the instances do
-
-\# Instance SG outbound must allow HTTPS (443) to 0.0.0.0/0
+Common mistake: putting NAT GW in private subnet
 
 
 
-\# 5. Check NACLs
+4. Check Security Groups
 
-\# Outbound: allow TCP 443 to 0.0.0.0/0
+NAT Gateway doesn't have a SG, but the instances do
 
-\# Inbound: allow TCP 1024-65535 from 0.0.0.0/0 (return traffic!)
-
-\# ^^^ THE EPHEMERAL PORT TRAP AGAIN
+Instance SG outbound must allow HTTPS (443) to 0.0.0.0/0
 
 
 
-\# 6. Alternative fix: VPC Endpoints
+5. Check NACLs
 
-\# Deploy Interface Endpoints for ECR, S3, STS
+Outbound: allow TCP 443 to 0.0.0.0/0
 
-\# Remove dependency on NAT Gateway for AWS service access
+Inbound: allow TCP 1024-65535 from 0.0.0.0/0 (return traffic!)
 
-\# Faster, cheaper, more reliable
+^^^ THE EPHEMERAL PORT TRAP AGAIN
+
+
+
+6. Alternative fix: VPC Endpoints
+
+Deploy Interface Endpoints for ECR, S3, STS
+
+Remove dependency on NAT Gateway for AWS service access
+
+Faster, cheaper, more reliable
 
 ```
 
@@ -14394,13 +14394,13 @@ aws ec2 describe-route-tables --route-table-ids rtb-12345
 
 ```bash
 
-\# tcpdump captures raw packets on a network interface
+tcpdump captures raw packets on a network interface
 
-\# It's the most powerful network debugging tool
+It's the most powerful network debugging tool
 
 
 
-\# Basic capture:
+Basic capture:
 
 tcpdump -i eth0                    # All traffic on eth0
 
@@ -14408,7 +14408,7 @@ tcpdump -i any                     # All interfaces
 
 
 
-\# Filter by host:
+Filter by host:
 
 tcpdump -i eth0 host 10.0.1.5     # Traffic to/from this IP
 
@@ -14418,7 +14418,7 @@ tcpdump -i eth0 dst 10.0.1.5      # Only TO this IP
 
 
 
-\# Filter by port:
+Filter by port:
 
 tcpdump -i eth0 port 80           # HTTP traffic
 
@@ -14430,7 +14430,7 @@ tcpdump -i eth0 portrange 8080-8090
 
 
 
-\# Filter by protocol:
+Filter by protocol:
 
 tcpdump -i eth0 tcp               # TCP only
 
@@ -14440,7 +14440,7 @@ tcpdump -i eth0 icmp              # ICMP (ping) only
 
 
 
-\# Combine filters:
+Combine filters:
 
 tcpdump -i eth0 'host 10.0.1.5 and port 80'
 
@@ -14450,7 +14450,7 @@ tcpdump -i eth0 '(port 80 or port 443) and host 10.0.1.5'
 
 
 
-\# Capture TCP flags:
+Capture TCP flags:
 
 tcpdump -i eth0 'tcp\[tcpflags] \& tcp-syn != 0'    # SYN packets
 
@@ -14460,7 +14460,7 @@ tcpdump -i eth0 'tcp\[tcpflags] \& tcp-fin != 0'    # FIN packets
 
 
 
-\# Useful flags:
+Useful flags:
 
 tcpdump -n               # Don't resolve hostnames (faster)
 
@@ -14482,47 +14482,47 @@ tcpdump -s 0             # Capture full packet (not just header)
 
 
 
-##### \# REAL-WORLD DEBUGGING EXAMPLES:
+##### REAL-WORLD DEBUGGING EXAMPLES:
 
 
 
-\# "Is DNS working?"
+"Is DNS working?"
 
 tcpdump -i eth0 -nn port 53
 
-\# Shows DNS queries and responses with domain names
+Shows DNS queries and responses with domain names
 
 
 
-\# "Are SYN packets reaching my server?"
+"Are SYN packets reaching my server?"
 
 tcpdump -i eth0 -nn 'tcp\[tcpflags] == tcp-syn and dst port 8080'
 
-\# If SYNs arrive but no SYN-ACKs → app not listening or firewall
+If SYNs arrive but no SYN-ACKs → app not listening or firewall
 
 
 
-\# "Why are connections being reset?"
+"Why are connections being reset?"
 
 tcpdump -i eth0 -nn 'tcp\[tcpflags] \& tcp-rst != 0'
 
-\# Capture RST packets — see who's sending them and why
+Capture RST packets — see who's sending them and why
 
 
 
-\# "What's the actual HTTP request being sent?"
+"What's the actual HTTP request being sent?"
 
 tcpdump -i eth0 -A 'dst port 80' | grep -E 'GET|POST|HTTP|Host:'
 
-\# Shows HTTP method, path, host header in plain text
+Shows HTTP method, path, host header in plain text
 
 
 
-\# "Capture 30 seconds of traffic for later analysis"
+"Capture 30 seconds of traffic for later analysis"
 
 timeout 30 tcpdump -i eth0 -w /tmp/debug.pcap -s 0 'host 10.0.1.5'
 
-\# Then download and open in Wireshark
+Then download and open in Wireshark
 
 ```
 
@@ -14534,77 +14534,77 @@ timeout 30 tcpdump -i eth0 -w /tmp/debug.pcap -s 0 'host 10.0.1.5'
 
 ```bash
 
-\# traceroute shows every hop between you and the destination
+traceroute shows every hop between you and the destination
 
 traceroute 8.8.8.8
 
-\# 1  10.0.0.1 (gateway)     1.2ms  1.1ms  1.3ms
+1  10.0.0.1 (gateway)     1.2ms  1.1ms  1.3ms
 
-\# 2  172.16.0.1              5.2ms  5.1ms  5.3ms
+2  172.16.0.1              5.2ms  5.1ms  5.3ms
 
-\# 3  \* \* \*                           ← hop doesn't respond (ICMP blocked)
+3  \* \* \*                           ← hop doesn't respond (ICMP blocked)
 
-\# 4  209.85.248.1            15.2ms 15.1ms 15.3ms
+4  209.85.248.1            15.2ms 15.1ms 15.3ms
 
-\# 5  8.8.8.8                 16.0ms 15.9ms 16.1ms
-
-
-
-\# Each line = one router/hop
-
-\# Three times = three probe responses (latency variation)
-
-\# \* \* \* = hop blocks ICMP or traceroute probes
+5  8.8.8.8                 16.0ms 15.9ms 16.1ms
 
 
 
-\# Use TCP-based traceroute for more reliable results:
+Each line = one router/hop
+
+Three times = three probe responses (latency variation)
+
+\* \* \* = hop blocks ICMP or traceroute probes
+
+
+
+Use TCP-based traceroute for more reliable results:
 
 traceroute -T -p 443 example.com
 
-\# Uses TCP SYN instead of ICMP — less likely to be blocked
+Uses TCP SYN instead of ICMP — less likely to be blocked
 
 
 
-\# mtr — traceroute on steroids (continuous monitoring)
+mtr — traceroute on steroids (continuous monitoring)
 
 mtr 8.8.8.8
 
-\# Real-time continuous traceroute
+Real-time continuous traceroute
 
-\# Shows: packet loss %, avg/best/worst latency per hop
+Shows: packet loss %, avg/best/worst latency per hop
 
-\# Invaluable for detecting intermittent network issues
+Invaluable for detecting intermittent network issues
 
 \#
 
-\# HOST                Loss%  Snt   Last   Avg  Best  Wrst
+HOST                Loss%  Snt   Last   Avg  Best  Wrst
 
-\# 1. gateway          0.0%   50    1.2    1.3   1.0   2.1
+1. gateway          0.0%   50    1.2    1.3   1.0   2.1
 
-\# 2. isp-router       0.0%   50    5.1    5.2   4.8   6.3
+2. isp-router       0.0%   50    5.1    5.2   4.8   6.3
 
-\# 3. backbone         2.0%   50   15.2   15.5  14.9  25.3  ← packet loss!
+3. backbone         2.0%   50   15.2   15.5  14.9  25.3  ← packet loss!
 
-\# 4. destination       2.0%   50   16.1   16.3  15.8  26.1
-
-
-
-\# If loss appears at hop 3 and continues → problem is AT hop 3
-
-\# If loss appears at hop 3 but NOT at hop 4 → hop 3 just drops ICMP (normal)
+4. destination       2.0%   50   16.1   16.3  15.8  26.1
 
 
 
-\# Generate report for sharing with ISP/network team:
+If loss appears at hop 3 and continues → problem is AT hop 3
 
-mtr -rw -c 100 example.com > mtr\_report.txt
+If loss appears at hop 3 but NOT at hop 4 → hop 3 just drops ICMP (normal)
 
-\# -r = report mode
 
-\# -w = wide (show full hostnames)
 
-\# -c = count of pings
+Generate report for sharing with ISP/network team:
+
+mtr -rw -c 100 example.com > mtr_report.txt
+
+-r = report mode
+
+-w = wide (show full hostnames)
+
+-c = count of pings
 
 ```
 
@@ -14616,37 +14616,37 @@ mtr -rw -c 100 example.com > mtr\_report.txt
 
 ```bash
 
-\# ss is the modern replacement for netstat (faster, more info)
+ss is the modern replacement for netstat (faster, more info)
 
 
 
-\# List all TCP connections
+List all TCP connections
 
 ss -tan
 
 
 
-\# List all listening TCP ports
+List all listening TCP ports
 
 ss -tlnp
 
-\# -t = TCP
+-t = TCP
 
-\# -l = listening
+-l = listening
 
-\# -n = numeric (don't resolve names)
+-n = numeric (don't resolve names)
 
-\# -p = show process
+-p = show process
 
 
 
-\# List all UDP sockets
+List all UDP sockets
 
 ss -uanp
 
 
 
-\# Filter by state
+Filter by state
 
 ss -tan state established
 
@@ -14656,7 +14656,7 @@ ss -tan state close-wait
 
 
 
-\# Filter by port
+Filter by port
 
 ss -tan 'sport = :8080'        # Source port 8080
 
@@ -14664,39 +14664,39 @@ ss -tan 'dport = :5432'        # Destination port 5432
 
 
 
-\# Filter by address
+Filter by address
 
 ss -tan 'dst 10.0.1.5'
 
 
 
-\# Connection summary
+Connection summary
 
 ss -s
 
-\# Total: 15234 (kernel 15500)
+Total: 15234 (kernel 15500)
 
-\# TCP:   12345 (estab 8765, closed 1234, orphaned 12, timewait 2345)
+TCP:   12345 (estab 8765, closed 1234, orphaned 12, timewait 2345)
 
-\# UDP:   56
+UDP:   56
 
 
 
-\# Per-socket TCP info (retransmissions, RTT, cwnd)
+Per-socket TCP info (retransmissions, RTT, cwnd)
 
 ss -tin
 
-\# Shows: rto, rtt, cwnd, retrans for each connection
+Shows: rto, rtt, cwnd, retrans for each connection
 
-\# Invaluable for debugging slow connections
+Invaluable for debugging slow connections
 
 
 
-\# Find which process is using a port
+Find which process is using a port
 
 ss -tlnp | grep :8080
 
-\# LISTEN  0  128  \*:8080  \*:\*  users:(("java",pid=1234,fd=56))
+LISTEN  0  128  \*:8080  \*:\*  users:(("java",pid=1234,fd=56))
 
 ```
 
@@ -14708,115 +14708,115 @@ ss -tlnp | grep :8080
 
 ```bash
 
-\# Basic request
+Basic request
 
 curl https://api.example.com/health
 
 
 
-\# Verbose (show TLS handshake, headers, everything)
+Verbose (show TLS handshake, headers, everything)
 
 curl -vvv https://api.example.com/health
 
 
 
-\# Only headers
+Only headers
 
 curl -I https://api.example.com/health
 
 
 
-\# With timing breakdown
+With timing breakdown
 
-curl -o /dev/null -s -w "\\
+curl -o /dev/null -s -w "\
 
-&#x20; DNS:        %{time\_namelookup}s\\n\\
+DNS:        %{time_namelookup}s\n \
 
-&#x20; Connect:    %{time\_connect}s\\n\\
+Connect:    %{time_connect}s\n \
 
-&#x20; TLS:        %{time\_appconnect}s\\n\\
+TLS:        %{time_appconnect}s\n \
 
-&#x20; TTFB:       %{time\_starttransfer}s\\n\\
+TTFB:       %{time_starttransfer}s\n \
 
-&#x20; Total:      %{time\_total}s\\n\\
+Total:      %{time_total}s\n \
 
-&#x20; HTTP Code:  %{http\_code}\\n\\
+HTTP Code:  %{http_code}\n \
 
-&#x20; Size:       %{size\_download} bytes\\n" \\
+Size:       %{size_download} bytes\n" \
 
-&#x20; https://api.example.com/health
-
-
-
-\# Output:
-
-\# DNS:        0.012s        ← DNS resolution time
-
-\# Connect:    0.045s        ← TCP handshake complete
-
-\# TLS:        0.123s        ← TLS handshake complete
-
-\# TTFB:       0.234s        ← Time to first byte (server processing)
-
-\# Total:      0.250s        ← Total request time
-
-\# HTTP Code:  200
-
-\# Size:       15 bytes
+https://api.example.com/health
 
 
 
-\# If DNS is slow → DNS issue
+Output:
 
-\# If Connect-DNS is slow → network latency
+DNS:        0.012s        ← DNS resolution time
 
-\# If TLS-Connect is slow → TLS issue (cert validation, cipher)
+Connect:    0.045s        ← TCP handshake complete
 
-\# If TTFB-TLS is slow → server is slow processing
+TLS:        0.123s        ← TLS handshake complete
 
-\# This breakdown tells you EXACTLY where the latency is
+TTFB:       0.234s        ← Time to first byte (server processing)
+
+Total:      0.250s        ← Total request time
+
+HTTP Code:  200
+
+Size:       15 bytes
 
 
 
-\# Custom headers
+If DNS is slow → DNS issue
+
+If Connect-DNS is slow → network latency
+
+If TLS-Connect is slow → TLS issue (cert validation, cipher)
+
+If TTFB-TLS is slow → server is slow processing
+
+This breakdown tells you EXACTLY where the latency is
+
+
+
+Custom headers
 
 curl -H "Authorization: Bearer token123" https://api.example.com
 
 
 
-\# POST with JSON body
+POST with JSON body
 
 curl -X POST -H "Content-Type: application/json" \\
 
-&#x20; -d '{"name":"test"}' https://api.example.com/users
+-d '{"name":"test"}' https://api.example.com/users
 
 
 
-\# Follow redirects
+Follow redirects
 
 curl -L https://example.com
 
 
 
-\# Insecure (skip TLS verification — for debugging only!)
+Insecure (skip TLS verification — for debugging only!)
 
 curl -k https://self-signed.example.com
 
 
 
-\# Timeout
+Timeout
 
 curl --connect-timeout 5 --max-time 30 https://api.example.com
 
 
 
-\# Resolve to specific IP (bypass DNS — test before migration)
+Resolve to specific IP (bypass DNS — test before migration)
 
 curl --resolve api.example.com:443:10.0.1.5 https://api.example.com
 
-\# Sends request to 10.0.1.5 but uses api.example.com for TLS SNI and Host header
+Sends request to 10.0.1.5 but uses api.example.com for TLS SNI and Host header
 
-\# Perfect for testing a new server before updating DNS
+Perfect for testing a new server before updating DNS
 
 ```
 
@@ -14832,109 +14832,109 @@ curl --resolve api.example.com:443:10.0.1.5 https://api.example.com
 
 ```bash
 
-\# A developer says: "My service can't reach the database"
+A developer says: "My service can't reach the database"
 
-\# Service: app pod in EKS
+Service: app pod in EKS
 
-\# Database: RDS PostgreSQL at db.internal.example.com:5432
-
-
-
-##### \# LAYER-BY-LAYER DEBUGGING:
+Database: RDS PostgreSQL at db.internal.example.com:5432
 
 
 
-\# STEP 1: DNS Resolution (Layer 7)
+##### LAYER-BY-LAYER DEBUGGING:
+
+
+
+STEP 1: DNS Resolution (Layer 7)
 
 kubectl exec -it app-pod -- nslookup db.internal.example.com
 
-\# Does it resolve? To what IP?
+Does it resolve? To what IP?
 
-\# If NXDOMAIN → DNS issue (CoreDNS, Route53 private zone)
+If NXDOMAIN → DNS issue (CoreDNS, Route53 private zone)
 
-\# If resolves → continue
+If resolves → continue
 
 
 
-\# STEP 2: Network Reachability (Layer 3)
+STEP 2: Network Reachability (Layer 3)
 
 kubectl exec -it app-pod -- ping -c 3 <db-ip>
 
-\# Note: ICMP might be blocked — don't rely solely on ping
+Note: ICMP might be blocked — don't rely solely on ping
 
-\# If works → Layer 3 is fine
+If works → Layer 3 is fine
 
-\# If fails → routing issue, Security Group blocking ICMP
+If fails → routing issue, Security Group blocking ICMP
 
 
 
-\# STEP 3: Port Reachability (Layer 4)
+STEP 3: Port Reachability (Layer 4)
 
 kubectl exec -it app-pod -- nc -zv <db-ip> 5432
 
-\# Or: kubectl exec -it app-pod -- timeout 5 bash -c 'echo > /dev/tcp/<db-ip>/5432'
+Or: kubectl exec -it app-pod -- timeout 5 bash -c 'echo > /dev/tcp/<db-ip>/5432'
 
-\# "Connection succeeded" → TCP port is open, firewall allows it
+"Connection succeeded" → TCP port is open, firewall allows it
 
-\# "Connection refused" → port is open but nothing listening
+"Connection refused" → port is open but nothing listening
 
-\# "Connection timed out" → firewall/SG blocking or no route
-
-
-
-\# STEP 4: If timeout, check Security Groups
-
-\# App pod → runs on node → node has SG
-
-\# Check: node SG allows outbound TCP 5432?
-
-\# Check: RDS SG allows inbound TCP 5432 from node SG or node CIDR?
+"Connection timed out" → firewall/SG blocking or no route
 
 
 
-\# STEP 5: If SGs are correct, check NACLs
+STEP 4: If timeout, check Security Groups
 
-\# Private subnet NACL allows outbound TCP 5432?
+App pod → runs on node → node has SG
 
-\# DB subnet NACL allows inbound TCP 5432?
+Check: node SG allows outbound TCP 5432?
 
-\# DB subnet NACL allows outbound TCP 1024-65535 (return traffic)?
-
-
-
-\# STEP 6: If NACLs are correct, check routing
-
-\# Does the pod's node have a route to the DB subnet?
-
-\# Are they in the same VPC? Peered VPCs? Transit Gateway?
+Check: RDS SG allows inbound TCP 5432 from node SG or node CIDR?
 
 
 
-\# STEP 7: Application layer
+STEP 5: If SGs are correct, check NACLs
 
-\# If TCP connection succeeds but app still fails:
+Private subnet NACL allows outbound TCP 5432?
 
-\# Wrong credentials? Wrong database name? SSL required?
+DB subnet NACL allows inbound TCP 5432?
+
+DB subnet NACL allows outbound TCP 1024-65535 (return traffic)?
+
+
+
+STEP 6: If NACLs are correct, check routing
+
+Does the pod's node have a route to the DB subnet?
+
+Are they in the same VPC? Peered VPCs? Transit Gateway?
+
+
+
+STEP 7: Application layer
+
+If TCP connection succeeds but app still fails:
+
+Wrong credentials? Wrong database name? SSL required?
 
 kubectl exec -it app-pod -- psql -h <db-ip> -U myuser -d mydb
 
-\# This gives you the actual PostgreSQL error
+This gives you the actual PostgreSQL error
 
 
 
-\# THE CHECKLIST:
+THE CHECKLIST:
 
-\# 1. DNS resolves correctly?
+1. DNS resolves correctly?
 
-\# 2. TCP connection succeeds on the port?
+2. TCP connection succeeds on the port?
 
-\# 3. Security Groups allow the traffic?
+3. Security Groups allow the traffic?
 
-\# 4. NACLs allow the traffic (both directions)?
+4. NACLs allow the traffic (both directions)?
 
-\# 5. Route tables have correct routes?
+5. Route tables have correct routes?
 
-\# 6. Application-level auth/config correct?
+6. Application-level auth/config correct?
 
 ```
 
@@ -14944,7 +14944,7 @@ kubectl exec -it app-pod -- psql -h <db-ip> -U myuser -d mydb
 
 
 
-\# 📋 LESSONS 7-9 QUICK REFERENCE
+📋 LESSONS 7-9 QUICK REFERENCE
 
 
 
@@ -14952,99 +14952,99 @@ kubectl exec -it app-pod -- psql -h <db-ip> -U myuser -d mydb
 
 IPTABLES:
 
-&#x20; Tables: filter (default), nat, mangle, raw
+Tables: filter (default), nat, mangle, raw
 
-&#x20; Chains: PREROUTING, INPUT, FORWARD, OUTPUT, POSTROUTING
+Chains: PREROUTING, INPUT, FORWARD, OUTPUT, POSTROUTING
 
-&#x20; First match wins (ORDER MATTERS)
+First match wins (ORDER MATTERS)
 
-&#x20; iptables -L -n -v --line-numbers    → View rules
+iptables -L -n -v --line-numbers    → View rules
 
-&#x20; iptables -I INPUT 1 -s <ip> -j DROP → Emergency block
+iptables -I INPUT 1 -s <ip> -j DROP → Emergency block
 
-&#x20; K8s uses iptables for Service routing (kube-proxy)
+K8s uses iptables for Service routing (kube-proxy)
 
 
 
 SECURITY GROUPS:
 
-&#x20; Stateful, allow-only, all rules evaluated
+Stateful, allow-only, all rules evaluated
 
-&#x20; Reference other SGs as source (dynamic!)
+Reference other SGs as source (dynamic!)
 
-&#x20; Default: deny inbound, allow outbound
+Default: deny inbound, allow outbound
 
-&#x20; Primary firewall for AWS
+Primary firewall for AWS
 
 
 
 NACLs:
 
-&#x20; Stateless, allow+deny, ordered by rule number
+Stateless, allow+deny, ordered by rule number
 
-&#x20; Must allow ephemeral ports (1024-65535) for return traffic
+Must allow ephemeral ports (1024-65535) for return traffic
 
-&#x20; Use as coarse secondary layer, not primary firewall
+Use as coarse secondary layer, not primary firewall
 
-&#x20; First match wins (like iptables)
+First match wins (like iptables)
 
 
 
 VPC:
 
-&#x20; IGW = internet access for public subnets
+IGW = internet access for public subnets
 
-&#x20; NAT GW = outbound internet for private subnets (in public subnet!)
+NAT GW = outbound internet for private subnets (in public subnet!)
 
-&#x20; VPC Peering = direct, non-transitive, free same-AZ
+VPC Peering = direct, non-transitive, free same-AZ
 
-&#x20; Transit Gateway = hub-and-spoke, transitive, enterprise
+Transit Gateway = hub-and-spoke, transitive, enterprise
 
-&#x20; VPN = encrypted over internet, quick setup
+VPN = encrypted over internet, quick setup
 
-&#x20; Direct Connect = dedicated physical, consistent, weeks to setup
+Direct Connect = dedicated physical, consistent, weeks to setup
 
 
 
 VPC ENDPOINTS:
 
-&#x20; Gateway (free): S3, DynamoDB
+Gateway (free): S3, DynamoDB
 
-&#x20; Interface ($): ECR, SQS, SNS, CloudWatch, STS, etc.
+Interface ($): ECR, SQS, SNS, CloudWatch, STS, etc.
 
-&#x20; Critical for EKS in private subnets (save NAT costs)
+Critical for EKS in private subnets (save NAT costs)
 
 
 
 DEBUGGING TOOLS:
 
-&#x20; tcpdump -i eth0 -nn 'host X and port Y'     → Packet capture
+tcpdump -i eth0 -nn 'host X and port Y'     → Packet capture
 
-&#x20; tcpdump 'tcp\[tcpflags] \& tcp-rst != 0'      → Find RSTs
+tcpdump 'tcp\[tcpflags] \& tcp-rst != 0'      → Find RSTs
 
-&#x20; mtr <host>                                    → Continuous traceroute
+mtr <host>                                    → Continuous traceroute
 
-&#x20; ss -tan state close-wait                      → Find socket leaks
+ss -tan state close-wait                      → Find socket leaks
 
-&#x20; ss -tin                                       → Per-connection TCP stats
+ss -tin                                       → Per-connection TCP stats
 
-&#x20; curl -w timing format                         → HTTP timing breakdown
+curl -w timing format                         → HTTP timing breakdown
 
-&#x20; curl --resolve domain:port:ip                 → Test before DNS change
+curl --resolve domain:port:ip                 → Test before DNS change
 
 
 
 SYSTEMATIC DEBUGGING:
 
-&#x20; 1. DNS → 2. Ping/ICMP → 3. TCP port → 4. Security Groups →
+1. DNS → 2. Ping/ICMP → 3. TCP port → 4. Security Groups →
 
-&#x20; 5. NACLs → 6. Route tables → 7. Application layer
+5. NACLs → 6. Route tables → 7. Application layer
 
 
 
 DEFENSE LAYERS (outer to inner):
 
-&#x20; CDN/Cloudflare → AWS Shield → WAF → NACL → Security Group → iptables
+CDN/Cloudflare → AWS Shield → WAF → NACL → Security Group → iptables
 
 ```
 
@@ -15054,7 +15054,7 @@ DEFENSE LAYERS (outer to inner):
 
 
 
-\# 📝 Retention Questions — Lessons 7-9
+📝 Retention Questions — Lessons 7-9
 
 
 
