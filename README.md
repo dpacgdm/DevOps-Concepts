@@ -29103,5 +29103,5284 @@ Missing: CPS performance impact. CPS transformation makes Groovy pipelines signi
 Sandbox bypass via shared library — incomplete threat model. You correctly said an attacker with commit access to the library repo can execute arbitrary code. But you didn't mention: even without direct commit access, if the library is loaded from @Library('lib') _ without version pinning, a developer who can push to the library's default branch gets the same power. This connects directly to Q1 (version pinning).
 
 ===========================================================================================
+# Phase 3: CI/CD Pipelines
+## Lesson 2: CI/CD Toolchain — SonarQube, Trivy, BlackDuck, Artifactory + Advanced Pipeline Patterns
+
+---
+
+## Why This Matters at NovaMart
+
+You build code. But building code is the easy part. The hard part is answering these questions **before** code reaches production:
+
+- Is this code maintainable or will it rot? → **SonarQube**
+- Does this container have known vulnerabilities? → **Trivy**
+- Are we using libraries with banned licenses or known CVEs? → **BlackDuck**
+- Where do built artifacts live, who can access them, how long do we keep them? → **Artifactory**
+
+At NovaMart, a single dependency with a critical CVE in the payment service could mean PCI-DSS audit failure, regulatory fines, and front-page news. These tools aren't optional — they're compliance gates.
+
+---
+
+## 1. SonarQube — Code Quality & Security Analysis
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     SonarQube Server                          │
+│                                                               │
+│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐  │
+│  │  Web Server  │  │ Compute      │  │  Search (ES)        │  │
+│  │  (UI + API)  │  │ Engine (CE)  │  │  (Elasticsearch     │  │
+│  │  Port 9000   │  │  Processes   │  │   embedded)         │  │
+│  │              │  │  analysis    │  │  Indexes results    │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬──────────────┘  │
+│         │                 │                  │                 │
+│         └────────┬────────┴──────────────────┘                │
+│                  │                                             │
+│         ┌────────▼─────────┐                                  │
+│         │  PostgreSQL DB   │  (Issues, metrics, config,       │
+│         │  (External)      │   quality profiles, rules)       │
+│         └──────────────────┘                                  │
+└──────────────────────────────────────────────────────────────┘
+         ▲                              │
+         │ Analysis report              │ Webhook (quality gate result)
+         │ (POST /api/ce/submit)        │ (POST to Jenkins)
+         │                              ▼
+┌────────┴──────────┐          ┌───────────────────┐
+│  SonarQube Scanner │          │     Jenkins        │
+│  (runs in CI/CD)   │          │  waitForQuality    │
+│                     │          │  Gate()            │
+│  - Parses source    │          └───────────────────┘
+│  - Runs rules       │
+│  - Sends report     │
+│  (NOT the server    │
+│   doing the scan!)  │
+└─────────────────────┘
+```
+
+**Key distinction:** The scanner runs in your CI agent, collects data, and ships it to the server. The server's Compute Engine processes the analysis asynchronously. This is why `waitForQualityGate()` exists — there's a delay between scan completion and result availability.
+
+### What SonarQube Actually Analyzes
+
+```
+ANALYSIS DIMENSIONS:
+├── Bugs           → Code that is demonstrably wrong (null dereference, 
+│                    resource leak, infinite loop)
+├── Vulnerabilities → Security weaknesses (SQL injection, XSS, hardcoded 
+│                     secrets, path traversal, weak crypto)
+├── Code Smells    → Maintainability issues (deep nesting, long methods,
+│                    duplicated code, cognitive complexity)
+├── Coverage       → % of code exercised by unit tests (requires 
+│                    JaCoCo/Istanbul/coverage.py report import)
+├── Duplications   → Duplicate code blocks across files
+├── Security Hotspots → Code that MIGHT be vulnerable (needs human review)
+│                       vs Vulnerabilities which ARE vulnerable
+└── Technical Debt  → Estimated time to fix all issues (measured in hours/days)
+```
+
+### Quality Profiles & Rules
+
+```
+Quality Profile = set of rules activated for a language
+
+Built-in profiles:
+├── Sonar Way (default)           → ~350 rules for Java, balanced
+├── Sonar Way Recommended         → Superset, more rules
+└── Custom (NovaMart Standard)    → Fork of Sonar Way + company rules
+
+Rule severity:
+├── BLOCKER    → Will crash or corrupt data (must fix before merge)
+├── CRITICAL   → Security vulnerability or serious bug
+├── MAJOR      → Significant code smell or moderate bug
+├── MINOR      → Style issue, low-impact smell
+└── INFO       → Informational, no fix required
+
+Example custom rules for NovaMart:
+- BLOCKER: No System.out.println (use structured logging)
+- BLOCKER: No hardcoded passwords/API keys
+- CRITICAL: Cognitive complexity > 15 per method
+- MAJOR: Test coverage < 80% on new code
+- MINOR: TODO comments must reference a Jira ticket
+```
+
+### Quality Gates — The Pipeline Gate
+
+```
+Quality Gate = pass/fail criteria applied to analysis results
+
+NovaMart Quality Gate ("NovaMart Production"):
+┌──────────────────────────────────────────────────────┐
+│  Condition                    │ Operator │ Threshold  │
+├──────────────────────────────────────────────────────┤
+│  New Code Coverage            │    <     │   80%      │
+│  New Code Duplications        │    >     │   3%       │
+│  New Bugs                     │    >     │   0        │
+│  New Vulnerabilities          │    >     │   0        │
+│  New Security Hotspots Review │    <     │   100%     │
+│  New Code Smells (BLOCKER)    │    >     │   0        │
+│  New Code Smells (CRITICAL)   │    >     │   0        │
+│  Overall Code Maintainability │    <     │   A        │
+└──────────────────────────────────────────────────────┘
+
+KEY CONCEPT: "New Code" vs "Overall Code"
+├── New Code = code changed in this branch/PR (since branch point)
+│   → This is what you gate on. "Clean as you code."
+│   → You can't fix 10 years of tech debt overnight.
+├── Overall Code = entire codebase metrics
+│   → Track for trending, don't gate on it
+│   → Exception: maintainability rating (A-E) on overall
+└── New Code Period: defined per project (previous_version, 
+    number_of_days, reference_branch)
+```
+
+### Branch Analysis & PR Decoration
+
+```
+BRANCH TYPES IN SONARQUBE:
+├── Main Branch     → Full analysis, all metrics stored permanently
+├── Long-lived      → release/*, develop — full analysis
+├── Short-lived/PR  → Feature branches, PRs
+│   ├── Compared against target branch (main)
+│   ├── Only NEW code is analyzed
+│   ├── Results posted as PR comments (Bitbucket/GitHub integration)
+│   └── Quality Gate applies to new code only
+└── Reference Branch → What "new code" is measured against
+
+PR Decoration flow:
+Developer opens PR → Jenkins runs → Scanner sends analysis →
+SonarQube processes → Posts inline comments on PR →
+Sets commit status (✅/❌) → Quality Gate result sent via webhook →
+Jenkins waitForQualityGate() passes/fails pipeline
+```
+
+### Jenkins Integration — Complete
+
+```groovy
+// Step 1: Global config (Manage Jenkins → Configure System → SonarQube servers)
+//   Name: sonarqube-server
+//   URL: https://sonar.novamart.com
+//   Auth token: (credential ID: sonar-token)
+//   Webhook: SonarQube → Administration → Webhooks → 
+//            https://jenkins.novamart.com/sonarqube-webhook/
+
+// Step 2: In Jenkinsfile
+stage('SonarQube Analysis') {
+    steps {
+        withSonarQubeEnv('sonarqube-server') {
+            // For Maven projects:
+            sh '''
+                mvn sonar:sonar \
+                    -Dsonar.projectKey=order-service \
+                    -Dsonar.projectName="Order Service" \
+                    -Dsonar.branch.name=${BRANCH_NAME} \
+                    -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                    -Dsonar.java.binaries=target/classes \
+                    -Dsonar.qualitygate.wait=false
+            '''
+            // For non-Maven (Go, Python, JS):
+            sh '''
+                sonar-scanner \
+                    -Dsonar.projectKey=cart-service \
+                    -Dsonar.sources=. \
+                    -Dsonar.go.coverage.reportPaths=coverage.out \
+                    -Dsonar.exclusions=**/vendor/**,**/*_test.go
+            '''
+        }
+    }
+}
+
+stage('Quality Gate') {
+    steps {
+        timeout(time: 5, unit: 'MINUTES') {
+            waitForQualityGate abortPipeline: true
+            // This BLOCKS until SonarQube fires the webhook back
+            // If SonarQube is slow or webhook is misconfigured → timeout
+        }
+    }
+}
+```
+
+### How SonarQube Breaks
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| **Quality Gate timeout** | Pipeline hangs 5min then fails | Webhook not configured, wrong URL, SonarQube overloaded, CE queue backed up | Verify webhook URL, check CE queue in SonarQube admin, scale CE workers |
+| **False positives flood** | Developers ignore all findings because 50% are noise | Default profile too aggressive for codebase, test code being scanned | Custom quality profile, `sonar.exclusions` for test/generated code, mark FPs in UI |
+| **CE queue backed up** | Analysis results delayed 30+ minutes | Too many projects, underpowered server, large monorepo | Horizontal CE scaling (Data Center Edition), incremental analysis, split monorepo projects |
+| **Coverage shows 0%** | Quality gate fails on coverage | JaCoCo/Istanbul report path wrong, report not generated, wrong format | Verify `jacoco.xml` exists, correct `xmlReportPaths`, run tests BEFORE sonar |
+| **Branch analysis broken** | PR decoration missing, wrong diff | `sonar.branch.name` not set, community edition (no branch support) | Developer Edition minimum for branches, verify branch parameters |
+| **Elasticsearch OOM** | SonarQube UI unresponsive, search broken | ES embedded instance needs more heap, too many projects/issues | `sonar.search.javaOpts=-Xmx2g`, external ES for large installs |
+| **Upgrade breaks plugins** | 500 errors after upgrade | Custom plugins incompatible with new version | Test upgrades in staging, check plugin compatibility matrix BEFORE upgrade |
+| **Stale results** | Dashboard shows old analysis | Webhook fires but Jenkins already moved on, `waitForQualityGate` was removed | Always use `waitForQualityGate`, verify CE processed the correct analysis |
+
+### SonarQube Editions — What You Actually Get
+
+```
+Community (Free):        15+ languages, basic analysis, NO branch analysis
+                         → Single main branch only. Useless for PR workflows.
+                         
+Developer ($):           Branch analysis, PR decoration, Bitbucket/GitHub/GitLab
+                         integration, taint analysis (data flow for security)
+                         → MINIMUM for any real team.
+                         
+Enterprise ($$):         Portfolio management, project transfer, regulatory 
+                         reports (PDF), application-level view across services
+                         → Multi-team orgs, compliance reporting.
+                         
+Data Center ($$$):       High availability (multiple CE nodes), component 
+                         redundancy
+                         → 200+ service shops like NovaMart.
+```
+
+---
+
+## 2. Trivy — Container & Infrastructure Scanning
+
+### What Trivy Scans
+
+```
+TRIVY SCAN TARGETS:
+├── Container Images (image)     → CVEs in OS packages + language deps
+├── Filesystem (fs)              → Scan local project directory
+├── Git Repository (repo)        → Scan remote repo directly
+├── Kubernetes (k8s)             → Scan running cluster for misconfigs
+├── AWS Account (aws)            → Scan AWS resources for misconfigs
+├── SBOM (sbom)                  → Scan Software Bill of Materials
+└── Config files (config)        → IaC misconfigurations
+    ├── Terraform (.tf)
+    ├── Dockerfile
+    ├── Kubernetes manifests
+    ├── Helm charts
+    └── CloudFormation
+```
+
+This is why Trivy is dominant — it's not just a container scanner. It's a **universal security scanner**.
+
+### Architecture
+
+```
+┌───────────────────────────────────────────────────┐
+│                  Trivy CLI                         │
+│                                                    │
+│  ┌──────────────┐   ┌────────────────────────┐    │
+│  │  Scanner      │   │  Vulnerability DB       │    │
+│  │  ├── OS pkg   │   │  (trivy-db)            │    │
+│  │  ├── Language │   │  ├── NVD (NIST)         │    │
+│  │  ├── License  │   │  ├── Red Hat OVAL       │    │
+│  │  ├── Secret   │   │  ├── Debian Security    │    │
+│  │  ├── Misconfig│   │  ├── Alpine SecDB       │    │
+│  │  └── SBOM     │   │  ├── GitHub Advisory    │    │
+│  └──────────────┘   │  └── And 10+ more        │    │
+│                      └────────────────────────┘    │
+│                                                    │
+│  DB download: ghcr.io/aquasecurity/trivy-db        │
+│  Updated every 6 hours                             │
+│  Cached locally: ~/.cache/trivy/                   │
+└───────────────────────────────────────────────────┘
+```
+
+### Trivy in CI Pipeline — Complete Reference
+
+```bash
+# ── IMAGE SCANNING (most common) ──
+
+# Basic: fail on HIGH and CRITICAL
+trivy image \
+    --severity HIGH,CRITICAL \
+    --exit-code 1 \
+    123456789.dkr.ecr.us-east-1.amazonaws.com/order-service:v1.2.3
+
+# Production pipeline scan:
+trivy image \
+    --severity HIGH,CRITICAL \
+    --exit-code 1 \                    # Non-zero exit = pipeline fails
+    --ignore-unfixed \                 # Skip CVEs with no patch available
+    --format json \                    # Machine-readable output
+    --output trivy-report.json \       # Save for archiving
+    --timeout 10m \                    # Don't hang forever
+    --skip-db-update \                 # Use pre-cached DB (CI optimization)
+    --cache-dir /tmp/trivy-cache \     # Explicit cache location
+    --ignorefile .trivyignore \        # Suppress accepted risks
+    ${REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+
+# ── FILESYSTEM SCANNING (scan source code deps) ──
+
+# Scans package-lock.json, pom.xml, go.sum, requirements.txt, etc.
+trivy fs \
+    --severity HIGH,CRITICAL \
+    --exit-code 1 \
+    --scanners vuln,secret \           # Also find hardcoded secrets!
+    --format table \
+    .
+
+# ── CONFIG SCANNING (IaC misconfigurations) ──
+
+# Scan Terraform files
+trivy config \
+    --severity HIGH,CRITICAL \
+    --exit-code 1 \
+    --format json \
+    --output misconfig-report.json \
+    ./terraform/
+
+# Scan Dockerfiles
+trivy config \
+    --severity HIGH,CRITICAL \
+    --exit-code 1 \
+    ./Dockerfile
+
+# Scan Kubernetes manifests
+trivy config \
+    --severity HIGH,CRITICAL \
+    --exit-code 1 \
+    ./k8s-manifests/
+
+# ── KUBERNETES CLUSTER SCANNING ──
+
+# Scan running cluster (needs kubeconfig)
+trivy k8s \
+    --report summary \
+    --severity HIGH,CRITICAL \
+    cluster
+
+# ── SBOM GENERATION ──
+
+# Generate SBOM (Software Bill of Materials)
+trivy image \
+    --format cyclonedx \               # Or spdx-json
+    --output sbom.json \
+    ${REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+
+# Why SBOM matters: when Log4Shell drops, you grep your SBOMs
+# to find every service using log4j in 5 minutes, not 5 days
+```
+
+### .trivyignore — Accepted Risk
+
+```bash
+# .trivyignore — CVEs we've reviewed and accepted
+# Format: one CVE ID per line, optional comment
+
+# Accepted: low-risk, mitigated by WAF, no patch available
+# Reviewed by: @security-team, Jira: SEC-1234, Expires: 2025-09-01
+CVE-2023-44487
+
+# Accepted: test dependency only, not in production image
+CVE-2024-12345
+
+# IMPORTANT: 
+# 1. Every ignore MUST have a Jira ticket and reviewer
+# 2. Every ignore MUST have an expiration date
+# 3. Review .trivyignore monthly
+# 4. Auditors WILL ask why CVEs are suppressed
+```
+
+### Trivy DB Caching for CI — Critical Optimization
+
+```yaml
+# Without caching: every build downloads ~40MB vulnerability DB
+# With 200 builds/day = 8GB/day of redundant downloads
+# Plus: if ghcr.io is down, ALL your builds fail
+
+# Solution 1: Pre-cache in agent image
+# Build a custom CI image with Trivy DB baked in
+FROM aquasec/trivy:0.50.0
+RUN trivy image --download-db-only
+# Rebuild this image on a schedule (daily CronJob)
+
+# Solution 2: Trivy server mode
+# Run a persistent Trivy server that caches the DB
+# Agents query the server instead of downloading DB
+trivy server --listen 0.0.0.0:8080    # Server (DaemonSet or Deployment)
+trivy image --server http://trivy-server:8080 myimage:tag  # Client
+
+# Solution 3: Mirror DB to internal registry
+# Copy trivy-db to your ECR/Artifactory
+# Set TRIVY_DB_REPOSITORY=123456789.dkr.ecr.us-east-1.amazonaws.com/trivy-db
+```
+
+### How Trivy Breaks
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| **DB download fails** | `FATAL: DB update error` | ghcr.io rate limit, network policy blocking, air-gapped env | Trivy server mode, mirror DB, pre-cache in image |
+| **False positives** | Team ignores all findings | OS package CVE in base image that's not exploitable in context | `.trivyignore` with review process, use distroless/scratch images |
+| **Scan timeout** | Pipeline hangs on large images | 2GB+ image with thousands of packages | `--timeout 15m`, use smaller base images, `--skip-dirs` |
+| **Exit code confusion** | Pipeline passes with vulns | `--exit-code` not set (default is 0 regardless of findings) | Always set `--exit-code 1` for gated scans |
+| **Stale DB** | New CVE not detected | `--skip-db-update` but cached DB is weeks old | Schedule DB refresh, alert if DB age > 24h |
+| **SBOM drift** | SBOM doesn't match deployed image | SBOM generated at build time, image patched later | Regenerate SBOM on base image update, attach SBOM to image as OCI artifact |
+
+---
+
+## 3. BlackDuck (Synopsys) — Software Composition Analysis (SCA)
+
+### What SCA Is and Why It's Different from Trivy
+
+```
+TRIVY vs BLACKDUCK — DIFFERENT TOOLS, DIFFERENT JOBS:
+
+Trivy (Container/Vulnerability Scanner):
+├── Scans container images for known CVEs in packages
+├── Scans IaC configs for misconfigurations
+├── Scans source for hardcoded secrets
+├── Fast, free, CI-integrated
+├── Finds: "this package has CVE-2024-XXXX"
+└── Does NOT understand: licensing, transitive dependency trees,
+    commercial obligation, export control
+
+BlackDuck (Software Composition Analysis):
+├── Deep dependency tree analysis (direct + transitive)
+├── License compliance (GPL, AGPL, MIT, Apache, proprietary)
+│   → "You're using a GPL library in your commercial product.
+│      Your lawyers need to know about this NOW."
+├── Operational risk (is the library maintained? last commit?)
+├── Export control (some crypto libraries restricted by country)
+├── Policy enforcement (auto-fail on banned licenses/versions)
+├── Custom component identification (internal/forked libraries)
+└── Regulatory reports for PCI-DSS, SOC 2, GDPR audits
+
+WHY BOTH:
+├── Trivy: "Is this container image safe to run?"
+└── BlackDuck: "Are we legally allowed to ship this software?"
+```
+
+### How BlackDuck Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    BlackDuck Server                           │
+│                                                              │
+│  ┌──────────────┐  ┌─────────────────┐  ┌───────────────┐   │
+│  │ KnowledgeBase │  │ Policy Engine   │  │ Reporting     │   │
+│  │ (2.7M+ OSS   │  │ (License rules, │  │ (PDF, CSV,    │   │
+│  │  components,  │  │  vuln rules,    │  │  API, SPDX,   │   │
+│  │  licenses,    │  │  custom rules)  │  │  CycloneDX)   │   │
+│  │  vulns)       │  │                 │  │               │   │
+│  └──────────────┘  └─────────────────┘  └───────────────┘   │
+└───────────────────────────▲──────────────────────────────────┘
+                            │ Upload scan results
+                            │
+┌───────────────────────────┴──────────────────────────────────┐
+│                   Synopsys Detect (CLI)                       │
+│                                                              │
+│  Runs in CI/CD agent. Detection methods:                     │
+│  ├── Package manager inspection (pom.xml, go.mod, etc.)      │
+│  │   → Builds full dependency tree including transitives     │
+│  ├── Signature scanning (binary/JAR fingerprinting)          │
+│  │   → Identifies components even without package manager    │
+│  ├── Binary analysis (compiled code matching)                │
+│  │   → Identifies vendored/copied code                       │
+│  └── Snippet matching (code fragment identification)         │
+│      → Finds copy-pasted OSS code (scary accurate)           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Jenkins Integration
+
+```groovy
+stage('BlackDuck SCA') {
+    steps {
+        // Synopsys Detect — the CLI tool
+        sh """
+            curl -sL https://detect.synopsys.com/detect9.sh -o detect.sh
+            bash detect.sh \
+                --blackduck.url=${BLACKDUCK_URL} \
+                --blackduck.api.token=${BLACKDUCK_TOKEN} \
+                --detect.project.name=${APP_NAME} \
+                --detect.project.version.name=${BRANCH_NAME} \
+                --detect.code.location.name=${APP_NAME}-${BRANCH_NAME} \
+                --detect.policy.check.fail.on.severities=BLOCKER,CRITICAL \
+                --detect.risk.report.pdf=true \
+                --detect.timeout=600 \
+                --detect.tools=DETECTOR \
+                --logging.level.com.synopsys=INFO
+        """
+        // --detect.tools=DETECTOR: package manager analysis only (fast)
+        // Add SIGNATURE for binary scanning (slow but thorough)
+        // --detect.policy.check.fail.on.severities: pipeline gate
+    }
+}
+```
+
+### BlackDuck Policies — NovaMart Examples
+
+```
+POLICY: "No Copyleft in Commercial Code"
+├── Trigger: Component license IN [GPL-2.0, GPL-3.0, AGPL-3.0]
+├── Action: FAIL pipeline (BLOCKER)
+├── Why: GPL requires releasing YOUR source code. AGPL applies 
+│         even for SaaS. Legal liability is enormous.
+└── Exception process: Legal review → Jira ticket → time-boxed waiver
+
+POLICY: "No Critical Vulnerabilities"
+├── Trigger: Component has vulnerability with CVSS ≥ 9.0
+├── Action: FAIL pipeline (CRITICAL)
+└── Why: PCI-DSS requires known critical vulns to be remediated
+
+POLICY: "No Abandoned Libraries"
+├── Trigger: Component last updated > 2 years ago
+├── Action: WARN (don't fail, but flag for review)
+└── Why: Unmaintained libraries won't get security patches
+
+POLICY: "No Duplicate Components"
+├── Trigger: Same library, different versions in dependency tree
+├── Action: WARN
+└── Why: Version conflicts cause runtime surprises, 
+          increases attack surface
+```
+
+### How BlackDuck Breaks
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| **Slow scans** | Pipeline takes 15+ minutes on SCA stage | Signature scanning on large codebase, full binary analysis | Use `--detect.tools=DETECTOR` for fast scans, SIGNATURE only on release |
+| **False positive licenses** | Reports GPL for MIT library | KB mismatch, component misidentified, dual-licensed component | Manual review in BD UI, override component, refresh KB match |
+| **Transitive dependency surprise** | Your code is clean but fails policy | Direct dep `A` pulls transitive dep `B` which has AGPL license | `mvn dependency:tree`, exclude transitive, find alternative |
+| **Token expiry** | Pipeline auth fails | BD API token expired, no rotation | Rotate tokens on schedule, use service account with long-lived token |
+| **KB out of date** | New component not recognized | BlackDuck KnowledgeBase hasn't indexed it yet | Submit component to BD, use manual component mapping |
+| **Scan overwrites** | Branch scans overwrite main scan | Code location name not unique per branch | Include branch in `--detect.code.location.name` |
+
+---
+
+## 4. Artifactory — Artifact Management
+
+### Why You Need an Artifact Repository
+
+```
+WITHOUT ARTIFACTORY:
+├── Maven downloads from Maven Central every build (slow, fragile)
+├── Docker images in ECR only (no npm, PyPI, Go modules, Helm charts)
+├── Build artifacts (JARs, binaries) stored... where? Jenkins workspace? S3? 
+├── No audit trail of what was deployed to production
+├── No promotion workflow (dev → staging → prod)
+├── Dependency on external registries (npmjs.com down = all builds fail)
+└── No license/vulnerability metadata on artifacts
+
+WITH ARTIFACTORY:
+├── Universal proxy/cache for ALL package types
+├── Single source of truth for all artifacts
+├── Immutable releases (once published, never overwritten)
+├── Promotion workflow (build-info tracks artifact through environments)
+├── Full audit trail (who published what, when, from which build)
+├── Replication across regions (DR)
+└── Integrated security scanning (Xray)
+```
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Artifactory                            │
+│                                                          │
+│  ┌─────────────────────────────────────────────────┐     │
+│  │              Repository Types                    │     │
+│  │                                                  │     │
+│  │  LOCAL repos (you publish to):                   │     │
+│  │  ├── libs-release-local    (immutable releases)  │     │
+│  │  ├── libs-snapshot-local   (dev builds)          │     │
+│  │  ├── docker-local          (Docker images)       │     │
+│  │  ├── helm-local            (Helm charts)         │     │
+│  │  ├── npm-local             (internal packages)   │     │
+│  │  ├── pypi-local            (internal packages)   │     │
+│  │  └── go-local              (Go modules)          │     │
+│  │                                                  │     │
+│  │  REMOTE repos (proxy/cache of external):         │     │
+│  │  ├── maven-central-remote  → maven central       │     │
+│  │  ├── npmjs-remote          → npmjs.com           │     │
+│  │  ├── docker-hub-remote     → docker.io           │     │
+│  │  ├── pypi-remote           → pypi.org            │     │
+│  │  ├── go-remote             → proxy.golang.org    │     │
+│  │  └── helm-remote           → various Helm repos  │     │
+│  │                                                  │     │
+│  │  VIRTUAL repos (aggregate local + remote):       │     │
+│  │  ├── libs-release   = local + remote (reads)     │     │
+│  │  ├── npm            = local + remote             │     │
+│  │  └── docker         = local + remote             │     │
+│  └─────────────────────────────────────────────────┘     │
+│                                                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │ Build Info    │  │ Replication  │  │ Xray         │   │
+│  │ (Tracks      │  │ (Cross-site  │  │ (Vuln scan   │   │
+│  │  artifact     │  │  sync, DR)   │  │  + license)  │   │
+│  │  provenance)  │  │              │  │              │   │
+│  └──────────────┘  └──────────────┘  └──────────────┘   │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Repository Strategy — NovaMart Pattern
+
+```
+VIRTUAL REPO (what developers/CI see):
+  libs-release  ←── resolves from ──→  libs-release-local
+                                       maven-central-remote (cached)
+
+Flow:
+1. Developer/CI requests artifact from libs-release (virtual)
+2. Artifactory checks libs-release-local first
+3. If not found, checks maven-central-remote (proxy)
+4. Downloads from Maven Central, caches locally
+5. Next request → served from cache (fast, no external dependency)
+
+Developer config (settings.xml / .npmrc / pip.conf):
+  Points to virtual repo URL ONLY
+  Never directly to Maven Central, npmjs.com, etc.
+```
+
+**Maven settings.xml for NovaMart:**
+```xml
+<!-- ~/.m2/settings.xml (or mounted in CI agent) -->
+<settings>
+  <servers>
+    <server>
+      <id>novamart-artifactory</id>
+      <username>${env.ARTIFACTORY_USER}</username>
+      <password>${env.ARTIFACTORY_TOKEN}</password>
+    </server>
+  </servers>
+  <mirrors>
+    <mirror>
+      <id>novamart-artifactory</id>
+      <name>NovaMart Artifactory</name>
+      <url>https://artifactory.novamart.com/libs-release</url>
+      <mirrorOf>*</mirrorOf>  <!-- ALL requests go through Artifactory -->
+    </mirror>
+  </mirrors>
+</settings>
+```
+
+### Docker Registry in Artifactory
+
+```bash
+# Artifactory as Docker registry
+# Requires reverse proxy (Nginx) with subdomain routing:
+#   docker-local.artifactory.novamart.com → local Docker repo
+#   docker-remote.artifactory.novamart.com → Docker Hub proxy
+#   docker.artifactory.novamart.com → virtual (both)
+
+# Login
+docker login docker.artifactory.novamart.com \
+    -u ${ARTIFACTORY_USER} -p ${ARTIFACTORY_TOKEN}
+
+# Push
+docker tag order-service:v1.2.3 \
+    docker.artifactory.novamart.com/order-service:v1.2.3
+docker push docker.artifactory.novamart.com/order-service:v1.2.3
+
+# Pull (checks local first, then Docker Hub via remote)
+docker pull docker.artifactory.novamart.com/nginx:1.25
+
+# WHY use Artifactory instead of ECR alone?
+# 1. Unified auth (one token for Docker, Maven, npm, Helm, etc.)
+# 2. Docker Hub rate limiting (100 pulls/6hr anonymous, 200 authenticated)
+#    → Artifactory caches: pull once, serve from cache forever
+# 3. Cross-region replication (Artifactory → Artifactory, not ECR → ECR)
+# 4. Build info integration (link Docker image to source commit)
+# 5. Xray scanning (scan on push, block vulnerable images from download)
+
+# HOWEVER: Many NovaMart teams still use ECR for EKS-native integration
+# Pattern: Build → push to Artifactory → replicate to ECR → EKS pulls from ECR
+# This gives you Artifactory's features + ECR's native EKS integration
+```
+
+### Artifact Promotion Workflow
+
+```
+BUILD PIPELINE:
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│  Build    │────▶│   Dev    │────▶│ Staging  │────▶│   Prod   │
+│  (CI)     │     │  Deploy  │     │  Deploy  │     │  Deploy  │
+└──────────┘     └──────────┘     └──────────┘     └──────────┘
+     │                │                │                │
+     ▼                ▼                ▼                ▼
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│ snapshot  │     │   dev    │     │ staging  │     │ release  │
+│ repo      │────▶│  repo    │────▶│   repo   │────▶│  repo    │
+│ (mutable) │     │(promote) │     │(promote) │     │(immutable│
+└──────────┘     └──────────┘     └──────────┘     └──────────┘
+
+PROMOTION = copy (not move) artifact from one repo to another
+            with metadata update (promoted_by, promoted_at, build_id)
+
+IMMUTABLE: Release repo has "Block Overwrite" enabled
+           Once v1.2.3 is published, it can NEVER be replaced
+           This is critical for audit trails and reproducibility
+```
+
+### Cleanup Policies — Disk Management
+
+```
+PROBLEM: Without cleanup, Artifactory grows forever.
+NovaMart generates ~50GB of artifacts per week.
+
+CLEANUP POLICIES:
+├── Snapshots: Delete after 30 days
+├── Release candidates (RC): Delete after 90 days
+├── Releases: Keep forever (or last 20 versions)
+├── Docker tags: 
+│   ├── Keep all tags matching semver (v1.2.3)
+│   ├── Delete untagged manifests after 7 days
+│   └── Delete feature branch tags after 14 days
+├── Remote cache: Evict unused cached artifacts after 30 days
+└── Build info: Keep forever (tiny, invaluable for audits)
+
+# Artifactory AQL (Artifactory Query Language) for cleanup:
+# Find Docker images older than 30 days in snapshot repo
+items.find({
+    "repo": "docker-snapshot-local",
+    "type": "folder",
+    "created": {"$before": "30d"}
+}).include("repo", "path", "name", "created")
+```
+
+### How Artifactory Breaks
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| **Disk full** | Upload failures, 500 errors | No cleanup policy, too many snapshots, remote cache bloat | AQL-based cleanup, lifecycle policies, monitor disk with alerts at 80% |
+| **Slow downloads** | Builds take 5min to resolve deps | Database query slow, storage backend (NFS/S3) latency, GC running | Tune DB, use direct S3 storage, schedule GC off-hours |
+| **Remote repo down** | Can't download new deps | Maven Central / npmjs outage, DNS issue | Cached artifacts still serve. New deps fail. Mirror across multiple remotes. |
+| **Auth failure** | 401 on pull/push | Token expired, LDAP/SSO integration broken, permission target misconfigured | Check access logs, verify LDAP connectivity, token rotation |
+| **Replication lag** | Region B has stale artifacts | Network issue, replication queue backed up | Monitor replication status, alert on lag > 10min |
+| **Docker manifest issues** | `manifest unknown` on pull | Tag was pushed but manifest not fully uploaded, concurrent pushes | Retry push, check for partial uploads, enable Docker V2 schema |
+| **Xray blocks legitimate image** | Deployment blocked on pull | Xray policy too aggressive, false positive CVE match | Xray watch exceptions, policy tuning, separate watches per environment |
+
+---
+
+## 5. Advanced Pipeline Patterns
+
+### Pattern 1: Matrix Builds
+
+```groovy
+// Build and test across multiple versions/platforms simultaneously
+pipeline {
+    agent none
+    stages {
+        stage('Matrix Build') {
+            matrix {
+                axes {
+                    axis {
+                        name 'JDK_VERSION'
+                        values '17', '21'
+                    }
+                    axis {
+                        name 'OS'
+                        values 'linux', 'arm64'
+                    }
+                    axis {
+                        name 'DB'
+                        values 'postgres14', 'postgres16'
+                    }
+                }
+                excludes {
+                    // Don't test arm64 + postgres14 (not supported)
+                    exclude {
+                        axis { name 'OS'; values 'arm64' }
+                        axis { name 'DB'; values 'postgres14' }
+                    }
+                }
+                stages {
+                    stage('Build & Test') {
+                        agent { label "${OS}" }
+                        steps {
+                            sh """
+                                export JAVA_HOME=/opt/jdk-${JDK_VERSION}
+                                export DB_IMAGE=postgres:${DB.replace('postgres','')}
+                                mvn clean verify -B
+                            """
+                        }
+                    }
+                }
+            }
+            // This generates: 2 JDK × 2 OS × 2 DB = 8 combinations
+            // Minus 1 exclusion = 7 parallel builds
+            // Without matrix: 7 copy-pasted stages
+        }
+    }
+}
+```
+
+### Pattern 2: Monorepo Pipeline
+
+```groovy
+// 200 services in one repo — only build what changed
+pipeline {
+    agent { label 'lightweight' }
+
+    stages {
+        stage('Detect Changes') {
+            steps {
+                script {
+                    // Get changed files compared to main
+                    def changes = sh(
+                        script: "git diff --name-only origin/main...HEAD",
+                        returnStdout: true
+                    ).trim().split('\n')
+
+                    // Map changed files to services
+                    env.CHANGED_SERVICES = changes
+                        .findAll { it.startsWith('services/') }
+                        .collect { it.split('/')[1] }
+                        .unique()
+                        .join(',')
+
+                    // Map to shared libraries
+                    env.SHARED_CHANGED = changes
+                        .any { it.startsWith('libs/') }
+
+                    echo "Changed services: ${env.CHANGED_SERVICES}"
+                    echo "Shared libraries changed: ${env.SHARED_CHANGED}"
+                }
+            }
+        }
+
+        stage('Build Changed Services') {
+            when {
+                expression { env.CHANGED_SERVICES?.trim() }
+            }
+            steps {
+                script {
+                    def services = env.CHANGED_SERVICES.split(',')
+                    def parallelStages = [:]
+
+                    services.each { svc ->
+                        parallelStages["Build ${svc}"] = {
+                            // Each service gets its own agent pod
+                            node('java-builder') {
+                                dir("services/${svc}") {
+                                    sh 'mvn clean verify -B'
+                                    // + scan, build image, etc.
+                                }
+                            }
+                        }
+                    }
+
+                    // If shared libs changed, rebuild ALL services
+                    // that depend on them
+                    if (env.SHARED_CHANGED == 'true') {
+                        // Read dependency graph
+                        def dependents = readJSON(
+                            file: 'dependency-graph.json'
+                        )
+                        // Add all dependent services to build
+                    }
+
+                    parallel parallelStages
+                }
+            }
+        }
+    }
+}
+```
+
+### Pattern 3: Input Gates (Manual Approval)
+
+```groovy
+stage('Deploy to Production') {
+    when { branch 'main' }
+    steps {
+        // Automated checks first
+        script {
+            // Verify staging deploy was healthy for 30 minutes
+            def stagingHealth = sh(
+                script: '''
+                    kubectl --context staging get deploy ${APP_NAME} \
+                        -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+                ''',
+                returnStdout: true
+            ).trim()
+
+            if (stagingHealth != 'True') {
+                error "Staging deployment is not healthy. Aborting prod deploy."
+            }
+        }
+
+        // Manual approval
+        timeout(time: 4, unit: 'HOURS') {
+            input(
+                message: "Deploy ${APP_NAME}:${IMAGE_TAG} to production?",
+                ok: 'Deploy',
+                submitter: 'platform-leads,sre-team',  // RBAC: only these groups
+                parameters: [
+                    choice(
+                        name: 'STRATEGY',
+                        choices: ['canary-10', 'canary-25', 'canary-50', 'full'],
+                        description: 'Rollout strategy'
+                    ),
+                    string(
+                        name: 'REASON',
+                        defaultValue: '',
+                        description: 'Deployment reason (for audit log)'
+                    )
+                ]
+            )
+        }
+
+        // If approved, update prod manifests
+        sh """
+            cd k8s-manifests/apps/${APP_NAME}/overlays/prod
+            kustomize edit set image \
+                ${REGISTRY}/${APP_NAME}=${REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+            git commit -am "prod: ${APP_NAME}:${IMAGE_TAG} - ${REASON}"
+            git push
+        """
+    }
+}
+```
+
+### Pattern 4: Retry with Exponential Backoff
+
+```groovy
+// Flaky integration tests or transient API failures
+def retryWithBackoff(int maxRetries, Closure body) {
+    int attempt = 0
+    while (attempt < maxRetries) {
+        try {
+            body()
+            return  // Success — exit
+        } catch (e) {
+            attempt++
+            if (attempt >= maxRetries) {
+                throw e  // Final failure
+            }
+            def waitTime = Math.pow(2, attempt) * 10  // 20s, 40s, 80s
+            echo "Attempt ${attempt} failed. Retrying in ${waitTime}s..."
+            sleep(time: waitTime.intValue(), unit: 'SECONDS')
+        }
+    }
+}
+
+// Usage:
+stage('Integration Tests') {
+    steps {
+        script {
+            retryWithBackoff(3) {
+                sh 'mvn verify -Pintegration-tests'
+            }
+        }
+    }
+}
+```
+
+### Pattern 5: Stash/Unstash for Cross-Agent Artifacts
+
+```groovy
+// Problem: Stage 1 builds on agent A, Stage 2 needs the artifact on agent B
+// Solution: stash (save) and unstash (restore)
+
+stage('Build') {
+    agent { label 'java-builder' }
+    steps {
+        sh 'mvn clean package -DskipTests'
+        stash(
+            name: 'build-artifacts',
+            includes: 'target/*.jar',
+            excludes: 'target/*-sources.jar'
+        )
+        // Stash uploads to controller (small files only!)
+        // For large files: use Artifactory or S3
+    }
+}
+
+stage('Docker Build') {
+    agent { label 'docker-builder' }
+    steps {
+        unstash 'build-artifacts'
+        // target/*.jar is now available on this different agent
+        sh 'docker build -t myapp:latest .'
+    }
+}
+
+// WARNING: stash goes through the controller
+// If your JAR is 500MB, you're pushing 500MB through the controller
+// for every build. Use Artifactory for anything > 10MB.
+```
+
+### Pattern 6: Pipeline Debugging
+
+```groovy
+// Debug techniques when pipelines fail mysteriously
+
+// 1. Replay with edits (no commit needed)
+//    Jenkins UI → Build → Replay → Edit Jenkinsfile → Run
+//    Perfect for testing pipeline changes without polluting Git
+
+// 2. Enable debug logging for a specific build
+pipeline {
+    options {
+        // Shows all environment variables at start
+        // Shows each step as it executes
+    }
+    stages {
+        stage('Debug') {
+            steps {
+                // Print ALL environment variables
+                sh 'env | sort'
+
+                // Print Jenkins-specific vars
+                echo "BUILD_URL: ${env.BUILD_URL}"
+                echo "WORKSPACE: ${env.WORKSPACE}"
+                echo "NODE_NAME: ${env.NODE_NAME}"
+
+                // Check agent capabilities
+                sh 'which docker && docker version || echo "No docker"'
+                sh 'which mvn && mvn --version || echo "No maven"'
+                sh 'cat /etc/os-release'
+                sh 'df -h'      // Disk space
+                sh 'free -m'    // Memory
+
+                // Test connectivity from agent
+                sh 'curl -s -o /dev/null -w "%{http_code}" https://sonar.novamart.com/api/system/status'
+                sh 'curl -s -o /dev/null -w "%{http_code}" https://artifactory.novamart.com/api/system/ping'
+            }
+        }
+    }
+}
+
+// 3. Jenkinsfile linting (validate BEFORE push)
+//    curl -X POST -F "jenkinsfile=<Jenkinsfile" \
+//        https://jenkins.novamart.com/pipeline-model-converter/validate
+
+// 4. Declarative Directive Generator
+//    Jenkins UI → Pipeline Syntax → Declarative Directive Generator
+//    Generates correct syntax for steps you're unsure about
+
+// 5. Blue Ocean Pipeline Editor
+//    Visual pipeline editor — useful for non-DevOps contributors
+
+// 6. Common debugging commands in failed K8s agent builds:
+//    kubectl get pods -n jenkins-agents --sort-by=.metadata.creationTimestamp
+//    kubectl describe pod <agent-pod> -n jenkins-agents
+//    kubectl logs <agent-pod> -n jenkins-agents -c jnlp
+//    kubectl logs <agent-pod> -n jenkins-agents -c maven
+```
+
+### Anti-Patterns — What NOT to Do
+
+```
+ANTI-PATTERN 1: "The God Pipeline"
+  One 500-line Jenkinsfile with every possible stage
+  → Use shared libraries + standardPipeline()
+
+ANTI-PATTERN 2: "Works on My Jenkins"
+  Pipeline depends on tools installed on specific agent
+  → Container-based agents with everything declared in pod template
+
+ANTI-PATTERN 3: "The Sleeper"
+  sh 'sleep 60' to wait for service to be ready
+  → Polling with timeout: retry + curl health check
+
+ANTI-PATTERN 4: "The Secret Logger"
+  sh "echo Deploying with token ${TOKEN}"
+  → withCredentials() + never echo secrets
+
+ANTI-PATTERN 5: "The Unguarded Main"
+  No when{} conditions — every branch runs deploy-to-prod stages
+  → when { branch 'main' } on every deployment stage
+
+ANTI-PATTERN 6: "The Artifact Hoarder"
+  archiveArtifacts '**/*' on every build, no discard policy
+  → Archive specific files, buildDiscarder, external storage
+
+ANTI-PATTERN 7: "The Retry Hammer"
+  retry(5) around flaky test → hides real failures
+  → Fix the flaky test. Retries mask bugs.
+  → If you MUST retry, log each failure with context.
+
+ANTI-PATTERN 8: "The Freestyle Dinosaur"
+  Using Freestyle jobs with shell scripts instead of Pipeline
+  → Pipeline as Code in Jenkinsfile, always
+```
+
+## Quick Reference Card
+
+```
+SONARQUBE:
+  Scanner (CI agent) → Server (CE processes async) → Webhook → Jenkins
+  Quality Gate on NEW CODE only (clean-as-you-code)
+  waitForQualityGate() needs webhook configured in SonarQube admin
+  Developer Edition minimum for branch analysis + PR decoration
+  Key flags: -Dsonar.projectKey, -Dsonar.branch.name, 
+             -Dsonar.coverage.jacoco.xmlReportPaths
+
+TRIVY:
+  Universal scanner: image, fs, repo, k8s, aws, sbom, config
+  --exit-code 1 (ALWAYS — default doesn't fail pipeline)
+  --ignore-unfixed (skip CVEs without patches)
+  --severity HIGH,CRITICAL (don't gate on MEDIUM in CI)
+  .trivyignore with Jira ticket + expiry date
+  DB caching: server mode, mirror DB, pre-cache in image
+  SBOM: --format cyclonedx for compliance/incident response
+
+BLACKDUCK (SCA):
+  Different from Trivy: licensing + transitive deps + operational risk
+  Synopsys Detect CLI: --detect.tools=DETECTOR (fast)
+  Policies: no copyleft, no critical CVEs, no abandoned libs
+  --detect.policy.check.fail.on.severities=BLOCKER,CRITICAL
+  Include branch in code.location.name to avoid overwrites
+
+ARTIFACTORY:
+  LOCAL (your artifacts) + REMOTE (proxy/cache) + VIRTUAL (aggregate)
+  mirrorOf=* in settings.xml → all traffic through Artifactory
+  Promotion: snapshot → dev → staging → release (immutable)
+  Cleanup: AQL queries, lifecycle policies, monitor disk at 80%
+  Docker: subdomain routing, cache Docker Hub (rate limits!)
+  Stash: controller-bound, <10MB only. Use Artifactory for large files.
+
+PIPELINE PATTERNS:
+  Matrix: axes + excludes → parallel multi-version builds
+  Monorepo: git diff → detect changes → build only affected services
+  Input gates: submitter RBAC + timeout + audit reason
+  Retry: exponential backoff function, not blind retry(5)
+  Debug: Replay, env|sort, Jenkinsfile lint API, Blue Ocean
+  
+ANTI-PATTERNS:
+  God pipeline, unguarded main, secret logging,
+  retry hammer, freestyle dinosaurs, artifact hoarding
+```
+
+---
+
+## Retention Questions
+
+**Q1.** NovaMart's payment-service team reports their pipeline is failing at the SonarQube Quality Gate stage with: `WARN: Quality Gate check - FAILED. Status: ERROR. Conditions: Coverage on New Code < 80%`. The team lead says "we have 92% coverage in our JaCoCo report." Walk me through every possible reason the SonarQube coverage doesn't match the JaCoCo report, and how you'd diagnose each one.
+
+**Q2.** Your security team runs an audit and discovers that 47 of NovaMart's 200 services have Docker images with CRITICAL CVEs in production. The CTO asks: "How did these get deployed?" and "How do we prevent this from ever happening again?" Design a comprehensive prevention strategy covering CI pipeline gates, registry-level enforcement, runtime detection, and the governance process for accepted risks. Be specific about which tools do what.
+
+**Q3.** A developer opens a PR that adds a library called `json-schema-validator`. BlackDuck flags it with: `Policy Violation: LGPL-2.1 license detected`. The developer argues "LGPL is fine, it's not GPL." Who is right? What's the actual risk? What's your recommended process for handling this — from technical analysis through legal review to policy update?
+
+**Q4.** NovaMart's Artifactory instance is at 94% disk usage. Builds are starting to fail with upload errors. You need to reclaim space immediately AND implement a long-term strategy. Walk me through: (a) emergency triage to free space in the next 30 minutes, (b) identifying what's consuming the most space, (c) designing cleanup policies for each repository type, and (d) monitoring/alerting to prevent recurrence.
+
+These questions move beyond "tooling" and enter the realm of Software Supply Chain Security and Governance. In a 200+ microservice environment, you cannot manually check every library or image. You must build automated guardrails.
+
+Q1: The SonarQube vs. JaCoCo Coverage Gap
+
+The most important thing to understand here is that JaCoCo generates the data, but SonarQube interprets it. A mismatch usually means the "interpretation" is based on different assumptions than the "generation."
+
+Possible Reasons and Diagnosis:
+
+"New Code" Definition (The Most Likely Cause):
+
+Reason: The team lead is looking at Overall Coverage (all code ever written), but the Quality Gate is failing on Coverage on New Code. If the new feature has 20% coverage, but the rest of the app has 99%, the overall average is 92%, but the "New Code" gate fails.
+
+Diagnosis: Check the "New Code" period in the SonarQube project settings (e.g., "previous version" or "last 30 days"). Compare the "New Code" tab vs. the "Overall" tab in the Sonar UI.
+
+Incorrect Report Path (sonar.coverage.jacoco.xmlReportPaths):
+
+Reason: SonarQube is looking at a stale JaCoCo report from a previous build or a different module. It is reporting coverage based on old data.
+
+Diagnosis: Check the Jenkins logs for the Sonar scanner step. Ensure the path to the .xml report is correct and that the report was actually generated in the current workspace before the scan started.
+
+Binary/Source Mismatch (The "Compilation Gap"):
+
+Reason: JaCoCo instrumented the code using one version of the compiler/JDK, but SonarQube is analyzing the source code. If the source code changed but the binaries weren't rebuilt, the coverage mapping shifts.
+
+Diagnosis: Verify that the mvn clean verify (or equivalent) is running in the same pipeline step immediately preceding the Sonar scan.
+
+Excluded Files:
+
+Reason: The JaCoCo report includes everything, but SonarQube has sonar.exclusions configured (e.g., ignoring DTOs or generated code). If the "uncovered" code is in the excluded files, the numbers will diverge.
+
+Diagnosis: Compare the list of files in the JaCoCo HTML report with the "Code" tab in SonarQube to see which files are missing.
+
+Q2: CVE Prevention Strategy (Supply Chain Security)
+
+How did they get deployed?
+They likely entered through Dependency Drift or Base Image Decay. An image that was "clean" six months ago is now "critical" because a new CVE was discovered in a library it contains. If there is no continuous scanning, you only find out during a manual audit.
+
+The Comprehensive Prevention Strategy:
+
+Stage	Tool	Action	Enforcement
+CI Pipeline	Trivy / Snyk	Scan image during the build stage.	Hard Gate: Fail the build if CRITICAL CVEs are found with a fix available.
+Registry	Harbor / Artifactory	Continuous scan of all stored images.	Pull-Blocking: Prevent kubelet from pulling images that have been flagged as "Critical" since their last scan.
+Runtime	Trivy Operator / Aqua	Scan pods currently running in EKS.	Alerting: Trigger PagerDuty if a new CVE is discovered in a running pod (since the image was clean at build time).
+Governance	CVE Exception List	A signed-off YAML file of "Accepted Risks."	Override: If a CVE is a false positive or has no fix, SecOps adds the CVE-ID to the list to bypass the CI gate.
+Q3: The LGPL-2.1 License Risk
+
+Who is right?
+The security team is right to flag it; the developer is oversimplifying.
+
+The Actual Risk:
+The GPL (General Public License) is "Strong Copyleft"—if you use it, your whole app must become open source. The LGPL (Lesser GPL) is "Weak Copyleft."
+
+The risk with LGPL-2.1 depends on how the library is linked:
+
+Dynamic Linking (Safe): If you link to the library as a separate .so or .jar file, you only have to open-source the changes you made to the library itself. Your main app remains proprietary.
+
+Static Linking (Dangerous): If the library is bundled/compiled directly into your binary, the LGPL can be interpreted as requiring the entire resulting binary to be open-sourced.
+
+Modification (Dangerous): If you modify the library's code, those modifications must be shared.
+
+Recommended Process:
+
+Technical Audit: The SRE/Security team checks the build artifacts. Is the library statically or dynamically linked? Was the source code of the library modified?
+
+Legal Review: Present the findings to the Legal team. "We are using LGPL-2.1 via dynamic linking in a Java JAR; does this trigger our open-source disclosure obligations?"
+
+Policy Decision:
+
+Approved: Add the library to the "Allow-list."
+
+Rejected: Developer must find an MIT/Apache-2.0 alternative or rewrite the functionality.
+
+Policy Update: Update the BlackDuck policy to allow LGPL only if certain linking conditions are met.
+
+Q4: Artifactory Disk Crisis
+
+** (a) Emergency Triage (Next 30 Minutes):**
+I need to find the "low hanging fruit"—data that is useless but large.
+
+Clean Snapshot Repositories: Delete the oldest snapshot builds. Snapshots are for dev/test and are usually the biggest space hogs.
+
+Clear Temporary Caches: Empty the remote-cache directories for external proxies (e.g., cached Maven Central packages that are rarely used).
+
+Empty the Trash: If Artifactory has a "Trash" or "Recycle Bin" feature enabled, empty it immediately.
+
+** (b) Identifying the Culprits:**
+I would use the Artifactory Storage Analysis tool (built-in) to identify:
+
+The top 10 largest repositories.
+
+The largest individual artifacts.
+
+The "unreferenced" blobs (blobs that exist on disk but are no longer linked to any metadata).
+
+** (c) Designing Cleanup Policies:**
+I would implement Retention Policies based on repository type:
+
+Local-Release Repos: Keep all versions (immutable).
+
+Local-Snapshot Repos: Keep only the last 10 builds per branch or delete anything older than 30 days.
+
+Remote-Cache Repos: Delete any cached artifact that hasn't been requested in 90 days.
+
+Build-Info Repos: Delete build metadata for builds older than 6 months.
+
+** (d) Monitoring and Alerting:**
+
+Prometheus Exporter: Install the Artifactory Prometheus exporter to track artifactory_storage_used_bytes.
+
+Grafana Dashboard: Create a "Storage Health" dashboard showing usage per repository.
+
+Alerting: Set a tiered alert in PagerDuty:
+
+Warning (80%): Ticket created for the SRE team to review retention policies.
+
+Critical (90%): Page the on-call SRE to perform manual triage.
+
+================================================
+
+# Grading Q1-Q4
+
+---
+
+## Q1: SonarQube vs JaCoCo Coverage Gap — 4.3/5
+
+**What you nailed:**
+- "New Code" vs "Overall Code" as the most likely cause — exactly right, and you correctly identified this as #1. This is the cause 70% of the time.
+- Report path mismatch is a real and common issue.
+- Binary/source mismatch — good catch, most people miss this.
+- Exclusion divergence between JaCoCo and SonarQube — correct.
+
+**What you missed:**
+
+1. **Multi-module Maven projects.** This is the second most common cause at scale. A multi-module project (parent POM with 8 child modules) generates 8 separate `jacoco.xml` files. If `sonar.coverage.jacoco.xmlReportPaths` only points to one, you get partial coverage. The fix is a glob: `**/target/site/jacoco/jacoco.xml`. At NovaMart with Spring Boot microservices, multi-module POMs are extremely common.
+
+2. **JaCoCo report format mismatch.** SonarQube requires the XML report, not the HTML or CSV report. If the Maven config generates only the HTML report (`jacoco:report` produces both, but some configs suppress XML), SonarQube sees zero coverage. Also: JaCoCo has two XML formats — the exec binary format and the XML report. SonarQube needs the XML report, not the `.exec` file (older SonarQube versions used `.exec` directly via a plugin, but modern versions require XML).
+
+3. **Test execution order.** If `mvn sonar:sonar` is a separate Maven invocation from `mvn verify`, and the `clean` goal runs again, the JaCoCo report gets deleted before SonarQube reads it. This is why the lesson showed `mvn clean verify` as one step, then `mvn sonar:sonar` as a separate step WITHOUT `clean`. Alternatively, use `sonar.coverage.jacoco.xmlReportPaths` with an absolute path that survives across invocations.
+
+4. **You didn't mention the diagnostic command.** When debugging, the fastest path is: go to the SonarQube project → Activity → click the specific analysis → look at the scanner context log. It shows exactly which coverage report files were found and parsed. If it says "No coverage report found," you have your answer in 10 seconds instead of guessing.
+
+**Production consequence of the gap:** You'd correctly identify the New Code issue, but when the team says "we fixed that and it's still wrong," you'd be stuck debugging multi-module report paths without knowing to check the scanner context log first.
+
+---
+
+## Q2: CVE Prevention Strategy — 4/5
+
+**What you nailed:**
+- "Dependency Drift / Base Image Decay" as the root cause — exactly right. Images rot over time as new CVEs are discovered.
+- Four-stage strategy (CI → Registry → Runtime → Governance) is the correct architecture.
+- Pull-blocking at the registry level is advanced and correct.
+- The table format is clean and actionable.
+
+**What you missed:**
+
+1. **Base image rebuild pipeline.** You described detection at every stage but didn't address the root cause: base images aren't being rebuilt. The fix is a scheduled pipeline (weekly CronJob or Jenkins timer trigger) that rebuilds ALL service images from their Dockerfiles, even with no code changes. This picks up base image patches. Without this, services that haven't had code changes in 6 months never get rescanned/rebuilt.
+
+```
+Weekly base image rebuild pipeline:
+  For each service:
+    Pull latest base image → rebuild → scan → 
+    if clean: push new tag, update manifests
+    if dirty: alert service team
+```
+
+2. **Admission controller enforcement.** You mentioned registry-level pull-blocking, but the stronger pattern in Kubernetes is an admission controller (Kyverno or OPA Gatekeeper) that **rejects pod creation** if the image isn't signed or hasn't been scanned within the last N days. This is the last line of defense — even if someone pushes directly to ECR bypassing Artifactory.
+
+```yaml
+# Kyverno policy: only allow signed, recently-scanned images
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-verification
+spec:
+  validationFailureAction: Enforce
+  rules:
+  - name: verify-signature
+    match:
+      resources:
+        kinds: [Pod]
+    verifyImages:
+    - imageReferences: ["*.dkr.ecr.*.amazonaws.com/*"]
+      attestors:
+      - entries:
+        - keyless:
+            issuer: "https://token.actions.githubusercontent.com"
+```
+
+3. **ECR native scanning.** You mentioned Trivy Operator for runtime but didn't mention that ECR has built-in scanning (Basic = Clair-based free, Enhanced = Inspector-based paid). Enabling "scan on push" in ECR gives you a free second opinion alongside Trivy. For NovaMart's 200 services, ECR Enhanced scanning with EventBridge → SNS → Slack gives continuous vulnerability notifications with zero pipeline changes.
+
+4. **The "47 services" triage.** The CTO asked "how did these get deployed?" — you answered generically. A senior engineer also says: "I'll have a list of all 47 services with their specific CVEs, sorted by CVSS score, with business impact, within 2 hours." That's the Trivy Operator scan or ECR bulk scan output, cross-referenced with service criticality. Payment service with a CRITICAL CVE = SEV1. Internal reporting tool = queue it.
+
+**Production consequence:** Your strategy prevents future CVEs but doesn't address the immediate crisis of 47 vulnerable services in production, and doesn't automate the base image refresh that prevents drift.
+
+---
+
+## Q3: LGPL License — 4.5/5
+
+**This was your strongest answer.**
+
+**What you nailed:**
+- Correct that security team is right to flag, developer is oversimplifying.
+- Static vs dynamic linking distinction is accurate and is the actual legal crux.
+- Modification disclosure requirement — correct.
+- The process (technical audit → legal review → policy decision → policy update) is mature and exactly what enterprises do.
+- Java-specific context ("dynamically linked JAR") shows you understand the language-specific implications.
+
+**What you missed:**
+
+1. **Java-specific nuance is actually in your favor, and you should have stated it more forcefully.** In Java, virtually all library usage is dynamic linking (classpath loading, separate JARs). Static linking in the C/C++ sense doesn't apply. The Java community generally considers LGPL-2.1 safe for Java applications when the library is used as an unmodified dependency. This is a well-established interpretation (see: Hibernate was LGPL for years and used by every commercial Java app). You had the right instinct but were too cautious — a senior engineer should say: "For Java, LGPL via unmodified Maven dependency is almost certainly fine, but we still run it through legal for the paper trail."
+
+2. **You didn't mention the allow-list mechanism in BlackDuck.** After legal approves, the technical implementation is: create a BlackDuck component-level override or a policy exception scoped to that specific library+version+project. Don't create a blanket "LGPL is allowed" policy — that opens the door for C/C++ services where LGPL IS dangerous with static linking.
+
+3. **Alternative libraries.** A senior engineer also says: "Before we go through the legal process, are there Apache-2.0 or MIT alternatives that do the same thing?" For `json-schema-validator` specifically, there are multiple MIT-licensed alternatives. If a 5-minute search avoids a 2-week legal review, that's the pragmatic choice. Legal review is the fallback, not the first move.
+
+---
+
+## Q4: Artifactory Disk Crisis — 3.8/5
+
+**What you nailed:**
+- Emergency priority order is correct (snapshots → cache → trash).
+- Identifying culprits via storage analysis — correct approach.
+- Cleanup policies per repo type — well-structured.
+- Monitoring with Prometheus exporter + tiered alerting — good.
+
+**What you missed:**
+
+1. **Your emergency triage is too slow for "30 minutes."** "Delete oldest snapshot builds" sounds simple, but if you have 200 services × 50 snapshots each, you need to know the commands:
+
+```bash
+# Artifactory REST API — delete all snapshots older than 7 days
+# Step 1: Find them (AQL)
+curl -X POST -H "Content-Type: text/plain" \
+    -u admin:token \
+    "https://artifactory.novamart.com/api/search/aql" \
+    -d 'items.find({
+        "repo":"libs-snapshot-local",
+        "type":"folder",
+        "created":{"$before":"7d"}
+    }).include("repo","path","name","size")'
+
+# Step 2: Calculate space to be freed (before deleting!)
+# Step 3: Delete
+curl -X DELETE -u admin:token \
+    "https://artifactory.novamart.com/libs-snapshot-local/com/novamart/old-service/1.0-SNAPSHOT"
+
+# Step 4: Run garbage collection to actually free disk
+# Admin → Advanced → Maintenance → Garbage Collection
+# OR: POST /api/system/storage/gc
+```
+
+Without the actual API calls and the GC step, you're describing a plan but can't execute it under pressure.
+
+2. **Garbage collection is critical and you missed it.** Deleting artifacts in Artifactory removes the metadata, but the binary blobs remain on disk until garbage collection runs. If you delete 100GB of snapshots but don't trigger GC, disk usage doesn't change. This is the #1 reason people panic-delete and then say "it didn't free any space."
+
+3. **Docker image layers are likely the biggest consumer and you didn't call them out specifically.** Docker images in Artifactory store layers individually. A 500MB image shared across 50 tags still stores unique layers. But untagged manifests (from CI builds that push intermediate tags) accumulate layers that are never cleaned. Docker-specific cleanup:
+
+```bash
+# Find untagged Docker manifests (orphaned layers)
+# Artifactory → Admin → Docker → Cleanup Policies
+# Or: use the built-in Docker Cleanup policy to remove 
+# manifests with no tags older than N days
+```
+
+4. **Build-info retention of 6 months is too aggressive.** Build info is tiny (KB per build) and is your audit trail. Auditors will ask "what was deployed to production on March 15?" — if you deleted that build info, you can't answer. Keep build info for 2+ years. Delete the artifacts, keep the metadata.
+
+5. **You mentioned "unreferenced blobs" which is good, but didn't explain how to find them.** The correct tool is: `POST /api/system/storage/gc` with dry-run first to see what would be collected, then run it for real.
 
 
+---
+
+# Phase 3: CI/CD Pipelines
+## Lesson 3: ArgoCD Advanced + Argo Rollouts + Progressive Delivery
+
+---
+
+## Context Reset
+
+You saw ArgoCD basics in Phase 2 Lesson 4: Application resource, syncPolicy, auto-sync, prune, selfHeal, App of Apps, sync waves. This lesson goes **deep** into production ArgoCD operations and introduces Argo Rollouts for progressive delivery — the mechanism that prevents bad deploys from killing NovaMart.
+
+---
+
+## 1. ArgoCD Architecture — Production Internals
+
+```
+┌────────────────────────── ArgoCD Namespace ──────────────────────────┐
+│                                                                       │
+│  ┌──────────────────────┐    ┌───────────────────────────────────┐   │
+│  │  argocd-server        │    │  argocd-repo-server                │   │
+│  │  (API + UI)           │    │  (Git clone, manifest generation)  │   │
+│  │                       │    │                                    │   │
+│  │  - Serves Web UI      │    │  - Clones Git repos               │   │
+│  │  - REST/gRPC API      │    │  - Runs Helm template             │   │
+│  │  - Auth (OIDC/SSO)    │    │  - Runs Kustomize build           │   │
+│  │  - RBAC enforcement   │    │  - Runs jsonnet, plain YAML       │   │
+│  │  - Webhook receiver   │    │  - Caches repos (60s default)     │   │
+│  │  2+ replicas (HA)     │    │  - CPU/memory intensive           │   │
+│  └──────────┬────────────┘    │  2+ replicas (HA)                 │   │
+│             │                  └───────────┬───────────────────────┘   │
+│             │                              │                          │
+│  ┌──────────▼──────────────────────────────▼─────────────────────┐   │
+│  │              argocd-application-controller                     │   │
+│  │              (THE BRAIN — reconciliation loop)                 │   │
+│  │                                                                │   │
+│  │  - Watches Application CRDs                                    │   │
+│  │  - Compares desired state (Git) vs live state (cluster)        │   │
+│  │  - Detects drift (OutOfSync)                                   │   │
+│  │  - Applies manifests to target cluster (sync)                  │   │
+│  │  - Runs health checks on resources                             │   │
+│  │  - Manages sync waves and hooks                                │   │
+│  │  - ONE controller OR sharded (by cluster/namespace)            │   │
+│  └───────────────────────────────┬───────────────────────────────┘   │
+│                                  │                                    │
+│  ┌───────────────────────────────▼───────────────────────────────┐   │
+│  │              argocd-applicationset-controller                  │   │
+│  │              (Dynamic Application generation)                  │   │
+│  │                                                                │   │
+│  │  - Generates Application CRDs from templates                   │   │
+│  │  - Sources: Git directory, Git file, list, cluster,            │   │
+│  │    SCM provider, pull request, merge request                   │   │
+│  └───────────────────────────────────────────────────────────────┘   │
+│                                                                       │
+│  ┌──────────────────────┐    ┌──────────────────────────────────┐    │
+│  │  Redis                │    │  argocd-notifications-controller  │    │
+│  │  (Cache layer)        │    │  (Slack, webhook, email triggers) │    │
+│  │  - Manifest cache     │    │  - Sync succeeded/failed          │    │
+│  │  - App state cache    │    │  - Health degraded                │    │
+│  │  - CRITICAL for perf  │    │  - Custom triggers + templates    │    │
+│  └──────────────────────┘    └──────────────────────────────────┘    │
+│                                                                       │
+│  Storage: Kubernetes etcd (Application CRDs + Secrets for repo creds) │
+│  NO external database. ArgoCD is fully Kubernetes-native.             │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+### The Reconciliation Loop — How Sync Works
+
+```
+Every 3 minutes (default) OR on Git webhook:
+
+  ┌──────────────┐
+  │ repo-server   │──── git clone/fetch ────► Git Repo
+  │ generates     │                           (manifests)
+  │ desired state │
+  └──────┬───────┘
+         │ rendered manifests
+         ▼
+  ┌──────────────────┐     ┌──────────────────┐
+  │ app-controller    │────►│ Kubernetes API   │
+  │ compares:         │     │ (live state)     │
+  │                   │     └──────────────────┘
+  │ desired (Git)     │
+  │   vs              │
+  │ live (cluster)    │
+  │                   │
+  │ Result:           │
+  │ ├── Synced ✅     │ (identical)
+  │ ├── OutOfSync ⚠️  │ (drift detected)
+  │ └── Unknown ❓    │ (can't determine)
+  └──────┬────────────┘
+         │
+         │ If auto-sync enabled AND OutOfSync:
+         ▼
+  ┌──────────────────┐
+  │ Apply manifests   │
+  │ to cluster        │
+  │ (kubectl apply    │
+  │  equivalent)      │
+  └──────────────────┘
+```
+
+**Tuning the reconciliation:**
+```yaml
+# argocd-cm ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+data:
+  # How often to re-render manifests from Git
+  timeout.reconciliation: 180s    # Default 3min. Increase for large installs.
+
+  # How often to check for Git changes
+  # (webhook-driven is preferred — this is the fallback)
+  repository.credentials: |
+    ...
+
+  # Resource exclusions (don't track these in ArgoCD)
+  resource.exclusions: |
+    - apiGroups: [""]
+      kinds: ["Event"]
+    - apiGroups: ["metrics.k8s.io"]
+      kinds: ["*"]
+
+  # Resource tracking method
+  # label (default): adds app.kubernetes.io/instance label
+  # annotation: uses annotation instead (avoids label conflicts)
+  # annotation+label: both
+  application.resourceTrackingMethod: annotation
+```
+
+### Multi-Cluster Management
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              ArgoCD Management Cluster                            │
+│              (us-east-1, dedicated EKS)                          │
+│                                                                   │
+│  ArgoCD watches and deploys to:                                   │
+│  ├── management cluster (itself — platform tools)                 │
+│  ├── us-east-1 production cluster                                 │
+│  ├── us-west-2 production cluster                                 │
+│  ├── eu-west-1 production cluster                                 │
+│  ├── staging cluster                                              │
+│  └── dev cluster                                                  │
+│                                                                   │
+│  Connection: ArgoCD stores kubeconfig/bearer token as K8s Secret  │
+│  Security: IRSA + cross-account IAM role for each target cluster  │
+└─────────────────────────────────────────────────────────────────┘
+
+# Register a cluster:
+argocd cluster add arn:aws:eks:us-west-2:123456789:cluster/prod-west \
+    --name prod-us-west-2 \
+    --system-namespace argocd
+
+# This creates a ServiceAccount in the target cluster
+# with cluster-admin (restrict this! Use AppProject RBAC)
+```
+
+### AppProject — RBAC for Applications
+
+```yaml
+# "Which team can deploy what, where?"
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: payment-team
+  namespace: argocd
+spec:
+  description: "Payment team services"
+
+  # Source repos this project can use
+  sourceRepos:
+    - 'https://bitbucket.org/novamart/k8s-manifests.git'
+    - 'https://bitbucket.org/novamart/payment-*'    # Wildcards
+
+  # Destination clusters and namespaces
+  destinations:
+    - server: https://kubernetes.default.svc    # In-cluster
+      namespace: 'payment-*'                     # Only payment namespaces
+    - server: https://prod-west.novamart.internal
+      namespace: 'payment-*'
+
+  # Allowed/denied Kubernetes resource types
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+  namespaceResourceBlacklist:
+    - group: ''
+      kind: ResourceQuota    # Teams can't modify their own quotas
+    - group: rbac.authorization.k8s.io
+      kind: '*'              # Teams can't modify RBAC
+
+  # Sync windows — when deployments are allowed
+  syncWindows:
+    - kind: allow
+      schedule: '0 6-22 * * 1-5'    # Mon-Fri 6am-10pm only
+      duration: 16h
+      applications: ['*']
+    - kind: deny
+      schedule: '0 0 25 12 *'       # No deploys on Christmas
+      duration: 24h
+      applications: ['*']
+    - kind: allow
+      schedule: '* * * * *'          # Always allow
+      applications: ['payment-hotfix-*']  # Except hotfixes
+      manualSync: true               # But manual only
+
+  # Role definitions (who can do what in this project)
+  roles:
+    - name: deployer
+      description: "Can sync applications"
+      policies:
+        - p, proj:payment-team:deployer, applications, sync, payment-team/*, allow
+        - p, proj:payment-team:deployer, applications, get, payment-team/*, allow
+      groups:
+        - payment-team-leads    # OIDC group mapping
+
+    - name: viewer
+      description: "Read-only access"
+      policies:
+        - p, proj:payment-team:viewer, applications, get, payment-team/*, allow
+      groups:
+        - payment-team-devs
+```
+
+### ApplicationSet — Dynamic Application Generation
+
+```yaml
+# Problem: 200 services × 3 environments = 600 Application manifests
+# Solution: ApplicationSet generates them from templates
+
+# Pattern 1: Git Directory Generator
+# Each directory in the repo becomes an Application
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: novamart-services
+  namespace: argocd
+spec:
+  generators:
+    - git:
+        repoURL: https://bitbucket.org/novamart/k8s-manifests.git
+        revision: main
+        directories:
+          - path: 'apps/*/overlays/dev'     # Each service has a dir
+          - path: 'apps/payment-*'
+            exclude: true                    # Except payment (separate project)
+
+  template:
+    metadata:
+      name: '{{path.basename}}-dev'          # e.g., order-service-dev
+      labels:
+        team: '{{path[1]}}'                  # Extracted from path
+    spec:
+      project: default
+      source:
+        repoURL: https://bitbucket.org/novamart/k8s-manifests.git
+        targetRevision: main
+        path: '{{path}}'                     # The matched directory
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{path.basename}}'       # Namespace = service name
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+
+---
+# Pattern 2: Matrix Generator (environments × clusters)
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: novamart-multi-region
+spec:
+  generators:
+    - matrix:
+        generators:
+          # First axis: services
+          - git:
+              repoURL: https://bitbucket.org/novamart/k8s-manifests.git
+              revision: main
+              directories:
+                - path: 'apps/*'
+          # Second axis: clusters
+          - list:
+              elements:
+                - cluster: prod-east
+                  url: https://eks-east.novamart.internal
+                  region: us-east-1
+                - cluster: prod-west
+                  url: https://eks-west.novamart.internal
+                  region: us-west-2
+                - cluster: prod-eu
+                  url: https://eks-eu.novamart.internal
+                  region: eu-west-1
+
+  template:
+    metadata:
+      name: '{{path.basename}}-{{cluster}}'
+    spec:
+      project: production
+      source:
+        repoURL: https://bitbucket.org/novamart/k8s-manifests.git
+        path: '{{path}}/overlays/prod-{{region}}'
+      destination:
+        server: '{{url}}'
+        namespace: '{{path.basename}}'
+
+---
+# Pattern 3: Pull Request Generator
+# Auto-create preview environments for PRs
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: pr-previews
+spec:
+  generators:
+    - pullRequest:
+        bitbucketServer:
+          api: https://bitbucket.novamart.com
+          project: NOVA
+          repo: order-service
+        requeueAfterSeconds: 60
+        filters:
+          - branchMatch: 'feature/*'
+
+  template:
+    metadata:
+      name: 'preview-order-{{number}}'
+    spec:
+      project: previews
+      source:
+        repoURL: https://bitbucket.org/novamart/order-service.git
+        targetRevision: '{{branch}}'
+        path: deploy/preview
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: 'preview-{{number}}'
+      syncPolicy:
+        automated:
+          prune: true
+        syncOptions:
+          - CreateNamespace=true
+  
+  # CRITICAL: Clean up when PR is merged/closed
+  # ApplicationSet deletes the Application when generator
+  # no longer produces it (PR closed → no output → App deleted)
+```
+
+### Sync Waves & Hooks — Ordered Deployment
+
+```yaml
+# Problem: Deploy namespace, then configmap, then deployment, then service
+# If they all apply simultaneously, deployment might start before configmap exists
+
+# Sync Waves: lower number syncs first, waits for health before next wave
+# Wave -1 → Wave 0 → Wave 1 → Wave 2
+
+# Namespace (wave -2)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: order-service
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+
+---
+# Secrets from External Secrets Operator (wave -1)
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+
+---
+# ConfigMap (wave 0 — default)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+
+---
+# Deployment (wave 1)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+
+---
+# Service + Ingress (wave 2)
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+
+---
+# Post-deploy smoke test (hook, not wave)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smoke-test
+  annotations:
+    argocd.argoproj.io/hook: PostSync         # Run after all waves complete
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    # BeforeHookCreation: delete previous Job before creating new one
+    # HookSucceeded: delete after success
+    # HookFailed: delete after failure (usually don't want this)
+spec:
+  template:
+    spec:
+      containers:
+        - name: smoke-test
+          image: curlimages/curl:8.5.0
+          command: ['sh', '-c']
+          args:
+            - |
+              set -e
+              # Wait for service to be ready
+              for i in $(seq 1 30); do
+                if curl -sf http://order-service:8080/health; then
+                  echo "Service healthy!"
+                  exit 0
+                fi
+                sleep 2
+              done
+              echo "Service not healthy after 60s"
+              exit 1
+      restartPolicy: Never
+  backoffLimit: 2
+```
+
+### Notifications Controller
+
+```yaml
+# argocd-notifications-cm ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+data:
+  # Slack integration
+  service.slack: |
+    token: $slack-token          # From argocd-notifications-secret
+
+  # Trigger definitions
+  trigger.on-sync-succeeded: |
+    - when: app.status.operationState.phase in ['Succeeded']
+      send: [slack-success]
+
+  trigger.on-sync-failed: |
+    - when: app.status.operationState.phase in ['Failed', 'Error']
+      send: [slack-failure]
+
+  trigger.on-health-degraded: |
+    - when: app.status.health.status == 'Degraded'
+      send: [slack-degraded]
+
+  # Message templates
+  template.slack-success: |
+    message: |
+      ✅ *{{.app.metadata.name}}* synced successfully
+      Revision: {{.app.status.sync.revision | truncate 7 ""}}
+      Environment: {{.app.spec.destination.namespace}}
+      <{{.context.argocdUrl}}/applications/{{.app.metadata.name}}|View in ArgoCD>
+
+  template.slack-failure: |
+    message: |
+      ❌ *{{.app.metadata.name}}* sync FAILED
+      Error: {{.app.status.operationState.message}}
+      Revision: {{.app.status.sync.revision | truncate 7 ""}}
+      <{{.context.argocdUrl}}/applications/{{.app.metadata.name}}|View in ArgoCD>
+      @oncall-sre
+
+  template.slack-degraded: |
+    message: |
+      ⚠️ *{{.app.metadata.name}}* health degraded
+      Status: {{.app.status.health.status}}
+      <{{.context.argocdUrl}}/applications/{{.app.metadata.name}}|View in ArgoCD>
+
+---
+# Apply to specific applications via annotations:
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    notifications.argoproj.io/subscribe.on-sync-succeeded.slack: deployments
+    notifications.argoproj.io/subscribe.on-sync-failed.slack: deployments-alerts
+    notifications.argoproj.io/subscribe.on-health-degraded.slack: sre-alerts
+```
+
+### How ArgoCD Breaks
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| **repo-server OOM** | Apps stuck in "Unknown," sync fails | Large repos, too many Helm templates, heavy Kustomize builds | Increase memory, use `server-side-apply`, shard repo-server |
+| **Controller overwhelmed** | Sync takes 10+ minutes, UI laggy | 500+ Applications on single controller, constant reconciliation | Shard controller by cluster, increase `timeout.reconciliation`, use webhooks not polling |
+| **Redis OOM/eviction** | Random sync failures, stale UI data | Cache too small for number of apps | Increase Redis memory, monitor eviction rate |
+| **Git rate limiting** | `429 Too Many Requests` from Bitbucket | 200 apps polling every 3 min = 4000 git calls/hour | Use webhooks (Git → ArgoCD), increase poll interval, credential caching |
+| **Drift false positives** | Apps constantly show "OutOfSync" | Mutating webhooks modify resources after apply (Istio sidecar injection, defaulting) | `resource.customizations.ignoreDifferences` in argocd-cm |
+| **Sync window blocks deploy** | Emergency fix can't deploy | Overly restrictive sync windows | Emergency override via `argocd app sync --force`, or allow-window for hotfix apps |
+| **Secret in Git** | Credentials visible in ArgoCD UI | Sealed/encrypted secrets decoded, shown in diff | Use External Secrets Operator (ArgoCD sees ExternalSecret, not Secret), or Vault agent |
+| **Namespace stuck deleting** | App deleted but namespace won't terminate | Finalizers on resources in namespace, webhook blocking | Remove ArgoCD finalizer, check for stuck resources, investigate webhook |
+| **ApplicationSet mass-delete** | Generator produces empty list → all apps deleted | Git repo access issue, broken directory structure | `preserveResourcesOnDeletion: true` policy, test generators in staging |
+
+**The ApplicationSet mass-delete deserves special attention:**
+```yaml
+# DANGEROUS: If Git generator can't read the repo (auth failure, 
+# network issue), it produces ZERO directories → ZERO applications →
+# ArgoCD deletes ALL existing applications.
+
+# PROTECTION:
+spec:
+  # Won't delete apps even if generator stops producing them
+  syncPolicy:
+    preserveResourcesOnDeletion: true
+  
+  # Also: ApplicationSet progressive syncs (rollout strategy)
+  strategy:
+    type: RollingSync
+    rollingSync:
+      steps:
+        - matchExpressions:
+            - key: env
+              operator: In
+              values: [staging]
+        - matchExpressions:
+            - key: env
+              operator: In
+              values: [prod]
+          maxUpdate: 25%    # Only update 25% of prod apps at a time
+```
+
+---
+
+## 2. Argo Rollouts — Progressive Delivery
+
+### Why Standard Deployments Aren't Enough
+
+```
+Standard Kubernetes Deployment (rolling update):
+├── Replaces pods gradually (maxSurge/maxUnavailable)
+├── Health check: readiness probe passes
+├── Problem: readiness probe passing ≠ application working correctly
+│   ├── 0% error rate on health endpoint
+│   ├── But 5% 500 errors on /api/orders
+│   ├── Or P99 latency jumped from 200ms to 2s
+│   └── Rolling update doesn't know, doesn't care, keeps rolling
+├── Rollback: manual (kubectl rollout undo), slow, requires human
+└── Blast radius: by the time you notice, 100% of pods are new version
+
+Argo Rollouts:
+├── Canary: send 5% of traffic → measure → 25% → measure → 100%
+├── Blue-Green: new version gets 0% traffic until explicitly promoted
+├── Analysis: automated metrics checking (Prometheus, Datadog, CloudWatch)
+├── Automatic rollback: if metrics degrade, rollback WITHOUT human
+└── Blast radius: limited to canary percentage at any given time
+```
+
+### Architecture
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                  Argo Rollouts Controller                    │
+│                  (Deployment in argo-rollouts namespace)     │
+│                                                             │
+│  Watches: Rollout CRDs                                      │
+│  Manages: ReplicaSets (canary + stable)                     │
+│  Integrates with:                                           │
+│  ├── Istio (VirtualService traffic splitting)               │
+│  ├── AWS ALB (weighted target groups)                       │
+│  ├── Nginx Ingress (canary annotations)                     │
+│  ├── SMI (Service Mesh Interface)                           │
+│  └── Traefik, Ambassador, etc.                              │
+│                                                             │
+│  Traffic management:                                        │
+│  ├── Istio: Rollouts modifies VirtualService weights        │
+│  ├── ALB: Rollouts modifies Ingress annotations             │
+│  └── Nginx: Rollouts creates canary Ingress                 │
+└────────────────────────────────────────────────────────────┘
+```
+
+### Canary Deployment — Full Production Example
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: order-service
+  namespace: order
+spec:
+  replicas: 10
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: order-service
+  
+  # Pod template (same as Deployment)
+  template:
+    metadata:
+      labels:
+        app: order-service
+    spec:
+      containers:
+        - name: order-service
+          image: 123456789.dkr.ecr.us-east-1.amazonaws.com/order-service:v2.1.0
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+            periodSeconds: 5
+
+  strategy:
+    canary:
+      # Traffic management via Istio
+      trafficRouting:
+        istio:
+          virtualServices:
+            - name: order-service-vsvc     # ArgoCD manages this VirtualService
+              routes:
+                - primary                   # Route name in VirtualService
+          destinationRule:
+            name: order-service-destrule
+            canarySubsetName: canary
+            stableSubsetName: stable
+
+      # The canary steps — THIS IS THE ROLLOUT PLAN
+      steps:
+        # Step 1: Send 5% traffic to canary, run analysis
+        - setWeight: 5
+        - analysis:
+            templates:
+              - templateName: success-rate
+              - templateName: latency-check
+            args:
+              - name: service-name
+                value: order-service
+        
+        # Step 2: If analysis passed, bump to 25%
+        - setWeight: 25
+        - pause: { duration: 5m }    # Bake time — let metrics accumulate
+        - analysis:
+            templates:
+              - templateName: success-rate
+              - templateName: latency-check
+            args:
+              - name: service-name
+                value: order-service
+
+        # Step 3: 50% traffic
+        - setWeight: 50
+        - pause: { duration: 10m }   # Longer bake at higher traffic
+        - analysis:
+            templates:
+              - templateName: success-rate
+              - templateName: latency-check
+              - templateName: error-budget   # Stricter at higher traffic
+            args:
+              - name: service-name
+                value: order-service
+
+        # Step 4: 100% — full promotion
+        - setWeight: 100
+        - pause: { duration: 5m }    # Final bake
+        - analysis:
+            templates:
+              - templateName: success-rate
+            args:
+              - name: service-name
+                value: order-service
+
+      # What happens if analysis fails at ANY step:
+      # → Automatic rollback to stable version
+      # → Canary ReplicaSet scaled to 0
+      # → All traffic back to stable
+      # → Notification sent to Slack
+
+      # Anti-affinity — spread canary and stable across nodes
+      antiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          weight: 100
+
+      # Scale down delay — keep old ReplicaSet for fast rollback
+      scaleDownDelaySeconds: 300     # 5 min before scaling down old
+
+      # Abort if rollout takes too long overall
+      progressDeadlineAbort: true
+      progressDeadlineSeconds: 1800   # 30 min max for entire rollout
+```
+
+### AnalysisTemplate — Automated Metrics Checking
+
+```yaml
+# Success Rate Analysis (Prometheus)
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+spec:
+  args:
+    - name: service-name
+  metrics:
+    - name: success-rate
+      # How often to check
+      interval: 60s
+      
+      # How many checks before declaring success
+      count: 5
+      
+      # How many failures allowed before declaring failure
+      failureLimit: 1
+      
+      # The actual Prometheus query
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            sum(rate(
+              istio_requests_total{
+                destination_service=~"{{args.service-name}}.*",
+                response_code!~"5.*",
+                reporter="destination"
+              }[5m]
+            )) /
+            sum(rate(
+              istio_requests_total{
+                destination_service=~"{{args.service-name}}.*",
+                reporter="destination"
+              }[5m]
+            )) * 100
+      
+      # Success condition: success rate must be >= 99.5%
+      successCondition: result[0] >= 99.5
+      failureCondition: result[0] < 95.0
+      # Between 95-99.5%: inconclusive (keep checking)
+
+---
+# Latency Analysis
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: latency-check
+spec:
+  args:
+    - name: service-name
+  metrics:
+    - name: p99-latency
+      interval: 60s
+      count: 5
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            histogram_quantile(0.99,
+              sum(rate(
+                istio_request_duration_milliseconds_bucket{
+                  destination_service=~"{{args.service-name}}.*",
+                  reporter="destination"
+                }[5m]
+              )) by (le)
+            )
+      successCondition: result[0] <= 500    # P99 must be <= 500ms
+      failureCondition: result[0] > 2000    # Fail if P99 > 2s
+
+---
+# Error Budget Analysis (SRE pattern)
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-budget
+spec:
+  args:
+    - name: service-name
+  metrics:
+    - name: error-budget-remaining
+      interval: 120s
+      count: 3
+      failureLimit: 0     # Zero tolerance — if error budget is spent, abort
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            # Remaining error budget for the month
+            # SLO: 99.95% availability = 0.05% error budget
+            1 - (
+              sum(increase(
+                istio_requests_total{
+                  destination_service=~"{{args.service-name}}.*",
+                  response_code=~"5.*"
+                }[30d]
+              )) /
+              sum(increase(
+                istio_requests_total{
+                  destination_service=~"{{args.service-name}}.*"
+                }[30d]
+              ))
+            ) - 0.9995
+      successCondition: result[0] > 0     # Still have error budget
+      failureCondition: result[0] <= 0    # Budget exhausted — no deploys!
+```
+
+### Blue-Green Deployment
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: payment-service      # Payment service — zero tolerance for errors
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+    spec:
+      containers:
+        - name: payment-service
+          image: 123456789.dkr.ecr.us-east-1.amazonaws.com/payment-service:v3.0.0
+
+  strategy:
+    blueGreen:
+      # Active service (receives production traffic)
+      activeService: payment-service-active
+      
+      # Preview service (new version, internal access only)
+      previewService: payment-service-preview
+      
+      # Auto-promote after analysis passes
+      autoPromotionEnabled: true
+      
+      # How long preview runs before auto-promotion
+      autoPromotionSeconds: 300    # 5 min preview + analysis
+      
+      # Scale down old version delay
+      scaleDownDelaySeconds: 600   # Keep blue for 10 min (fast rollback)
+      scaleDownDelayRevisionLimit: 1
+      
+      # Pre-promotion analysis
+      prePromotionAnalysis:
+        templates:
+          - templateName: success-rate
+          - templateName: latency-check
+        args:
+          - name: service-name
+            value: payment-service
+
+      # Post-promotion analysis (verify after traffic switch)
+      postPromotionAnalysis:
+        templates:
+          - templateName: success-rate
+        args:
+          - name: service-name
+            value: payment-service
+
+      # Anti-affinity between blue and green pods
+      antiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution: {}
+```
+
+```
+BLUE-GREEN FLOW:
+
+1. Current state: Blue (v2.9) serving 100% traffic
+                  ┌────────────┐
+   Users ───────► │ Active Svc │ ──► Blue pods (v2.9) ✅
+                  └────────────┘
+
+2. New version deployed: Green (v3.0) starts, gets preview service
+                  ┌────────────┐
+   Users ───────► │ Active Svc │ ──► Blue pods (v2.9) ✅
+                  └────────────┘
+                  ┌────────────┐
+   QA/Tests ────► │ Preview Svc│ ──► Green pods (v3.0) 🔵
+                  └────────────┘
+
+3. Pre-promotion analysis runs against preview service
+   Prometheus checks success-rate and latency...
+
+4. Analysis passes → Active service switches to green
+                  ┌────────────┐
+   Users ───────► │ Active Svc │ ──► Green pods (v3.0) ✅
+                  └────────────┘
+                  Blue pods (v2.9) kept for 10 min (rollback safety)
+
+5. Post-promotion analysis runs against active traffic
+   If fails → automatic rollback to blue
+
+6. After scaleDownDelay, blue pods terminated
+```
+
+### Canary vs Blue-Green — When to Use Which
+
+| Aspect | Canary | Blue-Green |
+|--------|--------|------------|
+| Traffic shifting | Gradual (5% → 25% → 50% → 100%) | All-or-nothing switch |
+| Resource cost | Low (canary = small % of replicas) | High (2x replicas during deploy) |
+| Rollback speed | Instant (just route back to stable) | Instant (switch service back) |
+| Risk exposure | Minimal (only canary % sees new code) | Preview has no real user traffic until switch |
+| Testing with real traffic | ✅ Real users hit canary at low % | ❌ Preview only gets synthetic tests |
+| Database migrations | Difficult (two versions reading same DB) | Same difficulty |
+| Best for | Most services, gradual confidence | Critical services (payment), major version changes |
+| NovaMart pattern | Default for all services | Payment, auth, checkout (zero-error-tolerance) |
+
+---
+
+## 3. Progressive Delivery — The Complete Picture
+
+### Feature Flags + Canary = Full Control
+
+```
+WITHOUT feature flags:
+  Deploy v2 with new checkout flow → 5% canary → if broken, rollback entire deploy
+
+WITH feature flags:
+  Deploy v2 with new checkout flow behind flag (disabled) → 100% deploy
+  Enable flag for 1% of users → measure → 5% → 25% → 100%
+  If broken: disable flag instantly (no redeploy needed)
+
+COMBINED (NovaMart pattern):
+  1. Deploy code with feature flag (disabled) via Argo Rollouts canary
+  2. Canary validates infrastructure (no crashes, no OOM, no latency spike)
+  3. After full rollout, enable feature flag gradually via LaunchDarkly/Flagsmith
+  4. Feature flag validates business logic (conversion rate, error rate)
+  5. After full flag rollout, remove flag in next deploy (tech debt cleanup)
+```
+
+### Header-Based Routing (Testing in Production)
+
+```yaml
+# Istio VirtualService — route specific users to canary
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: order-service
+spec:
+  hosts:
+    - order-service
+  http:
+    # QA team sees canary version (header-based)
+    - match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: order-service
+            subset: canary
+
+    # Internal testing by user ID
+    - match:
+        - headers:
+            x-user-id:
+              regex: "^(test-user-1|test-user-2|qa-.*)"
+      route:
+        - destination:
+            host: order-service
+            subset: canary
+
+    # Everyone else → stable
+    - route:
+        - destination:
+            host: order-service
+            subset: stable
+            weight: 95
+        - destination:
+            host: order-service
+            subset: canary
+            weight: 5
+```
+
+### The Complete CI/CD Flow at NovaMart
+
+```
+Developer pushes to feature branch
+         │
+         ▼
+Bitbucket webhook → Jenkins
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ Jenkins Pipeline                     │
+│                                      │
+│ 1. Shallow clone                     │
+│ 2. Build + Unit test                 │
+│ 3. SonarQube analysis                │
+│ 4. Quality Gate (wait for webhook)   │
+│ 5. Kaniko image build + push to ECR  │
+│ 6. Trivy scan (fail on CRITICAL)     │
+│ 7. BlackDuck SCA (fail on policy)    │
+│ 8. Push to Artifactory               │
+│ 9. Update manifests repo (dev)       │
+└────────────────┬────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────┐
+│ ArgoCD detects manifest change       │
+│                                      │
+│ DEV: auto-sync, no approval          │
+│ ┌─────────────────────────────┐      │
+│ │ Argo Rollout (canary)       │      │
+│ │ 5% → analysis → 100%       │      │
+│ │ Analysis: dev Prometheus     │      │
+│ └─────────────────────────────┘      │
+│                                      │
+│ STAGING: auto-sync after dev green   │
+│ ┌─────────────────────────────┐      │
+│ │ Argo Rollout (canary)       │      │
+│ │ 10% → 50% → 100%           │      │
+│ │ Analysis: staging Prometheus │      │
+│ │ + integration test Job hook  │      │
+│ └─────────────────────────────┘      │
+│                                      │
+│ PROD: manual sync (input gate)       │
+│ ┌─────────────────────────────┐      │
+│ │ Sync window check           │      │
+│ │ Argo Rollout (canary)       │      │
+│ │ 5% → analysis → 25% →      │      │
+│ │ analysis → 50% → analysis → │      │
+│ │ 100% → post-promotion       │      │
+│ │ Full analysis suite:         │      │
+│ │ - success rate ≥ 99.5%      │      │
+│ │ - P99 latency ≤ 500ms      │      │
+│ │ - error budget remaining    │      │
+│ │ - no new error log patterns │      │
+│ └─────────────────────────────┘      │
+│                                      │
+│ Slack notifications at every stage   │
+└─────────────────────────────────────┘
+```
+
+### How Argo Rollouts Breaks
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| **Analysis flapping** | Rollout stuck, retrying analysis endlessly | Metrics query returns inconsistent results, low traffic | Increase `count`, use `failureLimit`, ensure sufficient traffic for statistical significance |
+| **Stuck at 0% canary** | Canary pod not getting traffic | Istio VirtualService not updated, DestinationRule missing subsets | Check rollout status: `kubectl argo rollouts get rollout <name>`, verify VirtualService weights |
+| **Canary passes but prod breaks** | 5% canary was healthy, 100% isn't | Canary hit only cache, not cold paths; resource exhaustion at scale | Add load testing to analysis, test at meaningful traffic percentages, include resource metrics |
+| **Analysis timeout** | Rollout hangs at analysis step | Prometheus unreachable, query returns no data, `count` too high | Add `initialDelay`, verify Prometheus connectivity, use `failureCondition` to catch empty results |
+| **Two Rollouts racing** | Both trying to update same VirtualService | Rapid successive deploys, first not finished | `progressDeadlineAbort: true`, or manual abort of first before starting second |
+| **Database schema mismatch** | Canary reads old schema, errors | Migration ran for new version, old version can't read it | Schema changes must be backward-compatible, expand-then-contract migration pattern |
+| **Rollback cascading** | Rollback triggers dependent service rollback | Service A canary fails, but service B depends on A's new API | Independent service versioning, API backward compatibility, contract testing |
+
+---
+
+---
+
+## Quick Reference Card
+
+```
+ARGOCD ARCHITECTURE:
+  server (UI/API) + repo-server (Git/Helm/Kustomize) + 
+  controller (reconciliation) + Redis (cache) + notifications
+  No external DB — all state in K8s etcd (Application CRDs)
+  Reconciliation: every 3min OR webhook-triggered (prefer webhook)
+
+APPPROJECT:
+  sourceRepos + destinations + clusterResourceWhitelist + syncWindows + roles
+  Payment team can only deploy to payment-* namespaces
+  Sync windows: deny Christmas, allow hotfixes always
+
+APPLICATIONSET:
+  Generators: git-directory, matrix, list, PR, SCM provider
+  DANGER: empty generator output = mass delete
+  PROTECTION: preserveResourcesOnDeletion: true, progressive sync
+
+SYNC WAVES:
+  Lower number first: -2 (namespace) → -1 (secrets) → 0 (config) → 1 (deploy) → 2 (service)
+  Hooks: PreSync, Sync, PostSync, SyncFail
+  hook-delete-policy: BeforeHookCreation (most common)
+
+ARGO ROLLOUTS — CANARY:
+  setWeight → analysis → setWeight → analysis → 100%
+  AnalysisTemplate: Prometheus query + successCondition
+  Auto-rollback on failure (no human needed)
+  trafficRouting: Istio VirtualService weight manipulation
+
+ARGO ROLLOUTS — BLUE-GREEN:
+  activeService + previewService
+  prePromotionAnalysis → switch → postPromotionAnalysis
+  scaleDownDelaySeconds for rollback safety
+  Use for: payment, auth, critical services
+
+ANALYSIS TEMPLATES:
+  success-rate: 5xx / total < threshold
+  latency: histogram_quantile P99 < threshold
+  error-budget: remaining budget > 0
+  interval + count + failureLimit = confidence
+
+PROGRESSIVE DELIVERY PATTERN:
+  CI (Jenkins) → Image → Manifest repo → ArgoCD → Argo Rollouts
+  Dev: auto, fast canary | Staging: auto, thorough canary
+  Prod: manual trigger, full analysis suite, sync windows
+```
+
+
+
+---
+
+## Retention Questions
+
+**Q1.** NovaMart has 200 services deployed via ArgoCD using an ApplicationSet with a Git directory generator. At 9 AM, you get a Slack alert: 47 Applications just went to "Missing" status and resources are being deleted from the production cluster. What happened, how do you stop the bleeding immediately, and what permanent safeguards do you implement?
+
+**Q2.** You're designing the Argo Rollouts canary strategy for NovaMart's checkout-service (handles $50K/minute in transactions). Write the complete Rollout spec with: canary steps, analysis templates (success rate, latency, error budget), traffic routing via Istio, and explain your choices for each parameter. What's different about this compared to a low-criticality internal reporting service?
+
+**Q3.** The order-service team complains that their ArgoCD Application always shows "OutOfSync" even though they haven't made any changes. Every time they click "Sync," it syncs successfully, but within 3 minutes it shows OutOfSync again. Diagnose this systematically — what are the possible causes and how do you fix each one?
+
+**Q4.** Draw (in text) the complete flow from a developer's `git push` to traffic reaching the new version in production. Include every system touched (Bitbucket, Jenkins, ECR, Artifactory, ArgoCD, Argo Rollouts, Istio, Prometheus). For each transition point, identify what can go wrong and what the observable symptom would be.
+
+
+These questions move into the **Advanced GitOps and Progressive Delivery** domain. At NovaMart's scale, you cannot manually manage deployments. You are building a "deployment machine" where the human only provides the intent (Git), and the machine handles the execution, validation, and rollback.
+
+---
+
+### Q1: The ApplicationSet "Death Spiral"
+
+**What happened:**
+You have a **Git Directory Generator** in your ApplicationSet. This generator automatically creates `Application` objects based on the files/folders it finds in a specific Git path. 
+
+Someone (likely a developer or a script) accidentally deleted or renamed folders in that Git directory. Because the ApplicationSet is designed to keep the cluster in sync with the Git directory, it immediately deleted the 47 `Application` objects from the cluster. Since these Applications likely had `syncPolicy.automated.prune: true`, ArgoCD then proceeded to delete all the actual resources (Deployments, Services, Ingresses) associated with those 47 services.
+
+**How to stop the bleeding immediately:**
+1.  **Disable Auto-Sync on the ApplicationSet:** Immediately edit the ApplicationSet and set `automated: null` or remove the `syncPolicy` block. This prevents ArgoCD from performing any further deletions while you fix the source.
+2.  **Revert the Git Commit:** Perform a `git revert` on the commit that deleted the folders in the Git directory. Once the folders are back, the ApplicationSet will recreate the `Application` objects.
+3.  **Manual Sync:** Trigger a manual sync of the recreated Applications to restore the production resources.
+
+**Permanent Safeguards:**
+1.  **Disable Pruning on ApplicationSets:** Set `prune: false` in the ApplicationSet. This means if a folder is deleted in Git, the `Application` object might vanish, but the actual resources in the cluster stay alive. You then perform a manual cleanup.
+2.  **Protected Folders/CODEOWNERS:** Implement a `CODEOWNERS` file in the Git repository. Require mandatory approval from the Platform Team for any changes to the directory used by the ApplicationSet generator.
+3.  **Application-Level Finalizers:** Implement a custom finalizer on critical resources to prevent them from being deleted without a manual "unlock" step.
+
+---
+
+### Q2: High-Stakes Canary for `checkout-service`
+
+For a service handling $50K/minute, we cannot risk a "big bang" release. We need a **Tight Feedback Loop**.
+
+**Rollout Spec:**
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: checkout-service
+spec:
+  strategy:
+    canary:
+      analysis:
+        templates:
+          - templateName: success-rate-check
+            args:
+              - name: service-name
+                value: checkout-service
+      steps:
+        - setWeight: 1   # Start very small
+        - pause: { duration: 5m }
+        - setWeight: 5
+        - pause: { duration: 10m }
+        - setWeight: 20
+        - pause: { duration: 30m } # Long soak time for payment edge cases
+        - setWeight: 50
+        - pause: { duration: 1h }
+        - setWeight: 100
+```
+
+**Analysis Template (The Guardrail):**
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate-check
+spec:
+  metrics:
+    - name: success-rate
+      interval: 1m
+      successCondition: result[0] >= 0.999 # 99.9% Success rate
+      failureLimit: 2 # Allow 2 failures before aborting
+      provider:
+        prometheus:
+          address: http://prometheus:9090
+          query: |
+            sum(irate(istio_requests_total{reporter="destination",response_code!~"5.*",destination_service="checkout-service"}[1m])) 
+            / 
+            sum(irate(istio_requests_total{reporter="destination",destination_service="checkout-service"}[1m]))
+```
+
+**Design Choices:**
+*   **Istio Routing:** I use Istio because it allows for **precise weighted traffic shifting** at the L7 layer. Unlike K8s services (which are random), Istio ensures exactly 1% of requests go to v2.
+*   **Strict Success Rate (99.9%):** Because this is the checkout service, a 1% error rate is a financial disaster.
+*   **Long Soak Times:** I use a 1-hour soak at 50% to catch "slow leak" issues (e.g., memory leaks or database connection saturation) that don't appear in a 5-minute test.
+
+**Comparison with Low-Criticality Service:**
+For an internal reporting service, I would use:
+1.  **Aggressive Steps:** 10% $\rightarrow$ 50% $\rightarrow$ 100% (No 1% start).
+2.  **Loose Error Budget:** 95% success rate is acceptable.
+3.  **Shorter Pauses:** 5-minute windows instead of 1 hour.
+
+---
+
+### Q3: The "OutOfSync" Fight (Drift vs. Desired State)
+
+**Diagnosis:**
+This is a **Conflict between two Controllers**. ArgoCD is trying to enforce the state in Git, but something else in the cluster is modifying the resource in real-time.
+
+**Possible Causes & Fixes:**
+
+1.  **HPA (Horizontal Pod Autoscaler):** 
+    *   **Cause:** Git says `replicas: 3`. HPA sees high load and scales to `replicas: 5`. ArgoCD sees the difference $\rightarrow$ `OutOfSync`. You click Sync $\rightarrow$ ArgoCD sets it back to 3 $\rightarrow$ HPA immediately sets it back to 5 $\rightarrow$ `OutOfSync`.
+    *   **Fix:** Use `ignoreDifferences` in the ArgoCD Application spec to ignore the `replicas` field.
+
+2.  **Admission Webhooks / Mutating Controllers:**
+    *   **Cause:** An Istio sidecar injector or a security policy agent is adding labels or annotations to the pod at the moment of creation. These labels aren't in Git.
+    *   **Fix:** Use `ignoreDifferences` for the specific labels/annotations being added.
+
+3.  **Service Mesh (Istio) Automatic Updates:**
+    *   **Cause:** Istio might be updating the `DestinationRule` or `VirtualService` based on internal discovery.
+    *   **Fix:** Ensure the labels used by Istio are explicitly defined in Git or ignored by ArgoCD.
+
+---
+
+### Q4: The Complete GitOps Data Flow
+
+```ascii
+[Dev Push] ──► [Bitbucket] ──► [Jenkins] ──► [Artifactory/ECR]
+                                    │              │
+                                    │      (Update Image Tag)
+                                    │              ▼
+                                    └────► [GitOps Manifest Repo]
+                                                   │
+                                                   ▼
+                                            [ArgoCD Controller]
+                                                   │
+                                                   ▼
+                                            [Argo Rollouts] ──► [Istio] ──► [Traffic]
+                                                   ▲               │
+                                                   └──── [Prometheus] ◄────┘
+```
+
+**Transition Points & Failure Modes:**
+
+| Transition | What can go wrong? | Observable Symptom |
+| :--- | :--- | :--- |
+| **Bitbucket $\rightarrow$ Jenkins** | Webhook failure / Network glitch | No build starts after a push. |
+| **Jenkins $\rightarrow$ ECR/Artifactory** | Auth failure / Registry full | Pipeline fails at "Push Image" stage. |
+| **Jenkins $\rightarrow$ Manifest Repo** | Git Merge Conflict / Permission denied | Pipeline fails at "Update Tag" stage. |
+| **Manifest Repo $\rightarrow$ ArgoCD** | Sync Policy failure / App a broken | App shows `OutOfSync` or `Degraded`. |
+| **ArgoCD $\rightarrow$ Rollouts** | Resource quota exceeded / ImagePullBackOff | Pods stuck in `ContainerCreating`. |
+| **Rollouts $\rightarrow$ Istio** | VirtualService mismatch / Subset missing | 503 Service Unavailable / Traffic not shifting. |
+| **Prometheus $\rightarrow$ Rollouts** | Metric timeout / Query error | Canary "Aborted" or hangs indefinitely. |
+
+---
+
+### Q5: The 3 AM Node Failure Triage
+
+**Step 1: Impact Assessment (Triage)**
+I immediately check the **Load Balancer** and **Core Service Health**. 
+*   If the 3 critical API pods were distributed across the cluster, the service is likely still up.
+*   If they were all on `ip-10-0-1-50`, we have a **SEV1 Outage**.
+
+**Step 2: Node Diagnosis (The "Why")**
+I need to know if the node is *dead* or just *unreachable*.
+1.  **Cloud Console:** Check AWS EC2 Status Checks. If "System Status Check" failed, it's an AWS hardware issue.
+2.  **SSH Attempt:** Try to SSH. If it times out, the kernel is likely panicked or the network interface is down.
+3.  **Kubelet Logs:** If I can get in, I check `journalctl -u kubelet` to see if it crashed due to memory pressure or disk failure.
+
+**Step 3: Recovery (The "Fix")**
+Since the node is `NotReady`, K8s will eventually evict the pods, but the default timeout (5m) is too slow for critical services.
+1.  **Force Evacuation:** I will manually taint the node with `NoExecute`:
+    `kubectl taint nodes ip-10-0-1-50 outage=true:NoExecute`
+    This forces the pods to move to healthy nodes **immediately**.
+2.  **Verify Pod Health:** I monitor `kubectl get pods -w` to ensure the critical APIs are `Running` and `Ready` on other nodes.
+
+**Step 4: Post-Mortem (Prevention)**
+1.  **Pod Topology Spread Constraints:** I will implement `topologySpreadConstraints` for the critical API pods to ensure they are **never** all placed on the same node.
+2.  **Node Problem Detector:** Deploy the Node Problem Detector to catch "Kernel Panic" or "Disk Failure" patterns and alert us *before* the node goes `NotReady`.
+
+
+# Grading Q1-Q4
+
+Note: You also answered a Q5 that wasn't asked. I'll acknowledge it briefly but won't grade it — the four assigned questions are what matter.
+
+---
+
+## Q1: ApplicationSet Mass-Delete — 3.5/5
+
+**What you nailed:**
+- Correctly identified that the Git directory generator producing fewer results leads to Application deletion — right mechanism.
+- Git revert as a recovery step — correct.
+- CODEOWNERS as a prevention mechanism — good governance thinking.
+
+**What you got wrong or missed:**
+
+1. **Your root cause is the SECOND most likely cause, not the first.** You said "someone deleted or renamed folders." The MORE likely cause — and the one the lesson explicitly covered — is a **Git authentication failure or network issue**. If the repo-server can't clone the repo (expired token, Bitbucket outage, DNS failure), the generator produces **zero results** because it can't read the directory. Zero results = zero Applications = delete everything. This is more dangerous than human error because it's transient and automated.
+
+2. **You missed the single most important safeguard: `preserveResourcesOnDeletion: true`.** This was explicitly covered in the lesson with a code example. This one setting prevents the ApplicationSet from deleting cluster resources even when Applications are removed. Your answer said "set `prune: false`" which is close but not the same thing — `prune` is on the Application's syncPolicy, `preserveResourcesOnDeletion` is on the ApplicationSet spec itself. The distinction matters: prune controls whether ArgoCD removes resources that are no longer in Git manifests. preserveResourcesOnDeletion controls whether deleting the Application CRD itself cascades to deleting cluster resources.
+
+3. **Your immediate response is too slow.** "Edit the ApplicationSet and set automated: null" requires you to write YAML, apply it, and wait for the controller to reconcile. While you're editing, deletions are continuing. The faster response:
+
+```bash
+# IMMEDIATE (10 seconds): Scale down the applicationset-controller
+kubectl scale deployment argocd-applicationset-controller \
+    -n argocd --replicas=0
+
+# THEN investigate, fix Git, add safeguards
+# THEN scale back up
+```
+
+This is the "stop the bleeding" pattern — kill the controller that's causing damage, THEN fix the root cause.
+
+4. **You didn't mention the progressive sync strategy** that was covered in the lesson:
+
+```yaml
+strategy:
+  type: RollingSync
+  rollingSync:
+    steps:
+      - matchExpressions:
+          - key: env
+            operator: In
+            values: [staging]
+      - matchExpressions:
+          - key: env
+            operator: In
+            values: [prod]
+        maxUpdate: 25%
+```
+
+This ensures that even if the generator does something unexpected, it can only affect 25% of prod apps at a time, giving you time to intervene.
+
+5. **Finalizers on resources don't help here.** The issue isn't that Kubernetes resources are being deleted too fast — it's that ArgoCD Application CRDs are being deleted, which triggers the cascade. The correct protection is on the ApplicationSet and Application level, not on the downstream resources.
+
+---
+
+## Q2: Checkout-Service Canary — 3.8/5
+
+**What you nailed:**
+- Starting at 1% for a $50K/min service — correct instinct.
+- Long soak times (30min, 1hr) — excellent, catches slow leaks.
+- 99.9% success rate threshold — appropriate for checkout.
+- Comparison with low-criticality service is directionally correct.
+
+**What you missed:**
+
+1. **No traffic routing configuration.** You mentioned "I use Istio" but didn't include the `trafficRouting` block in your Rollout spec. Without it, Argo Rollouts can't actually shift traffic — it just scales ReplicaSets. The critical piece:
+
+```yaml
+trafficRouting:
+  istio:
+    virtualServices:
+      - name: checkout-service-vsvc
+        routes:
+          - primary
+    destinationRule:
+      name: checkout-service-destrule
+      canarySubsetName: canary
+      stableSubsetName: stable
+```
+
+Without this, your 1% weight is meaningless — Kubernetes Service does random round-robin across all pods, so traffic split is proportional to pod count, not your specified weight.
+
+2. **Analysis is configured wrong.** You put `analysis` at the top level of the canary strategy, which makes it a **background analysis** that runs continuously. What you want is **step-level analysis** that runs at each weight checkpoint:
+
+```yaml
+steps:
+  - setWeight: 1
+  - pause: { duration: 5m }
+  - analysis:            # ← Step-level: runs here, blocks until pass/fail
+      templates:
+        - templateName: success-rate-check
+        - templateName: latency-check    # You're missing this entirely
+        - templateName: error-budget     # And this
+  - setWeight: 5
+  # ...
+```
+
+3. **Missing latency analysis.** For checkout, P99 latency is as important as success rate. A checkout that takes 10 seconds but returns 200 OK still costs you conversions. The lesson provided an explicit latency AnalysisTemplate — your answer only has success rate.
+
+4. **Missing error budget analysis.** The lesson showed an error budget template that prevents deploys when the monthly error budget is exhausted. For a $50K/min service, this is non-negotiable — if you've already burned your error budget this month, you should NOT be deploying to checkout.
+
+5. **Missing operational safeguards:**
+   - `progressDeadlineSeconds: 3600` (abort if entire rollout takes > 1hr)
+   - `scaleDownDelaySeconds: 600` (keep old version for fast rollback)
+   - `antiAffinity` (don't colocate canary and stable on same node)
+   - `progressDeadlineAbort: true` (actually abort, not just mark degraded)
+
+6. **Your Prometheus query uses `irate` instead of `rate`.** `irate` uses only the last two data points — it's noisy and inappropriate for analysis that needs stable measurements over time. Use `rate` with a 5m window for analysis decisions.
+
+---
+
+## Q3: Perpetual OutOfSync — 4.2/5
+
+**What you nailed:**
+- HPA as the #1 cause — exactly right, and this is the most common cause in production.
+- Mutating admission webhooks (Istio sidecar injection) — correct, second most common.
+- `ignoreDifferences` as the fix — correct mechanism.
+- "Conflict between two controllers" framing — good mental model.
+
+**What you missed:**
+
+1. **You didn't show the actual ignoreDifferences config.** Knowing the concept isn't enough — you need to know the syntax:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+spec:
+  ignoreDifferences:
+    # HPA manages replicas
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+    # Istio injects sidecar
+    - group: apps
+      kind: Deployment
+      jqPathExpressions:
+        - .spec.template.metadata.annotations."sidecar.istio.io/*"
+    # Service gets defaulted fields
+    - group: ""
+      kind: Service
+      jsonPointers:
+        - /spec/clusterIP
+        - /spec/clusterIPs
+```
+
+At 3 AM when this is happening, you need to write this from memory, not look it up.
+
+2. **Missing cause: Kubernetes API server defaulting.** When you submit a resource, the API server adds default values that aren't in your Git manifest. For example:
+   - `Service` gets `clusterIP` assigned
+   - `Deployment` gets `strategy.rollingUpdate.maxSurge: 25%` if not specified
+   - `PodSpec` gets `terminationGracePeriodSeconds: 30` defaulted
+
+   ArgoCD compares your Git manifest (without defaults) against the live resource (with defaults) and sees drift. Fix: either explicitly set all defaulted fields in Git, or use `ignoreDifferences`.
+
+3. **Missing cause: `kubectl edit` or `kubectl apply` by a human.** Someone manually edited a resource in the cluster (maybe during an incident). ArgoCD detects the drift. This is actually the **intended behavior** — ArgoCD SHOULD show OutOfSync when someone manually changes things. The fix here is `selfHeal: true` (auto-revert manual changes) and education (don't kubectl edit in GitOps environments).
+
+4. **Missing the diagnostic approach.** Before jumping to causes, you should describe HOW to diagnose:
+
+```bash
+# Step 1: See what ArgoCD thinks is different
+argocd app diff order-service
+
+# Step 2: Compare rendered manifest vs live
+argocd app manifests order-service --source live > live.yaml
+argocd app manifests order-service --source git > git.yaml
+diff live.yaml git.yaml
+
+# Step 3: Check which specific fields are different
+# This tells you exactly what's causing OutOfSync
+```
+
+---
+
+## Q4: Complete GitOps Flow — 3.5/5
+
+**What you nailed:**
+- The overall flow direction is correct (push → build → image → manifests → ArgoCD → Rollouts → Istio).
+- Prometheus feedback loop to Rollouts — correct.
+- Failure mode table covers the major transition points.
+
+**What you missed critically:**
+
+1. **Your diagram is too simplified for what was asked.** The question said "include every system touched." You're missing: SonarQube (quality gate), Trivy (image scan), BlackDuck (SCA), the Quality Gate webhook back to Jenkins, Slack notifications at multiple points, and the separate manifests repo (you have it but don't clearly distinguish code repo from manifests repo).
+
+2. **Missing transition points in your failure table:**
+
+| Transition You Missed | Failure Mode | Observable Symptom |
+|----------------------|--------------|-------------------|
+| Jenkins → SonarQube | CE queue backed up, webhook misconfigured | Pipeline hangs at "Quality Gate" for 5+ min, then timeout |
+| SonarQube → Jenkins (webhook) | SonarQube webhook URL wrong, Jenkins ingress changed | waitForQualityGate timeout — pipeline fails even though code is clean |
+| Jenkins → Trivy | DB download fails, ghcr.io rate limit | "FATAL: DB update error" — pipeline fails at scan stage |
+| ECR → EKS (kubelet pull) | ECR token expired, cross-account IRSA misconfigured | Pods in `ImagePullBackOff` — ArgoCD shows app "Degraded" |
+| Argo Rollouts → Prometheus | Prometheus down, query returns empty | Analysis hangs as "Inconclusive" indefinitely, rollout stuck |
+| ArgoCD → Git (manifest read) | Token expired, repo-server OOM | ALL apps show "Unknown" status, no syncs possible |
+
+3. **Your failure symptoms are too vague.** "Pipeline fails at Push Image stage" — what does the engineer see? Is it a 401 from ECR? A timeout? A disk full error on the agent? The symptom should be specific enough that someone can grep logs for it.
+
+4. **Missing: the TWO repos pattern.** This is fundamental to GitOps. You have a **code repo** (where developers push code) and a **manifests repo** (where image tags are updated). Jenkins bridges them. Your diagram doesn't clearly show this separation. Many failure modes exist at this boundary (Jenkins has permission to read code repo but not write to manifests repo, merge conflict in manifests repo from concurrent pipelines, etc.).
+
+---
+
+## Q5 (Unasked — Not Graded)
+
+Brief acknowledgment: Your node failure triage is reasonable. The taint with `NoExecute` for immediate evacuation is correct. TopologySpreadConstraints for prevention is correct. Node Problem Detector is a good addition. The main gap is that you didn't check PodDisruptionBudgets before force-evicting, and you didn't mention that Karpenter (NovaMart's autoscaler) would automatically detect the unhealthy node and provision a replacement.
+
+
+---
+
+# Phase 3: CI/CD Pipelines
+## Lesson 4: CI Platform Comparison — GitHub Actions, GitLab CI, AWS CodePipeline
+
+---
+
+## Why This Lesson Exists
+
+NovaMart uses Jenkins. But you will encounter other CI platforms in interviews, in future roles, and potentially in a migration project at NovaMart itself. You need to:
+
+1. **Read and understand** any CI platform's pipeline definition
+2. **Compare tradeoffs** intelligently (not "GitHub Actions is better because it's newer")
+3. **Design a migration path** if the business case justifies it
+4. **Know what each platform does better and worse** than Jenkins
+
+This lesson is breadth, not depth. You won't become an expert in GitHub Actions in one lesson. But you'll know enough to operate, evaluate, and interview confidently.
+
+---
+
+## 1. GitHub Actions — The Dominant Platform (2025)
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    GitHub.com / GitHub Enterprise             │
+│                                                              │
+│  ┌────────────┐    ┌──────────────────────────────────────┐  │
+│  │ Repository  │    │         GitHub Actions Service        │  │
+│  │             │    │                                       │  │
+│  │ .github/    │    │  ┌─────────────┐  ┌──────────────┐   │  │
+│  │  workflows/ │───►│  │ Orchestrator │  │ Runner Mgmt  │   │  │
+│  │   ci.yml    │    │  │ (reads YAML, │  │ (assigns job │   │  │
+│  │   deploy.yml│    │  │  creates jobs│  │  to runner)   │   │  │
+│  │             │    │  └──────┬──────┘  └──────┬───────┘   │  │
+│  └────────────┘    │         │                 │            │  │
+│                     └─────────┼─────────────────┼───────────┘  │
+│                               │                 │              │
+│              ┌────────────────┼─────────────────┼──────┐       │
+│              │                ▼                 ▼       │       │
+│              │  ┌──────────────────┐  ┌──────────────┐ │       │
+│              │  │ GitHub-Hosted    │  │ Self-Hosted   │ │       │
+│              │  │ Runners          │  │ Runners       │ │       │
+│              │  │                  │  │               │ │       │
+│              │  │ - Fresh VM every │  │ - Your infra  │ │       │
+│              │  │   job (clean!)   │  │ - Persistent  │ │       │
+│              │  │ - Ubuntu, macOS, │  │ - EKS pods,   │ │       │
+│              │  │   Windows        │  │   EC2, on-prem│ │       │
+│              │  │ - 2-core, 7GB    │  │ - Any size    │ │       │
+│              │  │   (standard)     │  │ - Any OS      │ │       │
+│              │  │ - Pre-installed  │  │               │ │       │
+│              │  │   tools          │  │               │ │       │
+│              │  └──────────────────┘  └──────────────┘ │       │
+│              │        RUNNERS                           │       │
+│              └──────────────────────────────────────────┘       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Key concept: GitHub-hosted runners are ephemeral VMs.** Every job gets a fresh VM. No workspace pollution, no stale cache (unless you explicitly cache). This is fundamentally different from Jenkins where agents can be persistent and accumulate state.
+
+### Workflow Anatomy
+
+```yaml
+# .github/workflows/ci.yml
+name: Order Service CI
+
+# TRIGGERS — when does this workflow run?
+on:
+  push:
+    branches: [main, 'release/**']
+    paths:
+      - 'services/order-service/**'    # Only if order-service changed
+      - '.github/workflows/ci.yml'     # Or if this workflow changed
+  pull_request:
+    branches: [main]
+    paths:
+      - 'services/order-service/**'
+  workflow_dispatch:                     # Manual trigger button in UI
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options: [dev, staging, prod]
+
+# Permissions for OIDC (CRITICAL for AWS)
+permissions:
+  id-token: write      # Required for OIDC → AWS
+  contents: read        # Read repo
+  pull-requests: write  # Post PR comments (SonarQube, etc.)
+
+# Environment variables (workflow-level)
+env:
+  REGISTRY: 123456789.dkr.ecr.us-east-1.amazonaws.com
+  APP_NAME: order-service
+  AWS_REGION: us-east-1
+
+# Concurrency — prevent parallel runs for same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true    # Kill old run if new push comes
+
+jobs:
+  # ─── JOB 1: Build & Test ───
+  build:
+    runs-on: ubuntu-latest    # GitHub-hosted runner
+    # Or: runs-on: self-hosted  (your runner)
+    # Or: runs-on: [self-hosted, linux, x64, gpu]  (labeled)
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4      # Official action — pinned to v4
+        with:
+          fetch-depth: 0               # Full history for SonarQube
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'               # Auto-caches ~/.m2/repository!
+
+      - name: Build & Test
+        working-directory: services/order-service
+        run: |
+          mvn clean verify -B -T 1C --no-transfer-progress
+          # -B: batch mode, -T 1C: parallel
+
+      - name: Generate Image Tag
+        id: meta
+        run: |
+          TAG="${{ github.ref_name }}-$(git rev-parse --short HEAD)-${{ github.run_number }}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Upload Test Results
+        if: always()    # Upload even if tests fail
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: services/order-service/target/surefire-reports/
+          retention-days: 7
+
+  # ─── JOB 2: SonarQube ───
+  sonar:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+
+      - name: Quality Gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # ─── JOB 3: Security Scans (parallel) ───
+  security:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        scan: [trivy, blackduck]
+      fail-fast: false    # Don't cancel other scans if one fails
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy Scan
+        if: matrix.scan == 'trivy'
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: 'fs'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy to GitHub Security
+        if: matrix.scan == 'trivy' && always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+          # Results appear in GitHub Security tab!
+
+      - name: BlackDuck Scan
+        if: matrix.scan == 'blackduck'
+        uses: synopsys-sig/detect-action@v0.3.0
+        with:
+          scan-mode: RAPID    # Fast mode for PRs
+          blackduck-url: ${{ vars.BLACKDUCK_URL }}
+          blackduck-token: ${{ secrets.BLACKDUCK_TOKEN }}
+
+  # ─── JOB 4: Build & Push Image ───
+  image:
+    needs: [build, sonar, security]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'    # Only on main branch
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # OIDC authentication to AWS — NO ACCESS KEYS!
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789:role/github-actions-ecr
+          aws-region: ${{ env.AWS_REGION }}
+          # OIDC: GitHub proves identity to AWS via JWT
+          # No secrets stored! Role trust policy limits to this repo.
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push
+        uses: docker/build-push-action@v5
+        with:
+          context: services/order-service
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.APP_NAME }}:${{ needs.build.outputs.image-tag }}
+            ${{ env.REGISTRY }}/${{ env.APP_NAME }}:latest-main
+          cache-from: type=gha        # GitHub Actions cache for layers!
+          cache-to: type=gha,mode=max
+
+  # ─── JOB 5: Update Manifests ───
+  update-manifests:
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout manifests repo
+        uses: actions/checkout@v4
+        with:
+          repository: novamart/k8s-manifests
+          token: ${{ secrets.MANIFEST_REPO_PAT }}
+          path: manifests
+
+      - name: Update image tag
+        run: |
+          cd manifests/apps/order-service/overlays/dev
+          kustomize edit set image \
+            ${{ env.REGISTRY }}/${{ env.APP_NAME }}=${{ env.REGISTRY }}/${{ env.APP_NAME }}:${{ needs.build.outputs.image-tag }}
+          git config user.name "github-actions"
+          git config user.email "ci@novamart.com"
+          git add .
+          git commit -m "chore: update order-service to ${{ needs.build.outputs.image-tag }}"
+          git push
+```
+
+### GitHub Actions OIDC → AWS (The Right Way)
+
+```
+┌──────────────┐     JWT Token      ┌──────────────┐
+│ GitHub Actions│────────────────────►│  AWS STS     │
+│ Runner        │  (signed by GitHub)│  AssumeRole   │
+│               │◄────────────────────│  WithWebIdent│
+│               │  Temporary creds    │              │
+└──────────────┘  (15min-1hr)        └──────────────┘
+
+IAM Trust Policy:
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::123456789:oidc-provider/token.actions.githubusercontent.com"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+      },
+      "StringLike": {
+        "token.actions.githubusercontent.com:sub": "repo:novamart/order-service:ref:refs/heads/main"
+        // ↑ CRITICAL: Lock to specific repo AND branch
+        // Without this, ANY GitHub repo could assume this role
+      }
+    }
+  }]
+}
+```
+
+**Why OIDC matters:** No long-lived AWS access keys stored as GitHub Secrets. No key rotation. No risk of key leak. The JWT is short-lived and scoped. This is the **only acceptable pattern** for GitHub Actions → AWS in 2025.
+
+### Reusable Workflows (GitHub's Shared Libraries)
+
+```yaml
+# .github/workflows/reusable-build.yml (in a shared repo)
+name: Standard Build
+on:
+  workflow_call:    # This makes it callable from other repos
+    inputs:
+      app-name:
+        required: true
+        type: string
+      language:
+        required: true
+        type: string
+      java-version:
+        required: false
+        type: string
+        default: '17'
+    secrets:
+      SONAR_TOKEN:
+        required: true
+    outputs:
+      image-tag:
+        description: "Built image tag"
+        value: ${{ jobs.build.outputs.tag }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          # ... build logic based on inputs.language
+      - name: Output tag
+        id: meta
+        run: echo "tag=..." >> $GITHUB_OUTPUT
+
+---
+# Consuming workflow (in order-service repo)
+# .github/workflows/ci.yml
+name: CI
+on: [push]
+jobs:
+  build:
+    uses: novamart/shared-workflows/.github/workflows/reusable-build.yml@v2.3.0
+    with:
+      app-name: order-service
+      language: java
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+```
+
+### Self-Hosted Runners on EKS (Actions Runner Controller)
+
+```yaml
+# Actions Runner Controller (ARC) — runs GitHub Actions jobs on K8s
+# Similar concept to Jenkins Kubernetes plugin
+
+# RunnerDeployment — pool of runners
+apiVersion: actions.summerwind.dev/v1alpha1
+kind: RunnerDeployment
+metadata:
+  name: novamart-runners
+spec:
+  replicas: 5
+  template:
+    spec:
+      repository: novamart/order-service   # Or organization-level
+      labels:
+        - self-hosted
+        - linux
+        - novamart
+      resources:
+        requests:
+          cpu: "2"
+          memory: "4Gi"
+        limits:
+          cpu: "4"
+          memory: "8Gi"
+      # Ephemeral: runner pod deleted after each job
+      ephemeral: true
+
+---
+# Horizontal Runner Autoscaler — scale based on queue
+apiVersion: actions.summerwind.dev/v1alpha1
+kind: HorizontalRunnerAutoscaler
+metadata:
+  name: novamart-runners-autoscaler
+spec:
+  scaleTargetRef:
+    name: novamart-runners
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: TotalNumberOfQueuedAndInProgressWorkflowRuns
+      scaleUpThreshold: '0.75'
+      scaleDownThreshold: '0.25'
+      scaleUpFactor: '2'
+      scaleDownFactor: '0.5'
+```
+
+---
+
+## 2. GitLab CI — The Integrated Platform
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    GitLab (SaaS or Self-Hosted)                │
+│                                                               │
+│  ┌──────────┐  ┌─────────────┐  ┌───────────────────────┐    │
+│  │ Repository│  │ CI/CD       │  │ Built-in Features     │    │
+│  │           │  │ Coordinator │  │                        │    │
+│  │ Code      │  │             │  │ - Container Registry   │    │
+│  │ MRs       │  │ Parses      │  │ - Package Registry     │    │
+│  │ Issues    │  │ .gitlab-ci  │  │ - Security Dashboard   │    │
+│  │           │  │ Assigns jobs│  │ - Environments/Deploy  │    │
+│  │           │  │ to runners  │  │ - Feature Flags        │    │
+│  └──────────┘  └──────┬──────┘  │ - Infrastructure (IaC)  │    │
+│                       │          │ - Wiki, Pages           │    │
+│                       │          └───────────────────────┘    │
+│                       │                                       │
+│              ┌────────▼────────┐                              │
+│              │  GitLab Runners  │                              │
+│              │                  │                              │
+│              │  SaaS: shared    │                              │
+│              │  Self-hosted:    │                              │
+│              │  - Shell executor│                              │
+│              │  - Docker exec.  │                              │
+│              │  - K8s executor  │                              │
+│              │  - Docker Machine│                              │
+│              └──────────────────┘                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**GitLab's key differentiator:** Everything is built-in. Container registry, package registry, security scanning, feature flags, environments, monitoring — all in one product. No plugin ecosystem needed. The tradeoff: you're locked into GitLab's way of doing things.
+
+### .gitlab-ci.yml Anatomy
+
+```yaml
+# .gitlab-ci.yml (always in repo root)
+
+# Variables (like env in GitHub Actions)
+variables:
+  REGISTRY: 123456789.dkr.ecr.us-east-1.amazonaws.com
+  APP_NAME: order-service
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+
+# Stages define the ORDER of execution
+# Jobs in the same stage run in PARALLEL
+stages:
+  - build
+  - test
+  - scan
+  - package
+  - deploy
+
+# Cache (persistent across pipelines — like PVC in Jenkins)
+cache:
+  key: ${CI_COMMIT_REF_SLUG}    # Cache per branch
+  paths:
+    - .m2/repository/
+    - node_modules/
+
+# ─── BUILD ───
+build:
+  stage: build
+  image: maven:3.9.6-eclipse-temurin-17
+  script:
+    - mvn clean compile -B -T 1C --no-transfer-progress
+  artifacts:
+    paths:
+      - target/
+    expire_in: 1 hour    # Auto-cleanup!
+  rules:                  # GitLab's "when" equivalent
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ─── UNIT TEST ───
+test:unit:
+  stage: test
+  image: maven:3.9.6-eclipse-temurin-17
+  script:
+    - mvn test -B
+  artifacts:
+    reports:
+      junit: target/surefire-reports/TEST-*.xml    # GitLab parses JUnit!
+    paths:
+      - target/site/jacoco/
+  coverage: '/Total.*?([0-9]{1,3})%/'    # Regex to extract coverage %
+
+# ─── SECURITY SCANS ───
+trivy-scan:
+  stage: scan
+  image:
+    name: aquasec/trivy:0.50.0
+    entrypoint: [""]
+  script:
+    - trivy fs --severity HIGH,CRITICAL --exit-code 1 --format json --output trivy.json .
+  artifacts:
+    reports:
+      # GitLab natively displays security findings in MR!
+      container_scanning: trivy.json
+  allow_failure: false
+
+# GitLab built-in SAST (free!)
+sast:
+  stage: scan
+# include:
+#   - template: Security/SAST.gitlab-ci.yml
+# GitLab auto-includes SAST scanners based on detected languages
+
+# ─── DOCKER BUILD ───
+docker-build:
+  stage: package
+  image: docker:24
+  services:
+    - docker:24-dind     # DinD as a "service" (sidecar)
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - |
+      docker build \
+        --cache-from $CI_REGISTRY_IMAGE:latest \
+        -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA \
+        -t $CI_REGISTRY_IMAGE:latest .
+      docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+      docker push $CI_REGISTRY_IMAGE:latest
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ─── DEPLOY ───
+deploy-staging:
+  stage: deploy
+  image: bitnami/kubectl:1.28
+  environment:
+    name: staging
+    url: https://staging.novamart.com
+  script:
+    - kubectl set image deployment/order-service order-service=$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+deploy-production:
+  stage: deploy
+  image: bitnami/kubectl:1.28
+  environment:
+    name: production
+    url: https://novamart.com
+  script:
+    - kubectl set image deployment/order-service order-service=$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual    # Manual gate for production
+  needs:
+    - deploy-staging  # Explicit dependency
+
+# ─── PARENT-CHILD PIPELINES (GitLab's monorepo solution) ───
+# trigger-order-service:
+#   stage: build
+#   trigger:
+#     include: services/order-service/.gitlab-ci.yml
+#     strategy: depend
+#   rules:
+#     - changes:
+#         - services/order-service/**
+```
+
+### GitLab CI Unique Features
+
+```
+FEATURES GITLAB HAS THAT JENKINS DOESN'T (natively):
+├── Merge Request pipelines (automatic, with MR widget showing results)
+├── Environments with deployment tracking (who deployed what, when)
+├── Review Apps (auto-deploy PR to unique URL, auto-cleanup)
+├── Built-in container registry (per-project, free)
+├── Built-in package registry (Maven, npm, PyPI, etc.)
+├── Security dashboard (SAST, DAST, dependency scanning, container scanning)
+├── Feature flags (built-in, no LaunchDarkly needed)
+├── Auto DevOps (zero-config CI/CD for standard apps)
+├── Directed Acyclic Graph (DAG) via "needs:" keyword
+│   → Jobs can run as soon as their dependencies finish
+│   → Not limited to stage ordering
+├── Parent-child pipelines (monorepo trigger child pipelines)
+├── Multi-project pipelines (trigger pipeline in another repo)
+└── Pipeline analytics (duration trends, failure rates, wait times)
+```
+
+---
+
+## 3. AWS CodePipeline — AWS-Native CI/CD
+
+```
+AWS CI/CD ecosystem:
+├── CodeCommit     → Git repository (being deprecated 2024!)
+├── CodeBuild      → Build service (like a single Jenkins agent)
+├── CodeDeploy     → Deployment service (EC2, ECS, Lambda)
+├── CodePipeline   → Orchestrator (connects the above)
+└── CodeArtifact   → Package repository (like Artifactory)
+
+┌────────────────────────────────────────────────────────────┐
+│                      CodePipeline                           │
+│                                                             │
+│  Source ──► Build ──► Test ──► Deploy                       │
+│  (GitHub)   (Code    (Code    (Code                         │
+│  (S3)       Build)    Build)   Deploy                       │
+│  (ECR)                         ECS/EKS/Lambda)              │
+│                                                             │
+│  Each stage: 1+ action groups                               │
+│  Each action: CodeBuild, Lambda, manual approval, etc.      │
+└────────────────────────────────────────────────────────────┘
+```
+
+```yaml
+# buildspec.yml (CodeBuild's pipeline definition)
+version: 0.2
+
+env:
+  variables:
+    APP_NAME: order-service
+  parameter-store:
+    DB_PASSWORD: /novamart/prod/db-password    # SSM integration!
+  secrets-manager:
+    API_KEY: novamart/api-key                   # Secrets Manager!
+
+phases:
+  install:
+    runtime-versions:
+      java: corretto17
+    commands:
+      - echo Installing dependencies...
+
+  pre_build:
+    commands:
+      - echo Logging in to ECR...
+      - aws ecr get-login-password | docker login --username AWS --password-stdin $REGISTRY
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+
+  build:
+    commands:
+      - mvn clean package -B
+      - docker build -t $REGISTRY/$APP_NAME:$IMAGE_TAG .
+      - docker push $REGISTRY/$APP_NAME:$IMAGE_TAG
+
+  post_build:
+    commands:
+      - echo Build completed
+      - printf '{"ImageURI":"%s"}' $REGISTRY/$APP_NAME:$IMAGE_TAG > imageDetail.json
+
+artifacts:
+  files:
+    - imageDetail.json
+    - appspec.yaml        # For CodeDeploy
+    - taskdef.json        # For ECS deployment
+
+cache:
+  paths:
+    - '/root/.m2/**/*'    # Maven cache
+
+reports:
+  junit-reports:
+    files:
+      - 'target/surefire-reports/*.xml'
+    file-format: JUNITXML
+```
+
+### When to Use CodePipeline
+
+```
+USE CODEPIPELINE WHEN:
+├── 100% AWS shop (ECS, Lambda, no K8s)
+├── Simple pipeline (build → deploy, no complex logic)
+├── Need native AWS IAM integration (no OIDC setup)
+├── Small team, don't want to manage Jenkins
+└── Deploying to CodeDeploy targets (EC2, ECS blue-green)
+
+DON'T USE CODEPIPELINE WHEN:
+├── Multi-cloud or hybrid (it's AWS-only)
+├── Complex pipeline logic (limited branching/conditionals)
+├── Kubernetes deployments (ArgoCD is better)
+├── Need shared libraries / template reuse (very limited)
+├── Large org with diverse needs (too rigid)
+└── Cost sensitivity at scale (CodeBuild minutes add up)
+```
+
+---
+
+## 4. The Comparison Table — Decision Framework
+
+| Aspect | Jenkins | GitHub Actions | GitLab CI | CodePipeline |
+|--------|---------|---------------|-----------|-------------|
+| **Hosting** | Self-managed | SaaS + self-hosted runners | SaaS or self-managed | AWS-managed |
+| **Config file** | Jenkinsfile (Groovy) | YAML (.github/workflows/) | YAML (.gitlab-ci.yml) | YAML (buildspec.yml) + Console |
+| **Plugin ecosystem** | 1800+ plugins (strength AND weakness) | 20K+ marketplace actions | Built-in features | Limited — AWS services only |
+| **Learning curve** | Steep (Groovy, CPS, plugin hell) | Low-Medium | Low-Medium | Low (if you know AWS) |
+| **Runners/Agents** | Self-managed (K8s, EC2, SSH) | GitHub-hosted (free tier) + self-hosted | Shared (SaaS) + self-hosted | CodeBuild (managed compute) |
+| **Secrets** | Credential store (on controller) | Encrypted secrets (per repo/org/env) | CI/CD variables (masked) | SSM + Secrets Manager (native) |
+| **AWS integration** | Plugins, manual config | OIDC (excellent, no keys) | OIDC (good) | Native IAM (best) |
+| **K8s integration** | K8s plugin (pods as agents) | ARC (Actions Runner Controller) | K8s executor | Weak (use CodeDeploy/ECS) |
+| **Monorepo** | Manual (path-based scripts) | `paths` filter on triggers | `changes` + parent-child | Manual |
+| **Branch pipelines** | Multibranch plugin | Native (every workflow file) | Native (rules/only/except) | Limited |
+| **Security scanning** | Plugins (Trivy, SonarQube) | Actions (marketplace) + CodeQL | Built-in SAST, DAST, deps | Inspector integration |
+| **Caching** | PVC (K8s), workspace | actions/cache (S3-backed) | Distributed cache (key-based) | S3 cache (manual) |
+| **Artifacts** | archiveArtifacts (on controller!) | upload/download-artifact | Built-in with expiry | S3 (output artifacts) |
+| **Manual approval** | input() step | environments with protection rules | `when: manual` | Manual approval action |
+| **GitOps** | Updates manifest repo → ArgoCD | Same pattern | Same pattern | CodeDeploy (push-based) |
+| **Cost** | Free (but infra costs) | Free tier (2000min/mo), then $/min | Free tier, then $/user | Pay per build minute |
+| **HA** | DIY (hard) | Built-in (SaaS) | Built-in (SaaS) or DIY | Built-in (AWS) |
+| **Maturity** | 20+ years | 5+ years | 10+ years | 7+ years |
+| **Market trend (2025)** | Declining (legacy) | Dominant (growing) | Strong (enterprise) | Niche (AWS-only) |
+
+### When to Choose What — NovaMart Decision Tree
+
+```
+                    "We need a CI/CD platform"
+                            │
+              ┌─────────────┼─────────────────┐
+              ▼             ▼                  ▼
+        Greenfield?    Already have        AWS-only, no K8s,
+              │        Jenkins?            simple pipelines?
+              │             │                  │
+              ▼             ▼                  ▼
+     ┌────────────┐   Keep Jenkins       CodePipeline
+     │ GitHub     │   (migration is        (okay)
+     │ Actions    │   expensive)
+     │ (default)  │   │
+     └────────────┘   │ UNLESS:
+                      ├── Jenkins is unmaintained
+     ┌────────────┐   ├── Security audit failing
+     │ GitLab CI  │   ├── Plugin hell is unsustainable
+     │ (if GitLab │   └── Team productivity suffering
+     │  is SCM)   │       │
+     └────────────┘       ▼
+                      Migrate to GitHub Actions
+                      (phased, service by service)
+```
+
+### Migration Strategy — Jenkins → GitHub Actions
+
+```
+Phase 1: Foundation (Week 1-2)
+├── Set up OIDC for AWS access
+├── Create shared reusable workflows (equivalent to shared library)
+├── Set up self-hosted runners on EKS (ARC)
+├── Configure branch protection rules
+└── Set up Artifactory/ECR authentication
+
+Phase 2: Pilot (Week 3-4)
+├── Pick 3 low-risk services
+├── Write GitHub Actions workflows (keep Jenkins running in parallel)
+├── Compare: build time, reliability, developer experience
+├── Document migration guide for teams
+└── Get feedback from pilot teams
+
+Phase 3: Rollout (Week 5-12)
+├── Team-by-team migration (10-20 services/week)
+├── Each team: pair with platform engineer for first migration
+├── Maintain Jenkins for services not yet migrated
+├── Monitor: build times, failure rates, developer satisfaction
+└── Update shared workflows based on feedback
+
+Phase 4: Decommission (Week 13-16)
+├── Verify all services migrated
+├── Keep Jenkins read-only for build history (30-60 days)
+├── Decommission Jenkins infrastructure
+├── Update runbooks, documentation, on-call guides
+└── Post-migration review: what improved, what regressed
+```
+
+---
+
+## 5. Cost Optimization in CI
+
+```
+COST LEVERS (applies to all platforms):
+
+1. SPOT INSTANCES FOR RUNNERS
+   ├── Jenkins: EC2 plugin with spot fleet
+   ├── GitHub Actions: ARC on Karpenter with spot NodePool
+   ├── GitLab: Docker Machine autoscale with spot
+   └── Savings: 60-80% on compute
+
+2. RIGHT-SIZE AGENTS
+   ├── Most builds don't need 8 CPU / 16GB
+   ├── Profile actual usage (Prometheus metrics on agent pods)
+   ├── Different agent sizes for different workloads
+   │   ├── "lightweight" (1 CPU, 2GB) — manifest updates, deploys
+   │   ├── "standard" (2 CPU, 4GB) — most builds
+   │   └── "heavy" (4 CPU, 8GB) — Java compile, Docker build
+   └── Savings: 40-60% on oversized agents
+
+3. CACHING
+   ├── Maven: PVC or actions/cache → saves 3-5 min/build
+   ├── Docker layers: BuildKit cache, Kaniko registry cache
+   ├── npm: node_modules cache
+   ├── Go: GOPATH/pkg/mod cache
+   └── Savings: 30-50% on build time (= fewer agent minutes)
+
+4. SKIP UNNECESSARY WORK
+   ├── Path-based triggers (only build what changed)
+   ├── Skip CI on docs-only changes ([skip ci] or paths-ignore)
+   ├── Conditional stages (don't run integration tests on feature branches)
+   ├── Cancel stale builds (concurrency: cancel-in-progress)
+   └── Savings: 20-40% on total pipeline runs
+
+5. BUILD TIME WINDOWS
+   ├── Scale down runners during off-hours
+   ├── Schedule heavy jobs (full integration tests) for off-peak
+   └── Savings: 10-20% on compute (especially if paying for reserved)
+
+NovaMart CI Cost Example (200 services):
+  Before optimization: ~400 builds/day × 20min avg × $0.005/min = $40K/month
+  After optimization:  ~300 builds/day × 8min avg × $0.002/min (spot) = $4.8K/month
+  Savings: ~88%
+```
+
+## Quick Reference Card
+
+```
+GITHUB ACTIONS:
+  .github/workflows/*.yml — multiple workflows per repo
+  on: push/pull_request/workflow_dispatch/schedule
+  jobs → steps → uses (action) or run (shell)
+  OIDC → AWS: role-to-assume, no access keys ever
+  Reusable workflows: workflow_call (like shared libraries)
+  Cache: actions/cache or setup-java cache:'maven'
+  Matrix: strategy.matrix (parallel combinations)
+  ARC: self-hosted runners on K8s with autoscaling
+  Concurrency: cancel-in-progress: true (kill stale)
+
+GITLAB CI:
+  .gitlab-ci.yml — single file in repo root
+  stages define ORDER, jobs in same stage run PARALLEL
+  rules: replaces only/except (use rules, not only/except)
+  cache: key per branch, persistent across pipelines
+  artifacts: with expire_in (auto-cleanup!)
+  Built-in: container registry, SAST, DAST, feature flags
+  Parent-child pipelines for monorepos
+  needs: keyword for DAG (skip stage ordering)
+
+AWS CODEPIPELINE:
+  buildspec.yml for CodeBuild
+  Native SSM + Secrets Manager integration
+  Best for: AWS-only, ECS/Lambda, simple pipelines
+  Worst for: K8s, multi-cloud, complex logic
+
+DECISION FRAMEWORK:
+  Greenfield → GitHub Actions (default)
+  Already GitLab → GitLab CI
+  AWS-only simple → CodePipeline
+  Legacy Jenkins → Migrate if: unmaintained, security risk, productivity drain
+
+CI COST OPTIMIZATION:
+  Spot instances (60-80% savings)
+  Right-size agents (40-60% savings)
+  Caching (30-50% time savings)
+  Path-based triggers (20-40% fewer runs)
+  Cancel stale builds (free)
+```
+---
+
+## Phase 3 Retention Questions (Final)
+
+**Q1.** NovaMart's CTO asks you to evaluate migrating from Jenkins to GitHub Actions. The CFO wants a cost comparison. The security team wants to know about credential management. The engineering leads want to know if their custom shared library functions will work. Write the evaluation document covering: (a) technical feasibility, (b) cost analysis (current Jenkins infra vs GHA), (c) security posture comparison, (d) migration risk, and (e) your recommendation with justification.
+
+**Q2.** You need to set up GitHub Actions OIDC for 15 different NovaMart repositories, each deploying to different AWS accounts (dev, staging, prod). Design the IAM trust policy strategy. How do you prevent repo A from accessing repo B's production account? How do you handle the case where a single service needs access to both the dev AND prod accounts in the same workflow?
+
+**Q3.** A GitLab CI pipeline is taking 25 minutes. Looking at the `.gitlab-ci.yml`, you see: 5 sequential stages, no caching, `image: maven:latest` (downloads fresh every time), DinD for Docker builds, and all jobs run on shared runners. Optimize this pipeline — rewrite the key sections of the `.gitlab-ci.yml` with your improvements and estimate the new total time.
+
+**Q4.** Compare how you would implement the following NovaMart requirement across all four platforms (Jenkins, GitHub Actions, GitLab CI, CodePipeline): "On every PR to main, run unit tests, SonarQube analysis, and Trivy scan in parallel. Block the PR merge if any check fails. Post results as PR comments." Show the relevant config snippet for each platform and note the limitations of each approach.
+
+### Q1: Jenkins $\rightarrow$ GitHub Actions (GHA) Evaluation
+
+**To: CTO, CFO, CISO, Engineering Leads**
+**Subject: Evaluation of CI/CD Migration (Jenkins $\rightarrow$ GitHub Actions)**
+
+#### (a) Technical Feasibility: Moderate/Low
+The move is feasible but requires a **complete rewrite** of the pipeline logic.
+*   **The Blockers:** NovaMart's custom shared libraries are written in Groovy. GHA uses YAML for orchestration and JavaScript/TypeScript/Docker for custom "Actions." There is no automated converter for Groovy $\rightarrow$ GHA.
+*   **The Path:** We must map our `standardJavaPipeline` Groovy functions to a set of **Composite Actions** or **Reusable Workflows**.
+
+#### (b) Cost Analysis
+| Component | Jenkins (Current) | GitHub Actions (Proposed) |
+| :--- | :--- | :--- |
+| **Infrastructure** | AWS EC2s for Controller + Agents (~$1.2k/mo) | Managed (SaaS) - Pay per minute |
+| **Maintenance** | ~15 SRE hours/week (Patching, Plugin Hell) | $\approx 0$ (Managed by GitHub) |
+| **Licensing** | Open Source ($0) | Enterprise License (per seat) |
+| **TCO** | **High OpEx** (Engineering time is the cost) | **Predictable OpEx** (License + Usage) |
+
+#### (c) Security Posture
+*   **Jenkins:** Current state is "Secret-heavy." Credentials stored in Jenkins' internal XML/Database; requires heavy plugin management to rotate.
+*   **GHA:** **OIDC-native.** We can eliminate long-lived AWS Access Keys entirely by using GitHub's OIDC provider to assume IAM roles dynamically.
+
+#### (d) Migration Risk
+*   **Risk:** "Pipeline Parity." If a complex deployment logic is missed in the rewrite, we risk production outages.
+*   **Mitigation:** Dual-run strategy. Run GHA in "shadow mode" (non-blocking) alongside Jenkins for 2 weeks to verify the outcome of every stage.
+
+#### (e) Recommendation: MIGRATE
+**Justification:** The cost of maintaining a legacy Jenkins controller for 200 services is an "Innovation Tax." By moving to GHA, we shift the maintenance burden to GitHub, enable OIDC security, and integrate the CI directly into the PR flow, increasing developer velocity.
+
+---
+
+### Q2: OIDC Trust Policy Strategy
+
+To prevent Repo A from accessing Account B, we must leverage the **`sub` (subject)** claim in the OIDC token.
+
+**The Trust Policy (applied to the IAM Role in AWS):**
+Instead of trusting the entire GitHub Organization, the role only trusts a specific repository and branch.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Federated": "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com" },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": "repo:NovaMart/payment-service:ref:refs/heads/main"
+        }
+      }
+    }
+  ]
+}
+```
+
+**Handling Dev vs. Prod for a Single Service:**
+The workflow handles this by attempting to assume two different roles based on the environment context.
+
+**The GitHub Action Workflow snippet:**
+```yaml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assume Role
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }} # Set via env: DEV_ROLE or PROD_ROLE
+          aws-region: us-east-1
+```
+**The Logic:**
+1.  If `github.ref == 'refs/heads/develop'`, the workflow sets `AWS_ROLE_ARN` to the **Dev Account Role**.
+2.  If `github.ref == 'refs/heads/main'`, it sets it to the **Prod Account Role**.
+3.  The IAM Role in the Prod account has a trust policy that *only* allows the `main` branch subject. This ensures a developer cannot push to a "feature" branch and deploy it to production.
+
+---
+
+### Q3: GitLab CI Optimization
+
+**Current State:** 25 mins (Sequential, no cache, fresh images).
+**Optimized State:** ~8-10 mins.
+
+**The Optimized `.gitlab-ci.yml`:**
+```yaml
+image: maven:3.8.6-openjdk-17 # Pinning version to avoid "latest" drift
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+
+cache:
+  paths:
+    - .m2/repository
+
+stages:
+  - build
+  - test-and-scan # Combined parallel stage
+  - deploy
+
+build_job:
+  stage: build
+  script:
+    - mvn clean compile # Build once, use artifacts for next stages
+  artifacts:
+    paths:
+      - target/
+
+test_sonar_trivy:
+  stage: test-and-scan
+  parallel:
+    matrix:
+      - TASK: [unit-tests, sonar, trivy]
+  script:
+    - if [ "$TASK" == "unit-tests" ]; then mvn test; fi
+    - if [ "$TASK" == "sonar" ]; then mvn sonar:sonar; fi
+    - if [ "$TASK" == "trivy" ]; then trivy fs . ; fi
+
+docker_build:
+  stage: deploy
+  image:
+    name: gcr.io/kaniko-project/executor:debug # No DinD!
+  script:
+    - /kaniko/executor --context $CI_PROJECT_DIR --dockerfile Dockerfile --destination $REGISTRY_IMAGE
+```
+
+**Optimization Breakdown:**
+1.  **Cache (`.m2/repository`):** Saves ~7m by not re-downloading dependencies.
+2.  **Parallel Matrix:** Moves `unit-tests`, `sonar`, and `trivy` from sequential $\rightarrow$ parallel. Saving $\sim (\text{sum} - \max) \approx 8\text{m}$.
+3.  **Kaniko instead of DinD:** Removes the need for privileged mode and the overhead of starting a Docker daemon. Saving ~2m.
+4.  **Pinned Image:** Prevents unexpected build failures when `maven:latest` updates.
+
+---
+
+### Q4: Cross-Platform PR Guardrails
+
+**The Requirement:** Parallel Tests/Sonar/Trivy $\rightarrow$ Block Merge $\rightarrow$ Post Comments.
+
+#### 1. Jenkins (The "Plugin" Way)
+Requires a `parallel` block and the "GitHub Branch Branch Protection" plugin.
+```groovy
+stage('Checks') {
+    parallel {
+        stage('Tests') { steps { sh './mvnw test' } }
+        stage('Sonar') { steps { sh './mvnw sonar:sonar' } }
+        stage('Trivy') { steps { sh 'trivy fs .' } }
+    }
+}
+```
+*   **Limitation:** Jenkins doesn't natively "block" the PR. You must configure GitHub Branch Protection to require the "Jenkins" status check to pass.
+
+#### 2. GitHub Actions (The "Native" Way)
+Parallelism is the default for `jobs`.
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps: [run tests]
+  sonar:
+    runs-on: ubuntu-latest
+    steps: [run sonar]
+  trivy:
+    runs-on: ubuntu-latest
+    steps: [run trivy]
+```
+*   **Limitation:** PR comments require a specific Action (e.g., `marocchino/sticky-pull-request-comment`) because the default output is just a log.
+
+#### 3. GitLab CI (The "Integrated" Way)
+Uses `stages` and `parallel` jobs.
+```yaml
+test_stage:
+  stage: test
+  parallel: 3 # or separate jobs
+  script: [ ... ]
+  allow_failure: false # Blocks the pipeline
+```
+*   **Limitation:** GitLab's "Merge Request" blocking is handled via "Pipeline must succeed" setting in Project Settings.
+
+#### 4. AWS CodePipeline (The "Step-Function" Way)
+Uses **CodeBuild** projects in a single stage.
+*   **Config:** Create one Stage containing 3 CodeBuild projects.
+*   **Limitation:** CodePipeline is the most rigid. It has no native "PR Comment" system; you must write a custom Lambda function to call the GitHub API and post the results.
+
+**Summary Table:**
+
+| Platform | Parallelism | Block Merge | PR Comments |
+| :--- | :--- | :--- | :--- |
+| **Jenkins** | `parallel { }` | Via GitHub API | Plugin-based |
+| **GHA** | Job-level (native) | Branch Protection | Action-based |
+| **GitLab** | Stage-level | "Pipeline must pass" | Integrated |
+| **AWS** | CodeBuild projects | Stage gate | Lambda required |
+
+# Grading Phase 3 Final Retention Questions
+
+---
+
+## Q1: Jenkins → GitHub Actions Evaluation — 3.8/5
+
+**What you nailed:**
+- Document structure is professional (addressed to stakeholders by role).
+- Correctly identified the shared library rewrite as the biggest technical blocker.
+- OIDC as a security improvement — correct and well-stated.
+- "Shadow mode" dual-run for migration risk mitigation — excellent operational thinking.
+- "Innovation Tax" framing for the CTO — that's how you sell migrations to leadership.
+
+**What you missed:**
+
+1. **Your cost analysis is hand-wavy.** "$1.2k/mo for EC2s" — where did that number come from? A real evaluation needs:
+
+```
+CURRENT JENKINS COST (actual calculation):
+  Controller: m5.xlarge (4 CPU, 16GB) × 1 = $140/mo
+  Static agents: m5.2xlarge × 2 = $560/mo
+  Dynamic agents (K8s pods on EKS): ~$800/mo (Karpenter spot)
+  EBS volumes: 500GB gp3 = $40/mo
+  EFS (maven cache): $50/mo
+  ALB (Jenkins ingress): $25/mo
+  Engineer time: 15 hrs/week × $80/hr = $4,800/mo
+  Total: ~$6,415/mo
+
+GITHUB ACTIONS COST:
+  GitHub Enterprise: $21/user × 200 devs = $4,200/mo
+  GitHub-hosted runners: 400 builds/day × 8min × $0.008/min = $768/mo
+  OR self-hosted (ARC on EKS): ~$600/mo (spot)
+  Engineer time: ~5 hrs/week × $80/hr = $1,600/mo (estimated)
+  Total: ~$6,568/mo (hosted) or ~$6,400/mo (self-hosted)
+
+CONCLUSION: Cost is roughly NEUTRAL. The win is engineer time 
+reduction and developer velocity, NOT raw infrastructure savings.
+```
+
+Without real numbers, the CFO dismisses your evaluation. "Predictable OpEx" isn't an answer — it's a category.
+
+2. **You didn't mention the GitHub Enterprise licensing requirement.** OIDC for AWS, reusable workflows across repos, required reviewers on environments, and SAML SSO all require GitHub Enterprise. That's $21/user/month minimum. For 200 developers, that's $50K/year in licensing alone. This changes the cost equation significantly.
+
+3. **Missing: What happens to build history?** Jenkins has months/years of build logs, artifact references, and deployment records. When you decommission Jenkins, where does this go? Auditors may need it. The migration plan needs a data retention strategy.
+
+4. **Missing: Artifactory integration.** NovaMart uses Artifactory as the artifact repository. Jenkins has deep Artifactory integration (build-info, promotion). GitHub Actions has the JFrog CLI action, but the build-info integration is less mature. This is a real technical gap that affects artifact traceability.
+
+5. **"Moderate/Low" feasibility is confusing.** Is it moderate or low? Pick one and justify. It's **moderate** — the rewrite is significant but well-understood (other companies have done this migration), and it can be done service-by-service.
+
+---
+
+## Q2: OIDC Trust Policy Strategy — 4.2/5
+
+**What you nailed:**
+- Trust policy with `sub` claim locked to specific repo + branch — exactly correct.
+- Branch-based role selection logic — correct pattern.
+- Understanding that the prod trust policy only allows `main` branch — this is the critical security control.
+
+**What you missed:**
+
+1. **You didn't address the "15 repos, 3 accounts" scale problem.** With 15 repos × 3 accounts = 45 IAM roles. Do you create 45 individual roles? Or do you create 3 roles (one per account) with a broader trust policy? The answer matters:
+
+```json
+// Option A: One role per repo per account (45 roles)
+// MOST SECURE, but operational overhead
+"sub": "repo:NovaMart/payment-service:ref:refs/heads/main"
+
+// Option B: One role per account, multiple repos allowed
+// LESS SECURE, easier to manage
+"sub": "repo:NovaMart/*:ref:refs/heads/main"
+// DANGER: Any new repo in the org can access this account
+
+// Option C: Tag-based (RECOMMENDED for scale)
+// One role per account, trust policy uses repo list
+"StringEquals": {
+  "token.actions.githubusercontent.com:sub": [
+    "repo:NovaMart/payment-service:ref:refs/heads/main",
+    "repo:NovaMart/order-service:ref:refs/heads/main",
+    "repo:NovaMart/cart-service:ref:refs/heads/main"
+  ]
+}
+// Manageable, explicit, auditable
+```
+
+You should have discussed these options and recommended one.
+
+2. **GitHub Environments — the cleaner solution for dev vs prod.** Instead of branch-based if/else in the workflow, use GitHub Environments:
+
+```yaml
+jobs:
+  deploy-dev:
+    environment: development    # GitHub Environment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}  # Set per environment
+          aws-region: us-east-1
+
+  deploy-prod:
+    environment: production     # Different environment
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}  # Different role
+          aws-region: us-east-1
+```
+
+Each environment has its own secrets and variables. The trust policy uses the environment in the subject claim:
+
+```json
+"sub": "repo:NovaMart/payment-service:environment:production"
+```
+
+This is cleaner than branch-based logic and also allows environment protection rules (required reviewers, wait timer).
+
+3. **Missing: `aud` claim.** Your trust policy only has `sub`. You should also include:
+
+```json
+"StringEquals": {
+  "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+}
+```
+
+Without `aud`, the token could theoretically be used for non-STS purposes if another service accepted it.
+
+---
+
+## Q3: GitLab CI Optimization — 3.2/5
+
+**What you nailed:**
+- Maven cache — correct and significant savings.
+- Kaniko instead of DinD — correct, eliminates privileged mode.
+- Pinned image version — good practice.
+- Directionally correct optimization categories.
+
+**What you got wrong:**
+
+1. **Your parallel matrix syntax is wrong.** GitLab CI's `parallel:matrix:` doesn't work the way you wrote it. You can't use `if` statements inside `script` to branch on matrix values like that. The correct GitLab pattern for parallel different tasks:
+
+```yaml
+# CORRECT: Separate jobs in the same stage run in parallel automatically
+stages:
+  - build
+  - quality    # All jobs in this stage run in parallel
+  - package
+
+unit-tests:
+  stage: quality
+  image: maven:3.9.6-eclipse-temurin-17
+  script:
+    - mvn test -B
+  artifacts:
+    reports:
+      junit: target/surefire-reports/TEST-*.xml
+  cache:
+    key: maven-${CI_COMMIT_REF_SLUG}
+    paths:
+      - .m2/repository/
+
+sonar:
+  stage: quality
+  image: maven:3.9.6-eclipse-temurin-17
+  script:
+    - mvn sonar:sonar -Dsonar.host.url=$SONAR_URL -Dsonar.token=$SONAR_TOKEN
+  cache:
+    key: maven-${CI_COMMIT_REF_SLUG}
+    paths:
+      - .m2/repository/
+
+trivy-scan:
+  stage: quality
+  image:
+    name: aquasec/trivy:0.50.0
+    entrypoint: [""]
+  script:
+    - trivy fs --severity HIGH,CRITICAL --exit-code 1 .
+```
+
+Jobs in the same stage are **automatically parallel** in GitLab. You don't need matrix for this. Matrix is for running the SAME job with different parameters (like testing across JDK 17 and 21).
+
+2. **You didn't use `needs:` for DAG optimization.** This is GitLab's killer feature for speed. Without `needs:`, jobs wait for their ENTIRE stage to complete. With `needs:`, jobs start as soon as their specific dependencies finish:
+
+```yaml
+docker_build:
+  stage: package
+  needs: [build_job, unit-tests, trivy-scan]  # Start as soon as these 3 finish
+  # Don't wait for sonar (it's slow but non-blocking for image build)
+```
+
+3. **Missing: `artifacts` with `expire_in` from the build job.** Your build job creates `target/` artifacts but the quality jobs re-run Maven from scratch instead of reusing the compiled output. Either pass artifacts or accept that each job compiles independently (which is slower but more isolated).
+
+4. **Missing: shared runners are slow — you didn't address that.** The question said "all jobs run on shared runners." Shared runners on GitLab.com have queue wait times of 30s-5min depending on load. The optimization is either: use tagged group runners (self-hosted), or accept the queue time and optimize everything else.
+
+5. **Your time estimate needs specifics:**
+
+```
+ORIGINAL 25 MIN BREAKDOWN (estimated):
+  Queue wait:          2min
+  Maven download:      5min (no cache)
+  Build:               3min
+  Unit tests:          4min (sequential)
+  Sonar:               3min (sequential)
+  Trivy:               2min (sequential)
+  DinD startup:        2min
+  Docker build:        4min (no cache)
+  Total:               25min
+
+OPTIMIZED:
+  Queue wait:          2min (can't fix without self-hosted runners)
+  Maven download:      15s (cache hit)
+  Build:               3min
+  Quality (parallel):  max(4min tests, 3min sonar, 2min trivy) = 4min
+  Kaniko build:        2min (cached layers)
+  Total:               ~11min
+
+Savings: 25min → 11min (56% reduction)
+```
+
+Without this breakdown, "8-10 min" is a guess, not an engineering estimate.
+
+---
+
+## Q4: Cross-Platform PR Guardrails — 4/5
+
+**What you nailed:**
+- Correct identification of parallelism mechanism for each platform.
+- Understanding that Jenkins requires external branch protection (GitHub/Bitbucket side).
+- GitLab's "Pipeline must succeed" setting — correct.
+- CodePipeline's Lambda requirement for PR comments — accurate limitation.
+- Summary table is clean and actionable.
+
+**What you missed:**
+
+1. **Your Jenkins config is incomplete for NovaMart.** NovaMart uses Bitbucket, not GitHub. The branch protection mechanism is Bitbucket's "merge checks" which require a build status from Jenkins. The correct setup:
+
+```groovy
+// Jenkinsfile for PR builds
+pipeline {
+    agent none
+    stages {
+        stage('Checks') {
+            parallel {
+                stage('Tests') {
+                    agent { kubernetes { yaml '...' } }
+                    steps {
+                        sh 'mvn test -B'
+                    }
+                    post {
+                        always { junit '**/surefire-reports/*.xml' }
+                    }
+                }
+                stage('Sonar') {
+                    agent { label 'lightweight' }
+                    steps {
+                        withSonarQubeEnv('sonarqube-server') {
+                            sh 'mvn sonar:sonar'
+                        }
+                    }
+                }
+                stage('Trivy') {
+                    agent { label 'scanner' }
+                    steps {
+                        sh 'trivy fs --severity HIGH,CRITICAL --exit-code 1 .'
+                    }
+                }
+            }
+        }
+    }
+}
+// Bitbucket: Repository Settings → Merge Checks → 
+//   "Minimum successful builds: 1"
+//   This references the build status Jenkins posts via 
+//   Bitbucket Build Status Notifier plugin
+```
+
+2. **Your GitHub Actions answer doesn't show the PR comment mechanism.** The question specifically asked "post results as PR comments." You mentioned `sticky-pull-request-comment` but didn't show it. For Trivy specifically:
+
+```yaml
+trivy:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: aquasecurity/trivy-action@0.28.0
+      with:
+        scan-type: 'fs'
+        format: 'table'
+        output: 'trivy-results.txt'
+        severity: 'HIGH,CRITICAL'
+        exit-code: '1'
+
+    - name: Post Trivy Results to PR
+      if: always() && github.event_name == 'pull_request'
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        header: trivy
+        path: trivy-results.txt
+```
+
+SonarQube posts PR comments natively via its GitHub integration — no action needed. But you should have stated that.
+
+3. **For GitLab, you missed the native MR widget integration.** GitLab's strongest feature here: security scan results appear natively in the Merge Request widget without any custom configuration. Just use the right `reports:` artifact type:
+
+```yaml
+trivy:
+  stage: test
+  artifacts:
+    reports:
+      container_scanning: trivy-report.json
+  # Results appear in MR Security tab automatically!
+```
+
+4. **CodePipeline can't do PR-triggered builds natively.** This is a critical limitation you didn't mention. CodePipeline triggers on branch pushes to CodeCommit, S3 events, or ECR pushes. For GitHub PR triggers, you need a webhook → Lambda → StartBuild on CodeBuild directly, bypassing CodePipeline entirely. This makes CodePipeline essentially unsuitable for the stated requirement.
+
+---
+
+## Score Summary
+
+| Question | Score | Key Gap |
+|----------|-------|---------|
+| Q1 | 3.8/5 | Cost analysis is hand-wavy, missing GH Enterprise licensing, build history retention |
+| Q2 | 4.2/5 | Missing scale strategy (45 roles), GitHub Environments as cleaner pattern |
+| Q3 | 3.2/5 | Wrong GitLab parallel syntax, missing `needs:` DAG, no time breakdown |
+| Q4 | 4.0/5 | Missing actual PR comment configs, CodePipeline can't do PR triggers |
+| **Average** | **3.8/5** | Consistent with recent trend. Concepts: strong. Implementation specifics: gaps. |
+
+**Your improvement from the feedback is showing** — you included actual trust policy JSON (Q2), config blocks (Q3, Q4), and stakeholder-appropriate communication (Q1). But the GitLab syntax error and the hand-wavy cost analysis show that execution-level precision still needs work. A senior engineer's cost analysis has dollar amounts with math behind them, and their config blocks compile on first try.
+
+---
+
+# Phase 4: Infrastructure as Code
+## Lesson 1: Terraform — Architecture, HCL Deep Dive, State
+
+---
+
+## Why Terraform Is Your Most Dangerous Tool
+
+At NovaMart, Terraform controls the creation and destruction of all AWS infrastructure: VPCs, EKS clusters, RDS databases, S3 buckets, IAM roles — everything. A `terraform apply` on the wrong state file can delete a production database. A misconfigured `terraform destroy` can erase an entire region. A state file leaked to a public repo exposes every resource ID, IP address, and secret reference in your infrastructure.
+
+Jenkins can break your builds. Terraform can break your company.
+
+---
+
+## 1. How Terraform Works — Core Architecture
+
+```
+┌───────────────────────────────────────────────────────────┐
+│                    YOUR MACHINE / CI AGENT                  │
+│                                                            │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │                 Terraform CLI                        │   │
+│  │                                                      │   │
+│  │  ┌──────────┐    ┌──────────┐    ┌──────────────┐   │   │
+│  │  │  HCL     │    │  Core    │    │  Providers   │   │   │
+│  │  │  Parser  │───►│  Engine  │───►│  (Plugins)   │   │   │
+│  │  │          │    │          │    │              │   │   │
+│  │  │ .tf files│    │ Builds   │    │ aws 5.x     │   │   │
+│  │  │ → AST    │    │ resource │    │ google 5.x  │   │   │
+│  │  │          │    │ graph    │    │ azurerm 3.x │   │   │
+│  │  │          │    │          │    │ kubernetes  │   │   │
+│  │  │          │    │ Calculates│   │ helm        │   │   │
+│  │  │          │    │ diff     │    │ vault       │   │   │
+│  │  │          │    │ (plan)   │    │ ...         │   │   │
+│  │  └──────────┘    └─────┬────┘    └──────┬──────┘   │   │
+│  │                        │                │           │   │
+│  │                        ▼                ▼           │   │
+│  │              ┌──────────────────────────────────┐   │   │
+│  │              │         State File               │   │   │
+│  │              │   terraform.tfstate               │   │   │
+│  │              │                                   │   │   │
+│  │              │   Maps: HCL resource definition   │   │   │
+│  │              │      ↕ Real-world resource        │   │   │
+│  │              │                                   │   │   │
+│  │              │   Contains: resource IDs,         │   │   │
+│  │              │   attributes, dependencies,       │   │   │
+│  │              │   metadata, sensitive values      │   │   │
+│  │              └──────────────┬────────────────────┘   │   │
+│  └─────────────────────────────┼────────────────────────┘   │
+│                                │                            │
+└────────────────────────────────┼────────────────────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │     Remote Backend       │
+                    │     (S3 + DynamoDB)      │
+                    │                          │
+                    │  S3: state file storage  │
+                    │  DynamoDB: state locking │
+                    │  (prevents concurrent    │
+                    │   apply = corruption)    │
+                    └────────────┬─────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │       AWS APIs           │
+                    │  (Provider makes API     │
+                    │   calls to create/       │
+                    │   update/delete          │
+                    │   resources)             │
+                    └─────────────────────────┘
+```
+
+### The Terraform Workflow — What Actually Happens
+
+```
+terraform init
+├── Downloads providers (plugins) to .terraform/providers/
+├── Initializes backend (S3, DynamoDB)
+├── Downloads modules (to .terraform/modules/)
+└── Creates .terraform.lock.hcl (provider version lock)
+
+terraform plan
+├── Reads .tf files → builds resource graph (DAG)
+├── Reads current state from backend
+├── For each resource: calls provider's "Read" to check real-world state
+│   (REFRESH phase — compares state file against actual AWS resources)
+├── Compares: desired (HCL) vs current (state/real) 
+├── Outputs: create, update, destroy actions
+├── Shows: + (create), ~ (update), - (destroy), -/+ (replace)
+└── Saves plan to file if -out=plan.tfplan specified
+
+terraform apply
+├── If plan file provided: applies exactly that plan (no re-calculation)
+├── If no plan file: runs plan again, asks for confirmation
+├── Executes operations in dependency order (graph-based)
+├── Updates state file after each successful operation
+├── If operation fails mid-apply: partial state (DANGEROUS)
+└── Locks state during apply (DynamoDB) to prevent concurrent runs
+
+terraform destroy
+├── Plans destruction of ALL managed resources
+├── Dependency order: reverse of creation
+├── DANGER: This deletes real infrastructure
+└── Use -target cautiously (or better: never use destroy on prod)
+```
+
+### The Resource Graph — Why Order Matters
+
+```
+terraform graph | dot -Tpng > graph.png
+
+Example dependency graph for an EKS setup:
+
+  VPC ──────────────┬──────────────────┐
+   │                │                   │
+   ▼                ▼                   ▼
+  Subnets      Internet GW        NAT Gateway
+   │                │                   │
+   ▼                ▼                   ▼
+  Route Tables ─────┘              Route Tables
+   │
+   ▼
+  Security Groups ──────┐
+   │                    │
+   ▼                    ▼
+  EKS Cluster      RDS Instance
+   │
+   ▼
+  Node Group ──► Launch Template ──► IAM Role
+   │
+   ▼
+  Kubernetes Provider ──► Namespaces, RBAC, etc.
+
+Terraform creates: VPC first, then subnets, then SGs, then EKS...
+Terraform destroys: reverse order (EKS first, then SGs, then subnets, then VPC)
+```
+
+---
+
+## 2. HCL Deep Dive — The Language
+
+### Resource Blocks
+
+```hcl
+# The fundamental unit: a resource block
+resource "aws_instance" "web" {
+  #         ^type       ^local name
+  #  Provider prefix: "aws" → aws provider
+  #  Resource type: "instance" → EC2 instance
+  #  Local name: "web" → how you reference it in other blocks
+
+  ami           = "ami-0abcdef1234567890"
+  instance_type = "t3.medium"
+  subnet_id     = aws_subnet.private[0].id    # Reference another resource
+  #                ^type       ^name  ^index ^attribute
+
+  vpc_security_group_ids = [aws_security_group.web.id]
+
+  tags = {
+    Name        = "web-server"
+    Environment = var.environment      # Variable reference
+    ManagedBy   = "terraform"
+  }
+
+  # Lifecycle rules — control how Terraform manages this resource
+  lifecycle {
+    create_before_destroy = true    # Create new BEFORE destroying old
+    prevent_destroy       = true    # Block terraform destroy (safety)
+    ignore_changes        = [tags]  # Don't track tag changes (external tagging)
+    
+    # Replace if specific condition (Terraform 1.8+)
+    replace_triggered_by = [
+      aws_security_group.web.id     # Replace instance if SG changes
+    ]
+  }
+}
+```
+
+### Variables — Input Types
+
+```hcl
+# variables.tf
+
+# Simple types
+variable "environment" {
+  description = "Deployment environment"
+  type        = string
+  default     = "dev"
+  
+  validation {
+    condition     = contains(["dev", "staging", "prod"], var.environment)
+    error_message = "Environment must be dev, staging, or prod."
+  }
+}
+
+variable "instance_count" {
+  description = "Number of instances"
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.instance_count > 0 && var.instance_count <= 20
+    error_message = "Instance count must be between 1 and 20."
+  }
+}
+
+variable "enable_monitoring" {
+  type    = bool
+  default = true
+}
+
+# Collection types
+variable "availability_zones" {
+  type    = list(string)
+  default = ["us-east-1a", "us-east-1b", "us-east-1c"]
+}
+
+variable "instance_tags" {
+  type = map(string)
+  default = {
+    Project = "novamart"
+    Team    = "platform"
+  }
+}
+
+# Complex types
+variable "services" {
+  description = "Service configurations"
+  type = list(object({
+    name      = string
+    port      = number
+    replicas  = number
+    cpu       = string
+    memory    = string
+    public    = optional(bool, false)    # Optional with default
+  }))
+  
+  default = [
+    {
+      name     = "order-service"
+      port     = 8080
+      replicas = 3
+      cpu      = "500m"
+      memory   = "1Gi"
+    }
+  ]
+}
+
+# Sensitive variables (masked in output)
+variable "db_password" {
+  type      = string
+  sensitive = true
+  # NEVER put a default for sensitive vars
+  # Set via: TF_VAR_db_password, .tfvars file, or Vault
+}
+```
+
+### Variable Precedence (Lowest to Highest)
+
+```
+1. default value in variable block        (lowest priority)
+2. Environment variable: TF_VAR_name
+3. terraform.tfvars file (auto-loaded)
+4. *.auto.tfvars files (auto-loaded, alphabetical)
+5. -var-file=custom.tfvars flag
+6. -var="name=value" flag                  (highest priority)
+
+PRODUCTION PATTERN:
+├── terraform.tfvars         → common values (region, project)
+├── dev.tfvars               → dev overrides
+├── staging.tfvars           → staging overrides
+├── prod.tfvars              → prod overrides
+└── CLI: terraform plan -var-file=prod.tfvars
+```
+
+### Outputs
+
+```hcl
+# outputs.tf
+output "vpc_id" {
+  description = "The ID of the VPC"
+  value       = aws_vpc.main.id
+}
+
+output "eks_endpoint" {
+  description = "EKS cluster endpoint"
+  value       = aws_eks_cluster.main.endpoint
+  sensitive   = true    # Masked in CLI output
+}
+
+output "private_subnet_ids" {
+  description = "List of private subnet IDs"
+  value       = aws_subnet.private[*].id    # Splat expression
+}
+
+# Outputs are:
+# 1. Shown after apply
+# 2. Accessible from other modules: module.vpc.vpc_id
+# 3. Stored in state file (even sensitive ones!)
+# 4. Queryable: terraform output -json
+```
+
+### Locals — Computed Values
+
+```hcl
+locals {
+  # Common tags applied everywhere
+  common_tags = {
+    Environment = var.environment
+    Project     = "novamart"
+    ManagedBy   = "terraform"
+    Team        = var.team
+  }
+
+  # Computed values
+  name_prefix = "${var.project}-${var.environment}"
+  is_prod     = var.environment == "prod"
+
+  # Conditional logic
+  instance_type = local.is_prod ? "m5.2xlarge" : "t3.medium"
+  
+  # Merging maps
+  all_tags = merge(local.common_tags, var.extra_tags)
+
+  # Flattening nested structures
+  subnet_configs = flatten([
+    for az in var.availability_zones : [
+      {
+        az     = az
+        cidr   = cidrsubnet(var.vpc_cidr, 8, index(var.availability_zones, az))
+        type   = "private"
+      },
+      {
+        az     = az
+        cidr   = cidrsubnet(var.vpc_cidr, 8, index(var.availability_zones, az) + 100)
+        type   = "public"
+      }
+    ]
+  ])
+}
+```
+
+### Data Sources — Reading Existing Resources
+
+```hcl
+# Read existing resources (NOT managed by this Terraform)
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+  
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-x86_64"]
+  }
+}
+
+data "aws_caller_identity" "current" {}
+# Use: data.aws_caller_identity.current.account_id
+
+data "aws_region" "current" {}
+# Use: data.aws_region.current.name
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+data "aws_eks_cluster" "existing" {
+  name = "novamart-prod"
+}
+# Use: data.aws_eks_cluster.existing.endpoint
+
+# Terraform Remote State — read outputs from another state
+data "terraform_remote_state" "vpc" {
+  backend = "s3"
+  config = {
+    bucket = "novamart-terraform-state"
+    key    = "vpc/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+# Use: data.terraform_remote_state.vpc.outputs.vpc_id
+```
+
+### Expressions & Functions
+
+```hcl
+# Conditionals
+resource "aws_instance" "bastion" {
+  count = var.environment == "prod" ? 0 : 1    # No bastion in prod
+  # ...
+}
+
+# For expressions
+locals {
+  # List comprehension
+  private_subnets = [for s in aws_subnet.main : s.id if s.tags["Type"] == "private"]
+  
+  # Map comprehension
+  subnet_map = { for s in aws_subnet.main : s.availability_zone => s.id }
+  
+  # Filtering
+  prod_services = [for svc in var.services : svc if svc.replicas >= 3]
+}
+
+# Dynamic blocks (avoid repetitive nested blocks)
+resource "aws_security_group" "web" {
+  name   = "web-sg"
+  vpc_id = aws_vpc.main.id
+
+  dynamic "ingress" {
+    for_each = var.ingress_rules    # List of {port, cidr} objects
+    content {
+      from_port   = ingress.value.port
+      to_port     = ingress.value.port
+      protocol    = "tcp"
+      cidr_blocks = [ingress.value.cidr]
+    }
+  }
+}
+
+# Important functions:
+# String:    format, join, split, replace, trim, lower, upper, regex
+# Numeric:   min, max, ceil, floor, abs
+# Collection: concat, flatten, merge, lookup, zipmap, keys, values
+#             distinct, sort, length, contains, index, element
+# Encoding:  jsonencode, jsondecode, yamlencode, base64encode
+# Network:   cidrsubnet, cidrhost, cidrnetmask
+# Filesystem: file, templatefile, filebase64, fileexists
+# Date:      timestamp, formatdate
+# Crypto:    sha256, md5, uuid
+# Type:      try, can, type, tostring, tolist, tomap, tonumber
+
+# cidrsubnet — THE function for VPC design
+# cidrsubnet(prefix, newbits, netnum)
+# cidrsubnet("10.0.0.0/16", 8, 0)  → "10.0.0.0/24"
+# cidrsubnet("10.0.0.0/16", 8, 1)  → "10.0.1.0/24"
+# cidrsubnet("10.0.0.0/16", 8, 10) → "10.0.10.0/24"
+
+# templatefile — for user_data scripts, config files
+resource "aws_instance" "web" {
+  user_data = templatefile("${path.module}/user_data.sh.tpl", {
+    environment = var.environment
+    db_host     = aws_rds_cluster.main.endpoint
+    region      = var.region
+  })
+}
+```
+
+### count vs for_each — When to Use Which
+
+```hcl
+# COUNT — for identical resources or conditional creation
+resource "aws_subnet" "private" {
+  count = length(var.availability_zones)    # 3 AZs = 3 subnets
+  
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone = var.availability_zones[count.index]
+  
+  tags = { Name = "${local.name_prefix}-private-${count.index}" }
+}
+# Reference: aws_subnet.private[0].id, aws_subnet.private[1].id
+
+# PROBLEM WITH COUNT:
+# If you remove the MIDDLE element from the list,
+# all subsequent resources get DESTROYED and RECREATED
+# because they're indexed by position.
+# Before: [az-a, az-b, az-c] → index [0, 1, 2]
+# Remove az-b: [az-a, az-c] → index [0, 1]
+# az-c was index 2, now index 1 → Terraform thinks it changed → DESTROY + CREATE
+
+# FOR_EACH — for resources with unique keys (PREFERRED)
+resource "aws_subnet" "private" {
+  for_each = toset(var.availability_zones)    # Set of strings
+  
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, index(var.availability_zones, each.key))
+  availability_zone = each.key     # "us-east-1a", "us-east-1b", etc.
+  
+  tags = { Name = "${local.name_prefix}-private-${each.key}" }
+}
+# Reference: aws_subnet.private["us-east-1a"].id
+
+# ADVANTAGE: Keyed by value, not position
+# Remove us-east-1b: only that subnet is destroyed
+# us-east-1a and us-east-1c are untouched
+
+# FOR_EACH with maps (complex objects)
+variable "services" {
+  type = map(object({
+    port     = number
+    replicas = number
+    cpu      = string
+  }))
+  default = {
+    "order-service" = { port = 8080, replicas = 3, cpu = "500m" }
+    "cart-service"  = { port = 8081, replicas = 2, cpu = "250m" }
+  }
+}
+
+resource "aws_ecs_service" "svc" {
+  for_each = var.services
+  
+  name          = each.key                  # "order-service"
+  desired_count = each.value.replicas       # 3
+  # ...
+}
+# Reference: aws_ecs_service.svc["order-service"].id
+
+# RULE: Use for_each unless you specifically need count for conditional creation
+# count = var.create_resource ? 1 : 0  ← Only valid use of count
+```
+
+---
+
+## 3. State — The Most Critical Concept
+
+### What State Contains
+
+```json
+// terraform.tfstate (simplified)
+{
+  "version": 4,
+  "terraform_version": "1.7.0",
+  "serial": 42,
+  "lineage": "a1b2c3d4-e5f6-...",
+  "outputs": {
+    "vpc_id": {
+      "value": "vpc-0abc123def456",
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "aws_vpc",
+      "name": "main",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 1,
+          "attributes": {
+            "id": "vpc-0abc123def456",
+            "cidr_block": "10.0.0.0/16",
+            "enable_dns_support": true,
+            "tags": { "Name": "novamart-prod-vpc" }
+          },
+          "sensitive_attributes": [],
+          "private": "...",
+          "dependencies": []
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_db_instance",
+      "name": "main",
+      "instances": [
+        {
+          "attributes": {
+            "password": "SuperSecret123!",   // ← YES, IN PLAINTEXT
+            "endpoint": "novamart-db.abc123.us-east-1.rds.amazonaws.com"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+**State contains secrets in plaintext.** RDS passwords, API keys, private keys — if they're in your Terraform config, they're in state. This is why state must be:
+1. Stored in encrypted backend (S3 with SSE-KMS)
+2. Access-controlled (IAM policies on S3 bucket + DynamoDB table)
+3. **NEVER committed to Git**
+
+### Remote Backend — Production Setup
+
+```hcl
+# backend.tf
+terraform {
+  backend "s3" {
+    bucket         = "novamart-terraform-state"
+    key            = "environments/prod/vpc/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    kms_key_id     = "arn:aws:kms:us-east-1:123456789:key/mrk-abc123"
+    dynamodb_table = "novamart-terraform-locks"
+    
+    # Access control: only specific IAM roles can read/write
+    # S3 bucket policy + IAM policies restrict to CI/CD role
+  }
+  
+  required_version = ">= 1.7.0"
+  
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.40"    # Compatible with 5.40.x
+    }
+  }
+}
+
+# Provider configuration
+provider "aws" {
+  region = var.region
+  
+  default_tags {
+    tags = local.common_tags
+  }
+  
+  # Assume role for cross-account access
+  assume_role {
+    role_arn = "arn:aws:iam::${var.target_account_id}:role/TerraformExecutionRole"
+  }
+}
+```
+
+**S3 + DynamoDB Lock Setup:**
+```hcl
+# This is the bootstrap — manages itself (chicken-and-egg)
+# Run ONCE manually, then import
+resource "aws_s3_bucket" "state" {
+  bucket = "novamart-terraform-state"
+  
+  lifecycle {
+    prevent_destroy = true    # NEVER delete the state bucket
+  }
+}
+
+resource "aws_s3_bucket_versioning" "state" {
+  bucket = aws_s3_bucket.state.id
+  versioning_configuration {
+    status = "Enabled"    # CRITICAL: versioning = undo bad state
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
+  bucket = aws_s3_bucket.state.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.terraform.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "state" {
+  bucket = aws_s3_bucket.state.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_dynamodb_table" "locks" {
+  name         = "novamart-terraform-locks"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "LockID"
+  
+  attribute {
+    name = "LockID"
+    type = "S"
+  }
+  
+  # Enable point-in-time recovery
+  point_in_time_recovery {
+    enabled = true
+  }
+}
+```
+
+### State Locking — Why It Exists
+
+```
+WITHOUT LOCKING:
+  Engineer A: terraform apply (reads state)
+  Engineer B: terraform apply (reads SAME state)
+  Engineer A: creates VPC, writes state
+  Engineer B: creates VPC again (doesn't know A already did it!)
+  Result: duplicate resources, corrupted state, tears
+
+WITH LOCKING (DynamoDB):
+  Engineer A: terraform apply → acquires lock in DynamoDB
+  Engineer B: terraform apply → "Error: state locked by A at 10:32"
+  Engineer A: completes, releases lock
+  Engineer B: retries, acquires lock, applies cleanly
+
+STUCK LOCK (common issue):
+  Engineer A: terraform apply → acquires lock → laptop crashes
+  Lock is stuck. Nobody can apply.
+  
+  Fix:
+  terraform force-unlock LOCK_ID
+  # Get LOCK_ID from the error message or DynamoDB table
+  # DANGER: Only use if you're CERTAIN no other apply is running
+```
+
+### State Operations — The Survival Commands
+
+```bash
+# ── LIST RESOURCES IN STATE ──
+terraform state list
+# aws_vpc.main
+# aws_subnet.private[0]
+# aws_subnet.private["us-east-1a"]
+# module.eks.aws_eks_cluster.main
+
+# ── SHOW SPECIFIC RESOURCE ──
+terraform state show aws_vpc.main
+# Shows all attributes of the VPC as Terraform knows them
+
+# ── MOVE RESOURCE (refactoring) ──
+# Renamed a resource? Tell Terraform it's the same thing.
+terraform state mv aws_instance.web aws_instance.application
+# Without this: Terraform destroys "web" and creates "application"
+# With this: Terraform knows they're the same resource
+
+# Module refactoring:
+terraform state mv aws_vpc.main module.networking.aws_vpc.main
+
+# ── REMOVE FROM STATE (stop managing, don't destroy) ──
+terraform state rm aws_instance.legacy
+# Resource continues to exist in AWS but Terraform forgets about it
+# Use case: handing resource to another team/state
+
+# ── IMPORT EXISTING RESOURCE ──
+# Resource exists in AWS but not in Terraform
+# Step 1: Write the resource block in .tf file
+# Step 2: Import
+terraform import aws_instance.web i-0abc123def456
+# Now Terraform manages this existing instance
+
+# Terraform 1.5+ import blocks (declarative, plannable):
+import {
+  to = aws_instance.web
+  id = "i-0abc123def456"
+}
+# Then: terraform plan → shows what Terraform would manage
+# Then: terraform apply → imports into state
+
+# ── TAINT (force recreation) — DEPRECATED, use replace ──
+# Old: terraform taint aws_instance.web
+# New: terraform apply -replace="aws_instance.web"
+# Forces destroy + create on next apply
+
+# ── REFRESH STATE (sync with reality) ──
+terraform apply -refresh-only
+# Updates state to match real AWS resources
+# Doesn't change infrastructure
+# Use case: someone made manual changes in console
+```
+
+### How State Breaks — Failure Modes
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| **State corruption** | Plan shows destroy everything or impossible changes | Interrupted apply, manual state edit, concurrent apply without lock | Restore from S3 versioning: `aws s3api list-object-versions --bucket state-bucket --prefix path/to/state` |
+| **State lock stuck** | `Error acquiring the state lock` | Previous apply crashed, CI timeout | `terraform force-unlock LOCK_ID` (verify no concurrent apply first) |
+| **State drift** | Plan shows unexpected changes | Manual console changes, another tool modified resources | `terraform apply -refresh-only` to sync, then decide: accept drift or revert |
+| **Secret in state** | Audit finds plaintext passwords in S3 | Normal Terraform behavior (all attributes stored) | Encrypt at rest (KMS), restrict access (IAM), use Vault dynamic secrets instead of static passwords |
+| **State too large** | Slow plan/apply (5+ minutes), timeouts | Everything in one state file (monolith) | Split into smaller states (per-service, per-layer) |
+| **Lost state** | Terraform wants to create everything from scratch | S3 bucket deleted, wrong backend config | If versioned: recover from S3 version. If not: `terraform import` every resource (painful) |
+| **State mismatch** | `Resource already exists` on apply | Resource created outside TF, or imported into wrong state | Import the resource, or delete it manually, or use `data` source |
+| **Circular dependency** | `Error: Cycle` during plan | Resource A depends on B depends on A | Refactor: break cycle with intermediate resource or `depends_on` |
+
+---
+
+## 4. Provider Configuration — Multi-Account, Multi-Region
+
+```hcl
+# Multi-region pattern
+provider "aws" {
+  region = "us-east-1"
+  alias  = "east"
+  
+  assume_role {
+    role_arn = "arn:aws:iam::111111111111:role/TerraformRole"
+  }
+}
+
+provider "aws" {
+  region = "us-west-2"
+  alias  = "west"
+  
+  assume_role {
+    role_arn = "arn:aws:iam::111111111111:role/TerraformRole"
+  }
+}
+
+provider "aws" {
+  region = "eu-west-1"
+  alias  = "eu"
+  
+  assume_role {
+    role_arn = "arn:aws:iam::222222222222:role/TerraformRole"
+  }
+}
+
+# Use specific provider
+resource "aws_vpc" "east" {
+  provider   = aws.east
+  cidr_block = "10.0.0.0/16"
+}
+
+resource "aws_vpc" "west" {
+  provider   = aws.west
+  cidr_block = "10.1.0.0/16"
+}
+
+# Cross-account: separate provider per account
+provider "aws" {
+  alias  = "prod"
+  region = "us-east-1"
+  assume_role {
+    role_arn = "arn:aws:iam::PROD_ACCOUNT:role/TerraformRole"
+  }
+}
+
+provider "aws" {
+  alias  = "dev"
+  region = "us-east-1"
+  assume_role {
+    role_arn = "arn:aws:iam::DEV_ACCOUNT:role/TerraformRole"
+  }
+}
+```
+
+### Version Constraints
+
+```hcl
+terraform {
+  required_version = ">= 1.7.0, < 2.0.0"
+  
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.40"      # >= 5.40.0, < 6.0.0
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.25"
+    }
+  }
+}
+
+# .terraform.lock.hcl — auto-generated, COMMIT THIS
+# Records exact provider versions + hashes
+# Ensures everyone uses identical provider versions
+# Like package-lock.json for Terraform
+
+# Version constraint syntax:
+# = 5.40.0      Exactly this version
+# != 5.40.0     Anything except this version
+# > 5.40.0      Greater than
+# >= 5.40.0     Greater than or equal
+# < 6.0.0       Less than
+# ~> 5.40.0     >= 5.40.0 AND < 5.41.0 (patch-level flexibility)
+# ~> 5.40       >= 5.40.0 AND < 6.0.0 (minor-level flexibility)
+```
+
+---
+
+## 5. NovaMart State Architecture
+
+```
+S3 Bucket: novamart-terraform-state
+├── bootstrap/
+│   └── terraform.tfstate          # S3 bucket, DynamoDB, KMS key
+│
+├── network/
+│   ├── vpc/terraform.tfstate       # VPCs, subnets, route tables
+│   ├── transit-gw/terraform.tfstate # Transit Gateway, peering
+│   └── dns/terraform.tfstate       # Route53 zones, records
+│
+├── security/
+│   ├── iam/terraform.tfstate       # IAM roles, policies, OIDC
+│   └── kms/terraform.tfstate       # KMS keys
+│
+├── platform/
+│   ├── eks-east/terraform.tfstate  # EKS cluster us-east-1
+│   ├── eks-west/terraform.tfstate  # EKS cluster us-west-2
+│   ├── eks-eu/terraform.tfstate    # EKS cluster eu-west-1
+│   └── addons/terraform.tfstate    # EKS addons (CSI, CNI, CoreDNS)
+│
+├── data/
+│   ├── rds/terraform.tfstate       # RDS instances, proxies
+│   ├── elasticache/terraform.tfstate # Redis clusters
+│   ├── s3/terraform.tfstate        # Application S3 buckets
+│   └── msk/terraform.tfstate       # Kafka (MSK) clusters
+│
+├── services/
+│   ├── order-service/terraform.tfstate    # Service-specific AWS resources
+│   ├── payment-service/terraform.tfstate  # (SQS queues, SNS topics, etc.)
+│   └── ...
+│
+└── observability/
+    ├── monitoring/terraform.tfstate  # CloudWatch, Prometheus
+    └── logging/terraform.tfstate     # Log groups, subscriptions
+
+WHY SPLIT:
+├── Blast radius: bad apply to "rds" can't affect "eks"
+├── Speed: smaller state = faster plan/apply
+├── Permissions: data team can access data/ but not security/
+├── Parallelism: teams can apply concurrently to different states
+└── Dependencies: use terraform_remote_state data source for cross-references
+```
+---
+
+## Quick Reference Card
+
+```
+TERRAFORM WORKFLOW:
+  init → plan → apply (→ destroy only if decommissioning)
+  init: downloads providers, modules, configures backend
+  plan: reads state + real world, calculates diff, shows +/~/- 
+  apply: executes plan, updates state, locks during operation
+
+HCL RULES:
+  resource "TYPE" "NAME" { }
+  variable: string, number, bool, list, map, set, object, tuple
+  for_each > count (keyed vs indexed, avoids destroy cascade)
+  count only for: conditional creation (count = condition ? 1 : 0)
+  locals: computed values, common tags, complex expressions
+  data: read existing resources not managed by this TF
+
+STATE:
+  Contains ALL attributes including secrets (plaintext!)
+  Remote backend: S3 (encrypted, versioned) + DynamoDB (locking)
+  NEVER commit to Git. NEVER share manually.
+  Versioning = undo button for corrupted state
+  
+STATE COMMANDS:
+  state list          → show all resources
+  state show TYPE.NAME → show attributes  
+  state mv OLD NEW    → rename/move without destroy
+  state rm TYPE.NAME  → stop managing (resource stays in AWS)
+  import TYPE.NAME ID → start managing existing resource
+  force-unlock ID     → unstick lock (dangerous)
+  apply -replace=X    → force recreate
+  apply -refresh-only → sync state with reality
+
+PROVIDER:
+  alias for multi-region/multi-account
+  assume_role for cross-account
+  version constraints: ~> 5.40 (>= 5.40.0, < 6.0.0)
+  .terraform.lock.hcl → commit to Git (like package-lock.json)
+
+VARIABLE PRECEDENCE (low→high):
+  default → TF_VAR_ → terraform.tfvars → *.auto.tfvars → -var-file → -var
+
+STATE SPLIT STRATEGY:
+  By layer: network / security / platform / data / services
+  By blast radius: one bad apply can't affect unrelated systems
+  Cross-reference: terraform_remote_state data source
+```
+
+---
+
+## Retention Questions
+
+**Q1.** You join NovaMart and discover the entire AWS infrastructure (VPC, EKS, RDS, S3, IAM — everything) is in a single `main.tf` file with a single state file. `terraform plan` takes 8 minutes. Three engineers have been applying from their laptops with no CI/CD. Last week, two engineers ran `terraform apply` simultaneously and corrupted the state. Design the remediation plan: how do you split the state, what's the migration process, and what guardrails do you implement?
+
+**Q2.** Write the complete Terraform configuration for NovaMart's production VPC: 3 AZs, public subnets, private subnets, data subnets, NAT Gateways (one per AZ for HA), Internet Gateway, route tables with correct associations. Use `for_each` where appropriate. Include proper tagging for EKS subnet discovery. Explain every design decision.
+
+**Q3.** A junior engineer runs `terraform apply` and gets: `Error: Error creating RDS instance: DBInstanceAlreadyExists`. The RDS instance exists in AWS but isn't in Terraform state. Explain exactly what happened, provide 3 possible root causes, and show the exact commands to resolve it. Then explain how you'd prevent this from happening again.
+
+**Q4.** Explain the difference between `terraform state mv`, `moved` blocks (Terraform 1.1+), and `import` blocks (Terraform 1.5+). For each, give a specific NovaMart scenario where you'd use it, and show the exact syntax. When would you choose one over the other?
