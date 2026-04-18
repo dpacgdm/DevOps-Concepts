@@ -1,0 +1,952 @@
+
+# PHASE 2 — Lesson 2B: Docker Production Deep Dive (The Missing Half)
+
+---
+
+### ENTRYPOINT vs CMD — The PID 1 Problem
+
+```dockerfile
+# TWO FORMS:
+
+# SHELL FORM (string):
+CMD echo "hello"
+# Actually runs: /bin/sh -c 'echo "hello"'
+# PID 1 = /bin/sh (NOT your process)
+# Your process is a CHILD of sh
+# SIGTERM sent to PID 1 (sh) → sh does NOT forward it to your process
+# Container doesn't gracefully shut down → waits 10s → SIGKILL
+# YOUR APP NEVER RECEIVES SIGTERM
+
+# EXEC FORM (array):
+CMD ["echo", "hello"]
+# Runs: echo "hello" directly
+# PID 1 = echo (YOUR process)
+# SIGTERM goes directly to your process
+# Graceful shutdown works
+
+# ALWAYS USE EXEC FORM IN PRODUCTION
+
+# ENTRYPOINT vs CMD:
+# ENTRYPOINT = the executable (fixed)
+# CMD = default arguments (overridable)
+
+ENTRYPOINT ["python", "app.py"]
+CMD ["--port", "8080"]
+# docker run myapp → python app.py --port 8080
+# docker run myapp --port 9090 → python app.py --port 9090
+# CMD is replaced, ENTRYPOINT stays
+
+# Only CMD:
+CMD ["python", "app.py"]
+# docker run myapp → python app.py
+# docker run myapp /bin/sh → /bin/sh (CMD completely replaced)
+
+# Only ENTRYPOINT:
+ENTRYPOINT ["python", "app.py"]
+# docker run myapp → python app.py
+# docker run myapp --debug → python app.py --debug (args appended)
+# Can't override without --entrypoint flag
+
+# PRODUCTION PATTERN:
+ENTRYPOINT ["java", "-jar", "app.jar"]
+CMD []
+# Or with a wrapper script:
+ENTRYPOINT ["/docker-entrypoint.sh"]
+CMD ["start"]
+# docker run myapp start → /docker-entrypoint.sh start
+# docker run myapp migrate → /docker-entrypoint.sh migrate
+```
+
+### The PID 1 Zombie Reaping Problem
+
+```bash
+# In Linux, PID 1 (init) has a special responsibility:
+# It must REAP orphaned child processes (zombies)
+# A zombie = process that exited but parent hasn't called wait()
+# Normal OS: systemd (PID 1) reaps zombies
+# Container: YOUR process is PID 1
+
+# Problem scenario:
+# Your app spawns child processes (workers, scripts)
+# Child exits → becomes zombie
+# Your app doesn't call wait() → zombie accumulates
+# 100s of zombies → PID namespace exhaustion → container can't fork
+
+# SOLUTION 1: tini (lightweight init)
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y tini && rm -rf /var/lib/apt/lists/*
+ENTRYPOINT ["tini", "--"]
+CMD ["python", "app.py"]
+# tini is PID 1 → reaps zombies, forwards signals to your app
+# tini receives SIGTERM → forwards to python → graceful shutdown
+# Only 30KB binary
+
+# SOLUTION 2: dumb-init (Yelp)
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["python", "app.py"]
+# Same concept, slightly different signal handling
+
+# SOLUTION 3: Docker's built-in init
+docker run --init myapp
+# Docker injects tini automatically
+# Or in compose:
+services:
+  app:
+    init: true
+# In Kubernetes:
+# No built-in equivalent — must include tini/dumb-init in image
+# OR use shareProcessNamespace: true (but that has other implications)
+
+# WHEN YOU NEED IT:
+# - Shell scripts that spawn background processes
+# - Applications using process pools (Gunicorn prefork, Celery workers)
+# - Anything that forks child processes
+# 
+# WHEN YOU DON'T:
+# - Single-process containers (Go binary, Node.js single-thread)
+# - JVM (handles its own threads internally, not separate processes)
+```
+
+---
+
+### Signal Handling in Containers
+
+```bash
+# SHUTDOWN SEQUENCE:
+# docker stop <container>:
+# 1. Sends SIGTERM to PID 1
+# 2. Waits --stop-timeout (default 10s)
+# 3. Sends SIGKILL
+
+# docker kill <container>:
+# 1. Sends SIGKILL immediately (no grace period)
+
+# SHELL FORM TRAP:
+# Dockerfile: CMD python app.py
+# Actually runs: /bin/sh -c "python app.py"
+# PID 1 = sh
+# sh does NOT forward SIGTERM to python
+# Python never knows it should shut down
+# After 10s → SIGKILL → dirty shutdown (connections dropped, data loss)
+
+# FIX 1: exec form (already covered)
+CMD ["python", "app.py"]
+
+# FIX 2: exec in shell script
+#!/bin/sh
+# docker-entrypoint.sh
+echo "Starting app..."
+exec python app.py
+# exec REPLACES the shell process with python
+# python becomes PID 1 → receives SIGTERM directly
+
+# FIX 3: trap in shell script
+#!/bin/sh
+cleanup() {
+    echo "Caught signal, shutting down..."
+    kill -TERM "$child"
+    wait "$child"
+}
+trap cleanup SIGTERM SIGINT
+
+python app.py &
+child=$!
+wait "$child"
+# Shell traps signal, forwards to child, waits for clean exit
+
+# STOPSIGNAL directive:
+# Some apps listen for different signals:
+STOPSIGNAL SIGQUIT    # Nginx uses SIGQUIT for graceful shutdown
+STOPSIGNAL SIGINT     # Some apps prefer SIGINT
+
+# Kubernetes:
+# preStop hook runs BEFORE SIGTERM
+# terminationGracePeriodSeconds = total time for preStop + shutdown
+# SIGKILL after grace period — unconditional
+```
+
+---
+
+### Volume Types — Bind Mounts vs Volumes vs tmpfs
+
+```bash
+# THREE TYPES:
+
+# 1. NAMED VOLUMES (Docker-managed):
+docker volume create my-data
+docker run -v my-data:/app/data myapp
+# Stored at: /var/lib/docker/volumes/my-data/_data
+# Docker manages lifecycle
+# Survives container removal
+# Can be backed by drivers (local, NFS, EBS, etc.)
+# PREFERRED for persistent data
+
+# 2. BIND MOUNTS (host path):
+docker run -v /host/path:/container/path myapp
+# Direct mount of host directory into container
+# Changes visible immediately on both sides
+# Use for: development (live reload), host config files
+# DANGER: container can modify host files
+# NOT portable (depends on host path existing)
+
+# 3. TMPFS (memory-backed):
+docker run --tmpfs /tmp:rw,noexec,nosuid,size=64m myapp
+# RAM-backed filesystem
+# Fast, auto-cleaned on container stop
+# Use for: sensitive temp files (secrets processing), scratch space
+# Not persisted, not shared between containers
+
+# VOLUME DRIVERS:
+docker volume create --driver local \
+  --opt type=nfs \
+  --opt o=addr=nfs-server.example.com,rw \
+  --opt device=:/shared/data \
+  nfs-data
+# local driver with NFS options
+# Other drivers: REX-Ray (EBS/EFS), Portworx, Flocker
+
+# COMPOSE VOLUME SYNTAX:
+services:
+  app:
+    volumes:
+      - my-data:/app/data              # named volume
+      - ./config:/app/config:ro        # bind mount, read-only
+      - type: tmpfs                    # tmpfs
+        target: /tmp
+        tmpfs:
+          size: 67108864               # 64MB
+
+# READ-ONLY VOLUMES:
+docker run -v my-data:/app/data:ro myapp
+# Container can read but not write
+# Use for: shared config, certificates
+
+# VOLUME INSPECTION:
+docker volume ls
+docker volume inspect my-data
+# Shows: mount point, driver, labels, creation date
+
+# ORPHANED VOLUMES:
+docker volume ls -f dangling=true
+# Volumes not referenced by any container
+# Common source of disk space leak
+docker volume prune    # remove all dangling volumes
+```
+
+---
+
+### Docker Disk Management
+
+```bash
+# DISK USAGE:
+docker system df
+# TYPE            TOTAL   ACTIVE   SIZE      RECLAIMABLE
+# Images          45      12       12.5GB    8.3GB (66%)
+# Containers      15      8        2.1GB     1.8GB (85%)
+# Local Volumes   23      8        5.6GB     3.2GB (57%)
+# Build Cache     -       -        4.2GB     4.2GB
+
+docker system df -v    # verbose — per-image, per-container breakdown
+
+# CLEANUP:
+# Remove stopped containers:
+docker container prune
+
+# Remove unused images (not referenced by any container):
+docker image prune
+# Remove ALL images not used by running containers:
+docker image prune -a
+
+# Remove unused volumes:
+docker volume prune
+
+# Remove unused networks:
+docker network prune
+
+# NUCLEAR: remove everything unused:
+docker system prune -a --volumes
+# Removes: stopped containers, unused networks, unused images,
+#           build cache, dangling volumes
+# DANGEROUS in production — removes cached images = slow next pull
+
+# BUILD CACHE:
+docker builder prune
+# Remove build cache (can be massive after many builds)
+docker builder prune --keep-storage=5GB
+# Keep 5GB of most recently used cache
+
+# AUTOMATED CLEANUP IN PRODUCTION:
+# K8s kubelet handles image GC:
+# --image-gc-high-threshold=85 (start GC when disk is 85% full)
+# --image-gc-low-threshold=80 (GC until disk is 80% full)
+# Removes least recently used images first
+# On EKS: configured via kubelet extra args in launch template
+
+# LOG ROTATION (often missed source of disk fill):
+# Docker logs can grow unbounded by default!
+# /var/lib/docker/containers/<id>/<id>-json.log
+
+# Configure in /etc/docker/daemon.json:
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "50m",        
+    "max-file": "3"           
+  }
+}
+# Each container: max 3 log files × 50MB = 150MB max
+# Without this: a verbose app can fill a 100GB disk in hours
+
+# PER-CONTAINER override:
+docker run --log-opt max-size=10m --log-opt max-file=3 myapp
+```
+
+---
+
+### Docker Logging Drivers
+
+```bash
+# Docker supports multiple log drivers:
+
+# json-file (DEFAULT):
+# Writes JSON-formatted logs to disk
+# docker logs command works
+# Needs rotation configured (see above)
+
+# journald:
+# Sends to systemd journal
+# docker logs still works
+# journalctl CONTAINER_NAME=my-container
+
+# syslog:
+# Sends to syslog daemon
+# docker logs does NOT work (logs go to syslog, not local)
+
+# fluentd:
+# Sends to Fluentd collector
+# docker logs does NOT work
+# Use for: centralized logging pipelines
+
+# awslogs:
+# Sends directly to AWS CloudWatch Logs
+# docker logs does NOT work
+# Use for: ECS tasks, standalone Docker on EC2
+{
+  "log-driver": "awslogs",
+  "log-opts": {
+    "awslogs-region": "us-east-1",
+    "awslogs-group": "/docker/my-app",
+    "awslogs-stream": "my-container",
+    "awslogs-create-group": "true"
+  }
+}
+
+# IMPORTANT:
+# In Kubernetes: DON'T use Docker log drivers
+# kubelet reads container logs from the default json-file/local driver
+# kubectl logs depends on this
+# If you change the driver → kubectl logs stops working
+# K8s logging: use DaemonSet (Fluentbit/Fluentd) to ship log files
+# from /var/log/containers/*.log to your logging backend
+```
+
+---
+
+### Docker Restart Policies
+
+```bash
+docker run --restart=no myapp          # DEFAULT: never restart
+docker run --restart=on-failure:5 myapp  # restart on non-zero exit, max 5 times
+docker run --restart=always myapp      # always restart (even on clean exit)
+docker run --restart=unless-stopped myapp  # like always, but not after docker stop
+
+# BACKOFF:
+# Docker uses exponential backoff for restarts:
+# 1st: immediate
+# 2nd: 1 second
+# 3rd: 2 seconds
+# 4th: 4 seconds
+# ...up to 1 minute cap
+# Reset to 0 after container runs successfully for 10+ seconds
+
+# COMPOSE:
+services:
+  app:
+    restart: unless-stopped
+    # or deploy.restart_policy for Swarm mode
+
+# KUBERNETES EQUIVALENT:
+# restartPolicy: Always (default for Deployments)
+# restartPolicy: OnFailure (for Jobs)
+# restartPolicy: Never (for one-shot pods)
+# K8s kubelet manages restarts with its own backoff:
+# CrashLoopBackOff: 10s → 20s → 40s → 80s → 160s → 300s (5 min cap)
+```
+
+---
+
+### Multi-Architecture Builds (buildx)
+
+```bash
+# WHY: ARM instances (Graviton on AWS) are 20-40% cheaper
+# Your image built on AMD64 laptop won't run on ARM nodes
+# You need images for BOTH architectures
+
+# SETUP:
+docker buildx create --name multiarch --driver docker-container --use
+docker buildx inspect --bootstrap
+
+# BUILD FOR MULTIPLE PLATFORMS:
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --tag my-app:v1.2.3 \
+  --push \
+  .
+# Builds TWO images, creates a manifest list
+# When pulled: Docker automatically selects the right architecture
+# docker pull my-app:v1.2.3 on AMD64 → gets AMD64 image
+# docker pull my-app:v1.2.3 on ARM64 → gets ARM64 image
+
+# Dockerfile considerations for multi-arch:
+# Most base images support multi-arch (python:3.11-slim, node:20-slim)
+# But if you compile native code:
+FROM --platform=$BUILDPLATFORM golang:1.21 AS builder
+ARG TARGETARCH
+RUN GOARCH=$TARGETARCH go build -o /app/server
+# $BUILDPLATFORM = where you're building (your laptop)
+# $TARGETARCH = target architecture (amd64 or arm64)
+# Cross-compilation happens on your machine → fast
+
+# CHECK IMAGE ARCHITECTURE:
+docker manifest inspect my-app:v1.2.3
+# Shows all platforms available in the manifest list
+
+# CI PIPELINE:
+# Build multi-arch in CI (Jenkins/GitHub Actions):
+# Use QEMU emulation for cross-platform builds
+docker buildx create --name ci-builder \
+  --driver docker-container \
+  --driver-opt image=moby/buildkit:latest
+# Or: use native ARM runners (GitHub has Graviton runners)
+
+# EKS WITH GRAVITON:
+# m6g.xlarge, c6g.large, r6g.2xlarge = ARM (Graviton)
+# Karpenter can select these automatically:
+# requirements:
+# - key: kubernetes.io/arch
+#   operator: In
+#   values: ["amd64", "arm64"]   # allow both
+# Karpenter picks cheapest → usually Graviton
+# Your image MUST support arm64 or pods will crash
+```
+
+---
+
+### Image Signing and Verification
+
+```bash
+# PROBLEM: how do you know the image you're pulling
+# hasn't been tampered with?
+
+# COSIGN (Sigstore — industry standard):
+# Sign:
+cosign sign --key cosign.key my-registry/my-app:v1.2.3
+# Signature stored alongside image in registry
+
+# Verify:
+cosign verify --key cosign.pub my-registry/my-app:v1.2.3
+# If signature doesn't match → verification fails
+
+# Keyless signing (using OIDC identity — CI pipeline identity):
+cosign sign my-registry/my-app:v1.2.3
+# Uses GitHub Actions OIDC token / Fulcio CA
+# No key management needed
+# Signature tied to: "this image was built by THIS CI pipeline in THIS repo"
+
+# ENFORCE IN KUBERNETES:
+# Kyverno policy to require signed images:
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-images
+spec:
+  validationFailureAction: Enforce
+  rules:
+  - name: verify-cosign
+    match:
+      any:
+      - resources:
+          kinds:
+          - Pod
+    verifyImages:
+    - imageReferences:
+      - "my-registry/*"
+      attestors:
+      - entries:
+        - keyless:
+            issuer: "https://token.actions.githubusercontent.com"
+            subject: "https://github.com/myorg/*"
+
+# DOCKER CONTENT TRUST (DCT):
+export DOCKER_CONTENT_TRUST=1
+docker push my-app:v1.2.3
+# Push signs the image with Notary
+docker pull my-app:v1.2.3
+# Pull verifies signature
+# Any unsigned image → pull rejected
+
+# DCT is older, less flexible than Cosign
+# Industry is moving toward Cosign/Sigstore
+```
+
+---
+
+### Docker-in-Docker vs Docker-out-of-Docker
+
+```bash
+# CI pipelines need to build Docker images.
+# How do you build images inside a container?
+
+# DOCKER-IN-DOCKER (DinD):
+# Run a full Docker daemon INSIDE a container
+docker run --privileged -d docker:dind
+# The inner Docker daemon is completely separate
+# Builds happen inside the inner daemon
+#
+# PROBLEMS:
+# --privileged = full host capabilities = SECURITY NIGHTMARE
+# File system layers get nested (slow, complex)
+# Build cache is lost when container stops
+# NOT recommended for production CI
+
+# DOCKER-OUT-OF-DOCKER (DooD):
+# Mount the HOST's Docker socket into the container
+docker run -v /var/run/docker.sock:/var/run/docker.sock docker
+# Container uses the HOST's Docker daemon
+# Builds appear on the host
+# Cache is shared with host
+#
+# PROBLEMS:
+# Container has FULL CONTROL of host Docker
+# Can start privileged containers, mount host filesystem
+# Effectively root on the host
+# Containers built are siblings, not children (confusing networking)
+
+# KANIKO (the right answer for Kubernetes):
+# Builds OCI images inside a container WITHOUT Docker daemon
+# No privileged mode, no Docker socket
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kaniko-build
+spec:
+  containers:
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:latest
+    args:
+    - "--dockerfile=Dockerfile"
+    - "--context=git://github.com/myorg/myrepo"
+    - "--destination=my-registry/my-app:v1.2.3"
+    - "--cache=true"                 # layer caching via registry
+    - "--cache-repo=my-registry/my-app/cache"
+    volumeMounts:
+    - name: docker-config
+      mountPath: /kaniko/.docker/
+  volumes:
+  - name: docker-config
+    secret:
+      secretName: docker-registry-creds
+# No privileged mode, no Docker socket
+# Builds happen in userspace using snapshotting
+# Standard for Kubernetes-based CI (Jenkins on K8s, Tekton, etc.)
+
+# BUILDAH (daemonless alternative):
+buildah bud -t my-app:v1.2.3 .
+buildah push my-app:v1.2.3 docker://my-registry/my-app:v1.2.3
+# No daemon required
+# Can run rootless
+# OCI-compliant images
+# Good for: non-Kubernetes CI environments
+```
+
+---
+
+### Docker Inspect and Filesystem Debugging
+
+```bash
+# INSPECT — full container metadata:
+docker inspect <container>
+# Returns JSON with EVERYTHING:
+# - State (running, paused, dead, exit code, OOMKilled, pid)
+# - NetworkSettings (IP, ports, networks)
+# - Mounts (volumes, bind mounts)
+# - Config (env vars, cmd, entrypoint, labels)
+# - HostConfig (resources, restart policy, capabilities)
+
+# Useful filters:
+docker inspect --format='{{.State.ExitCode}}' <container>
+docker inspect --format='{{.State.OOMKilled}}' <container>
+docker inspect --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' <container>
+docker inspect --format='{{json .Config.Env}}' <container> | jq
+docker inspect --format='{{.HostConfig.Memory}}' <container>
+
+# DIFF — see what changed in the container filesystem:
+docker diff <container>
+# A /app/data/new-file.txt          (Added)
+# C /var/log                         (Changed)
+# D /tmp/old-file.txt               (Deleted)
+# Useful for: debugging unexpected writes, auditing changes
+
+# CP — copy files in/out:
+docker cp <container>:/app/config.yaml ./config.yaml    # out
+docker cp ./fix.py <container>:/app/fix.py              # in
+# Use for: extracting logs, injecting hotfixes (NOT for production)
+
+# EXPORT — full container filesystem as tar:
+docker export <container> > container-fs.tar
+# For deep forensic analysis
+
+# HISTORY — see how image was built:
+docker history my-app:v1.2.3 --no-trunc
+# Shows every layer, command that created it, size
+# Useful for: understanding third-party images, finding bloat
+
+# EVENTS — real-time Docker daemon events:
+docker events
+# container create, start, die, kill, oom, health_status
+# image pull, push, tag, delete
+# volume create, mount, unmount
+# network connect, disconnect
+# Useful for: debugging startup issues, OOM events
+docker events --filter event=oom --filter event=die
+# Monitor only death and OOM events
+```
+
+---
+
+### Docker Compose Production Patterns
+
+```yaml
+# DEVELOPMENT vs PRODUCTION compose:
+
+# docker-compose.yml (base):
+services:
+  api:
+    image: my-app:${APP_VERSION}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s     # don't check health during startup
+
+# docker-compose.override.yml (auto-loaded, development):
+services:
+  api:
+    build:
+      context: .
+      target: development
+    volumes:
+      - ./src:/app/src     # live reload
+    ports:
+      - "8080:8080"        # expose to host
+    environment:
+      - DEBUG=true
+
+# docker-compose.prod.yml (explicit, production):
+services:
+  api:
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+# Usage:
+# Dev (auto-loads override):
+docker compose up
+
+# Prod (explicit file):
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+# PROFILES (selective service startup):
+services:
+  api:
+    profiles: ["app"]
+  worker:
+    profiles: ["app"]
+  debug-tools:
+    profiles: ["debug"]       # only started when explicitly requested
+  db:
+    # no profile = always started
+
+docker compose --profile app up        # api + worker + db
+docker compose --profile debug up      # debug-tools + db
+
+# DEPENDS_ON with conditions:
+services:
+  api:
+    depends_on:
+      db:
+        condition: service_healthy      # wait for health check
+      redis:
+        condition: service_started      # just wait for start
+      migrate:
+        condition: service_completed_successfully  # wait for completion
+```
+
+---
+
+### Container Resource Visibility — /proc and Cgroup Awareness
+
+```bash
+# CRITICAL ISSUE:
+# Inside a container, /proc/meminfo and /proc/cpuinfo show HOST values
+# Not the container's cgroup limits
+
+cat /proc/meminfo
+# MemTotal: 65536000 kB    ← HOST has 64GB
+# But container is limited to 512MB via cgroup
+
+cat /proc/cpuinfo | grep processor | wc -l
+# 16                        ← HOST has 16 CPUs
+# But container is limited to 2 CPUs
+
+# WHY THIS MATTERS:
+# Applications that auto-configure based on /proc:
+# - JVM: calculates heap from /proc/meminfo (old JVMs)
+# - Node.js: UV_THREADPOOL_SIZE defaults to 4, could set based on CPUs
+# - Go: GOMAXPROCS defaults to /proc/cpuinfo CPU count
+# - Python multiprocessing: os.cpu_count() reads /proc/cpuinfo
+
+# FIXES:
+# Java 10+: reads cgroup limits automatically (UseContainerSupport)
+# Go: use automaxprocs library (uber-go/automaxprocs)
+#   import _ "go.uber.org/automaxprocs"
+#   Reads cgroup CPU quota, sets GOMAXPROCS correctly
+# Node.js: UV_THREADPOOL_SIZE=<your CPU limit>
+# Python: read cgroup directly or use container-aware libraries
+
+# LXCFS (advanced):
+# Mounts cgroup-aware /proc into container
+# /proc/meminfo shows container's memory limit, not host's
+# /proc/cpuinfo shows container's CPU limit
+# Used in: multi-tenant environments where apps MUST see correct resources
+# Not common in K8s (most apps handle this natively now)
+```
+
+---
+
+### Container Networking — Advanced Patterns
+
+```bash
+# DNS RESOLUTION IN CONTAINERS:
+
+# Default bridge network:
+docker run --name web nginx
+docker run --name app myapp
+# app CANNOT reach web by name "web"
+# Must use IP address (which changes on restart)
+# Default bridge: no DNS resolution between containers
+
+# Custom bridge network:
+docker network create mynet
+docker run --network mynet --name web nginx
+docker run --network mynet --name app myapp
+# app CAN reach web by name "web"
+# Docker's embedded DNS server resolves container names
+# DNS server at 127.0.0.11 inside the container
+
+# MULTIPLE NETWORKS (isolation):
+docker network create frontend
+docker network create backend
+docker run --network frontend --name web nginx
+docker run --network frontend --network backend --name api myapp
+docker run --network backend --name db postgres
+# web can reach api (both on frontend)
+# api can reach db (both on backend)
+# web CANNOT reach db (different networks, no route)
+# This is network segmentation without firewall rules
+
+# ALIAS:
+docker run --network mynet --network-alias search elasticsearch
+docker run --network mynet --network-alias search elasticsearch
+# Both containers respond to DNS name "search"
+# DNS round-robin load balancing
+# Primitive but functional for development
+
+# HOST NETWORKING WITH SPECIFIC PORTS:
+# --network=host bypasses ALL Docker networking
+# Container uses host's network stack directly
+# Performance: eliminates NAT overhead (~5-10% improvement in high-throughput)
+# Use case: performance-critical network applications, monitoring tools
+# Trade-off: no network isolation, port conflicts
+
+# CONTAINER NETWORKING:
+docker run --network container:<other-container-name> myapp
+# Shares ANOTHER container's network namespace
+# Same IP, same ports, same interfaces
+# Use case: sidecar pattern without Kubernetes
+# Debug container sharing network with target container
+```
+
+---
+
+### Health Checks — Docker vs Kubernetes
+
+```bash
+# DOCKER HEALTHCHECK:
+# In Dockerfile:
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=60s \
+  CMD curl -f http://localhost:8080/health || exit 1
+
+# Or at runtime:
+docker run \
+  --health-cmd="curl -f http://localhost:8080/health || exit 1" \
+  --health-interval=30s \
+  --health-timeout=5s \
+  --health-retries=3 \
+  --health-start-period=60s \
+  myapp
+
+# States:
+# starting: within start-period, health not yet checked
+# healthy: health check passing
+# unhealthy: failed retries threshold
+
+# Docker health check vs K8s probes:
+# Docker HEALTHCHECK: only affects container STATUS display
+#   Docker restart policy can use it (restart unhealthy containers)
+#   docker compose depends_on: service_healthy uses it
+#   But it does NOT control traffic routing
+#
+# K8s probes: control EVERYTHING
+#   Liveness: restart on failure
+#   Readiness: remove from Service endpoints on failure
+#   Startup: gate liveness/readiness until ready
+#
+# In K8s: Docker HEALTHCHECK is IGNORED
+# K8s uses its own probes defined in pod spec
+# Don't rely on Dockerfile HEALTHCHECK for K8s workloads
+# But keep it for: docker-compose, standalone Docker, ECS
+```
+
+---
+
+### Docker Build Optimization — Advanced
+
+```bash
+# BUILDKIT CACHE MOUNTS:
+# Persist package manager caches across builds
+
+# Go:
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -o /app/server
+
+# Python:
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
+
+# Node.js:
+RUN --mount=type=cache,target=/root/.cache/npm \
+    npm ci
+
+# apt:
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt/lists \
+    apt-get update && apt-get install -y curl
+
+# RESULT: package downloads cached across ALL builds
+# Even if requirements.txt changes, only new packages downloaded
+
+# SECRET MOUNTS (BuildKit):
+# Pass secrets without embedding in image layers:
+RUN --mount=type=secret,id=npm_token \
+    NPM_TOKEN=$(cat /run/secrets/npm_token) npm install
+# Build:
+docker build --secret id=npm_token,src=.npmrc .
+# Secret available only during that RUN instruction
+# NOT stored in any image layer
+# NOT visible in docker history
+
+# SSH MOUNTS (BuildKit):
+# Forward SSH agent for private repo access:
+RUN --mount=type=ssh git clone git@github.com:private/repo.git
+# Build:
+docker build --ssh default .
+# SSH keys never touch the image
+
+# REGISTRY CACHE:
+docker buildx build \
+  --cache-from type=registry,ref=my-registry/my-app:cache \
+  --cache-to type=registry,ref=my-registry/my-app:cache,mode=max \
+  --push \
+  -t my-registry/my-app:v1.2.3 .
+# Pushes build cache to registry
+# Next build pulls cache from registry
+# Works across different CI runners (no local cache dependency)
+# mode=max: cache ALL layers (not just final stage)
+
+# BUILD ARGS vs ENV:
+ARG BUILD_VERSION=unknown    # available ONLY during build
+ENV APP_VERSION=${BUILD_VERSION}  # persisted in image
+# ARG: use for build-time configuration (versions, flags)
+# ENV: use for runtime configuration
+# SECURITY: ARG values visible in docker history!
+# Never pass secrets via ARG
+```
+
+---
+
+### Docker Troubleshooting Playbook
+
+```bash
+# CONTAINER WON'T START:
+docker logs <container>                    # check stdout/stderr
+docker inspect <container> | jq '.State'   # check exit code, OOMKilled
+# Exit code 0: clean exit (CMD finished)
+# Exit code 1: application error
+# Exit code 126: permission denied (can't execute CMD)
+# Exit code 127: command not found (CMD doesn't exist in image)
+# Exit code 137: SIGKILL (OOM killed or docker kill)
+# Exit code 139: SIGSEGV (segfault — native code crash)
+# Exit code 143: SIGTERM (docker stop, graceful)
+
+# HIGH DISK USAGE:
+docker system df                           # overview
+docker system df -v                        # detailed
+# Check: dangling images, stopped containers, unused volumes
+# Check: container log sizes
+du -sh /var/lib/docker/containers/*/      # log file sizes per container
+
+# NETWORKING ISSUES:
+docker exec <container> cat /etc/resolv.conf  # DNS config
+docker exec <container> ping <other-container>
+docker network inspect <network>              # see connected containers
+iptables -t nat -L -n | grep DOCKER           # see port mappings
+
+# IMAGE WON'T PULL:
+# 1. Auth: docker login / ECR token expired
+# 2. Network: DNS resolution, proxy settings
+# 3. Rate limit: Docker Hub limits (100 pulls/6h anonymous)
+#    Fix: use ECR pull-through cache or mirror
+# 4. Image doesn't exist for your architecture (arm64 vs amd64)
+
+# CONTAINER RUNNING BUT APP NOT RESPONDING:
+docker exec <container> ss -tlnp           # is app listening?
+docker exec <container> curl localhost:8080 # can app reach itself?
+docker port <container>                     # port mapping correct?
+# If app binds to 127.0.0.1 inside container → not reachable from outside
+# Must bind to 0.0.0.0 inside container for port mapping to work
+```
