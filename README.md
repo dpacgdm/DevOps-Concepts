@@ -15076,5 +15076,14032 @@ CDN/Cloudflare → AWS Shield → WAF → NACL → Security Group → iptables
 
 \*\*Go.\*\* 🎯
 
+# 🌐 PHASE 1 — NETWORKING
+
+## Lesson 10: Kubernetes Networking Internals
+
+This is where everything we've learned comes together — Linux networking, iptables, DNS, TCP, load balancing — all woven into how Kubernetes actually moves packets.
+
+---
+
+### The Four Kubernetes Networking Requirements
+
+Kubernetes networking is built on four fundamental rules:
+
+```
+
+1. Every pod gets its own IP address
+
+2. Pods on the SAME node can communicate without NAT
+
+3. Pods on DIFFERENT nodes can communicate without NAT
+
+4. Agents on a node (kubelet, kube-proxy) can communicate with all pods on that node
+
+```
+
+No NAT between pods. Every pod is directly routable. This is fundamentally different from Docker's default bridge networking where containers need port mapping.
+
+---
+
+### CNI — Container Network Interface
+
+CNI plugins implement the actual pod networking. They're responsible for:
+- Assigning IPs to pods
+- Setting up routes between nodes
+- Configuring network namespaces
+
+```
+
+POPULAR CNI PLUGINS:
+
+
+
+AWS VPC CNI:
+
+- Pods get REAL VPC IPs
+
+- Directly routable in the VPC (no overlay)
+
+- Fast (no encapsulation overhead)
+
+- But: consumes VPC IPs aggressively
+
+- Each ENI has limited IPs (depends on instance type)
+
+- m5.large: 3 ENIs × 10 IPs = 29 pod IPs per node (minus node IP)
+
+- Fix: Enable prefix delegation (ENI gets /28 = 16 IPs per slot)
+
+
+
+# Check how many IPs a node can support:
+
+kubectl describe node <node> | grep "allocatable" -A 5
+
+# pods: 29  ← limited by ENI capacity, not kubelet
+
+
+
+Calico:
+
+- Overlay (VXLAN/IPIP) or BGP-based routing
+
+- Supports NetworkPolicies (both ingress and egress)
+
+- Can run alongside AWS VPC CNI for NetworkPolicy only
+
+- Most popular for on-prem and multi-cloud
+
+- eBPF mode for high performance
+
+
+
+Cilium:
+
+- eBPF-based (bypasses iptables entirely)
+
+- Superior performance at scale
+
+- Advanced NetworkPolicies (L7 — HTTP, gRPC, Kafka aware)
+
+- Built-in observability (Hubble)
+
+- Replacing kube-proxy (no iptables for Services)
+
+- The "next generation" CNI — increasingly adopted at FAANG scale
+
+- AWS EKS supports Cilium as an add-on
+
+
+
+Flannel:
+
+- Simple overlay networking (VXLAN)
+
+- No NetworkPolicy support
+
+- Good for learning, NOT for production
+
+- Often paired with Calico for NetworkPolicy
+
+
+
+Weave:
+
+- Encrypted overlay by default
+
+- Simple setup
+
+- Less performant than Calico/Cilium at scale
+
+```
+
+### How Pod-to-Pod Communication Works (Same Node):
+
+```
+
+Pod A (172.16.0.5)                     Pod B (172.16.0.6)
+
+|                                       |
+
+eth0 (inside pod network namespace)     eth0
+
+|                                       |
+
+veth-a (virtual ethernet pair)          veth-b
+
+|                                       |
+
+└─────────── cbr0 / cni0 ──────────────┘
+
+             (Linux bridge on node)
+
+             
+
+1. Pod A sends packet to 172.16.0.6
+
+2. Packet goes through veth pair to the bridge
+
+3. Bridge knows 172.16.0.6 is on veth-b (learned via ARP)
+
+4. Bridge forwards packet to veth-b
+
+5. Packet arrives at Pod B's network namespace
+
+No NAT, no encapsulation, no overlay — direct L2 switching
+
+```
+
+### How Pod-to-Pod Communication Works (Different Nodes):
+
+```
+
+Node 1                                    Node 2
+
+Pod A (172.16.0.5)                        Pod B (172.16.1.10)
+
+|                                         |
+
+veth-a → bridge                           bridge → veth-b
+
+            |                             |
+
+            eth0 (10.0.1.100)             eth0 (10.0.1.101)
+
+            |                             |
+
+            └──────── NETWORK ────────────┘
+
+
+
+WITH AWS VPC CNI (no overlay):
+
+1. Pod A sends packet to 172.16.1.10
+
+2. Node 1 looks up route table — 172.16.1.0/24 → Node 2
+
+3. Packet sent directly via VPC networking (ENI routing)
+
+4. Node 2 receives packet, routes to Pod B via bridge
+
+Fast! No encapsulation overhead. VPC routes handle everything.
+
+
+
+WITH OVERLAY (VXLAN — Calico/Flannel):
+
+1. Pod A sends packet to 172.16.1.10
+
+2. Node 1's CNI agent encapsulates packet in VXLAN:
+
+  [Outer Ethernet] [Outer IP: 10.0.1.100→10.0.1.101] 
+
+  [VXLAN Header] [Inner packet: 172.16.0.5→172.16.1.10]
+
+3. Outer packet traverses the physical network
+
+4. Node 2 decapsulates VXLAN, delivers inner packet to Pod B
+
+Overhead: ~50 bytes per packet (VXLAN header)
+
+Works everywhere (cloud, on-prem, cross-cloud)
+
+
+
+WITH BGP (Calico without overlay):
+
+1. Calico runs BGP daemon on each node
+
+2. Nodes exchange routes: "172.16.0.0/24 is on Node 1"
+
+3. Packets routed directly via standard IP routing
+
+4. No encapsulation — best performance
+
+Requires: underlying network supports BGP or L3 routing
+
+```
+
+---
+
+### Kubernetes Services — How They Actually Work
+
+```yaml
+
+apiVersion: v1
+
+kind: Service
+
+metadata:
+
+name: my-service
+
+spec:
+
+type: ClusterIP
+
+selector:
+
+  app: my-app
+
+ports:
+
+- port: 80
+
+  targetPort: 8080
+
+```
+
+**What happens under the hood:**
+
+```
+
+1. Service created → API server assigns ClusterIP (e.g., 10.96.0.15)
+
+2. Endpoints controller watches pods matching selector
+
+3. Creates Endpoints object listing matching pod IPs
+
+4. kube-proxy on EVERY node watches Services and Endpoints
+
+5. kube-proxy creates iptables/IPVS rules on EVERY node
+
+
+
+IPTABLES MODE (default):
+
+kube-proxy creates NAT rules:
+
+Destination: 10.96.0.15:80 → DNAT to one of:
+
+ 172.16.0.5:8080 (pod 1)
+
+ 172.16.0.6:8080 (pod 2)
+
+ 172.16.1.10:8080 (pod 3)
+
+Random selection with equal probability
+
+
+
+View the actual rules:
+
+iptables -t nat -L KUBE-SERVICES -n | grep my-service
+
+Chain KUBE-SVC-XXXX
+
+-A KUBE-SVC-XXXX -m statistic --mode random --probability 0.333
+
+  -j KUBE-SEP-AAA (→ pod 1)
+
+-A KUBE-SVC-XXXX -m statistic --mode random --probability 0.500
+
+  -j KUBE-SEP-BBB (→ pod 2)
+
+-A KUBE-SVC-XXXX
+
+  -j KUBE-SEP-CCC (→ pod 3)
+
+
+
+IPVS MODE (better at scale):
+
+kube-proxy uses Linux IPVS (IP Virtual Server) instead of iptables
+
+IPVS is a kernel-level L4 load balancer
+
+Supports: round-robin, least connections, source hash, etc.
+
+Much faster than iptables at high service counts
+
+iptables: O(n) rule processing — 10,000 services = 10,000 rules scanned
+
+IPVS: O(1) hash lookup — constant time regardless of services
+
+
+
+Enable IPVS mode in kube-proxy:
+
+kube-proxy --proxy-mode=ipvs
+
+
+
+View IPVS rules:
+
+ipvsadm -Ln
+
+TCP  10.96.0.15:80 rr
+
+ -> 172.16.0.5:8080    Masq    1
+
+ -> 172.16.0.6:8080    Masq    1
+
+ -> 172.16.1.10:8080   Masq    1
+
+```
+
+### Service Types — Complete Breakdown:
+
+```
+
+ClusterIP (default):
+
+- Internal-only virtual IP
+
+- Only accessible from within the cluster
+
+- kube-proxy creates iptables/IPVS rules on every node
+
+- Use for: internal service-to-service communication
+
+
+
+NodePort:
+
+- Exposes service on a static port (30000-32767) on EVERY node
+
+- ClusterIP is also created automatically
+
+- External traffic → any_node_ip:NodePort → pod
+
+- kube-proxy handles routing from NodePort to pod
+
+- Use for: development, quick external access
+
+- NOT for production (no TLS termination, no path routing)
+
+
+
+LoadBalancer:
+
+- Creates cloud provider load balancer (ALB/NLB in AWS)
+
+- NodePort is also created automatically
+
+- External traffic → LB → NodePort → pod
+
+- With AWS Load Balancer Controller:
+
+  - NLB for Service type LoadBalancer
+
+  - ALB for Ingress resources
+
+- Use for: production external access
+
+
+
+ExternalName:
+
+- DNS CNAME alias, no proxy
+
+- my-service.default.svc.cluster.local → CNAME → external-db.example.com
+
+- Use for: referencing external services by cluster-internal DNS name
+
+
+
+Headless (ClusterIP: None):
+
+- No ClusterIP assigned
+
+- DNS returns individual pod IPs (A records)
+
+- No load balancing by kube-proxy
+
+- Clients connect directly to specific pods
+
+- Use for: StatefulSets (databases, Kafka, etc.)
+
+- Pod DNS: pod-name.service-name.namespace.svc.cluster.local
+
+```
+
+### externalTrafficPolicy — Source IP Preservation:
+
+```yaml
+
+By default, NodePort/LoadBalancer services do an extra hop:
+
+Client → Node A (where traffic arrives) → Node B (where pod runs)
+
+This second hop:
+
+ 1. Adds latency
+
+ 2. Loses the client's source IP (SNAT'd to Node A's IP)
+
+ 3. Cross-AZ traffic = extra cost
+
+
+
+spec:
+
+externalTrafficPolicy: Cluster  # DEFAULT
+
+# Traffic can land on ANY node, kube-proxy routes to correct pod
+
+# Pro: Even load distribution
+
+# Con: Extra hop, source IP lost, cross-AZ cost
+
+
+
+spec:
+
+externalTrafficPolicy: Local
+
+# Traffic ONLY goes to pods on the node where it arrived
+
+# If no pod on that node → connection refused (health check handles this)
+
+# Pro: No extra hop, source IP preserved, no cross-AZ cost
+
+# Con: Uneven distribution if pods aren't spread evenly
+
+# REQUIRED when you need the real client IP (logging, rate limiting, geo)
+
+
+
+# AWS NLB with externalTrafficPolicy: Local:
+
+# NLB health checks each node
+
+# Nodes without pods for this service → marked unhealthy → no traffic sent
+
+# Result: traffic only goes to nodes with pods, direct delivery, source IP preserved
+
+```
+
+---
+
+### Ingress — L7 Traffic Management
+
+```yaml
+
+apiVersion: networking.k8s.io/v1
+
+kind: Ingress
+
+metadata:
+
+name: my-ingress
+
+annotations:
+
+  kubernetes.io/ingress.class: nginx
+
+  cert-manager.io/cluster-issuer: letsencrypt-prod
+
+  nginx.ingress.kubernetes.io/rate-limit: "100"
+
+spec:
+
+tls:
+
+- hosts:
+
+  - api.example.com
+
+  secretName: api-tls
+
+rules:
+
+- host: api.example.com
+
+  http:
+
+    paths:
+
+    - path: /v1
+
+      pathType: Prefix
+
+      backend:
+
+        service:
+
+          name: api-v1
+
+          port:
+
+            number: 80
+
+    - path: /v2
+
+      pathType: Prefix
+
+      backend:
+
+        service:
+
+          name: api-v2
+
+          port:
+
+            number: 80
+
+- host: admin.example.com
+
+  http:
+
+    paths:
+
+    - path: /
+
+      pathType: Prefix
+
+      backend:
+
+        service:
+
+          name: admin-dashboard
+
+          port:
+
+            number: 80
+
+```
+
+### Ingress Controllers:
+
+```
+
+Nginx Ingress Controller:
+
+- Most popular, battle-tested
+
+- Runs Nginx pods inside the cluster
+
+- Watches Ingress resources, generates nginx.conf
+
+- Supports: path routing, host routing, TLS, rate limiting,
+
+  auth, rewrites, WebSocket, gRPC
+
+- Two flavors:
+
+  - kubernetes/ingress-nginx (community)
+
+  - nginxinc/kubernetes-ingress (NGINX Inc commercial)
+
+
+
+AWS Load Balancer Controller:
+
+- Creates actual AWS ALBs/NLBs
+
+- Ingress → ALB (L7)
+
+- Service type LoadBalancer → NLB (L4)
+
+- Supports: path/host routing via ALB rules
+
+- Native AWS integration (WAF, ACM certs, Shield)
+
+- External to the cluster (no ingress pod overhead)
+
+
+
+Traefik:
+
+- Auto-discovery of services
+
+- Built-in Let's Encrypt
+
+- Dashboard
+
+- Popular in smaller deployments
+
+
+
+Istio Gateway / Envoy:
+
+- Part of Istio service mesh
+
+- Most powerful routing capabilities
+
+- mTLS, traffic splitting, fault injection
+
+- Overkill for simple setups
+
+```
+
+---
+
+### NetworkPolicies — Pod-Level Firewall
+
+```yaml
+
+By default, ALL pods can talk to ALL other pods (no isolation)
+
+NetworkPolicies restrict this
+
+
+
+DENY ALL ingress to a namespace:
+
+apiVersion: networking.k8s.io/v1
+
+kind: NetworkPolicy
+
+metadata:
+
+name: deny-all
+
+namespace: production
+
+spec:
+
+podSelector: {}    # Apply to ALL pods in namespace
+
+policyTypes:
+
+- Ingress
+
+# No ingress rules = deny all ingress
+
+# Pods can still make outbound connections
+
+
+
+---
+
+Allow specific traffic:
+
+apiVersion: networking.k8s.io/v1
+
+kind: NetworkPolicy
+
+metadata:
+
+name: allow-api-to-db
+
+namespace: production
+
+spec:
+
+podSelector:
+
+  matchLabels:
+
+    app: database        # Apply to database pods
+
+policyTypes:
+
+- Ingress
+
+ingress:
+
+- from:
+
+  - podSelector:
+
+      matchLabels:
+
+        app: api         # Only API pods can reach database
+
+  - namespaceSelector:
+
+      matchLabels:
+
+        env: production  # And only from production namespace
+
+  ports:
+
+  - protocol: TCP
+
+    port: 5432           # Only PostgreSQL port
+
+
+
+---
+
+Restrict egress (outbound):
+
+apiVersion: networking.k8s.io/v1
+
+kind: NetworkPolicy
+
+metadata:
+
+name: api-egress
+
+namespace: production
+
+spec:
+
+podSelector:
+
+  matchLabels:
+
+    app: api
+
+policyTypes:
+
+- Egress
+
+egress:
+
+- to:
+
+  - podSelector:
+
+      matchLabels:
+
+        app: database
+
+  ports:
+
+  - protocol: TCP
+
+    port: 5432
+
+- to:                    # Allow DNS (required!)
+
+  - namespaceSelector: {}
+
+    podSelector:
+
+      matchLabels:
+
+        k8s-app: kube-dns
+
+  ports:
+
+  - protocol: UDP
+
+    port: 53
+
+  - protocol: TCP
+
+    port: 53
+
+```
+
+**Critical gotcha:**
+
+```bash
+
+If you create ANY NetworkPolicy that selects a pod,
+
+that pod switches from "allow all" to "deny by default"
+
+for the specified policyTypes
+
+
+
+If you add an Ingress policy but forget DNS in Egress:
+
+Pod can't resolve DNS → can't reach ANYTHING by hostname
+
+Always include DNS egress when restricting egress!
+
+#
+
+Also: NetworkPolicies require a CNI that supports them
+
+AWS VPC CNI alone does NOT enforce NetworkPolicies
+
+You need: Calico, Cilium, or Weave alongside VPC CNI
+
+EKS: Install Calico as a NetworkPolicy-only add-on
+
+```
+
+---
+
+### VPC Flow Logs — Network Forensics
+
+```bash
+
+VPC Flow Logs capture metadata about every network flow
+
+(NOT the packet contents — just headers)
+
+
+
+Format:
+
+version account-id interface-id srcaddr dstaddr srcport dstport
+
+protocol packets bytes start end action log-status
+
+
+
+Example:
+
+2 123456789012 eni-abc123 10.0.1.5 10.0.2.10 45678 80 6 10 5000 
+
+ 1610000000 1610000060 ACCEPT OK
+
+
+
+Translation:
+
+From 10.0.1.5:45678 to 10.0.2.10:80 (TCP, protocol 6)
+
+10 packets, 5000 bytes, accepted
+
+
+
+Enable Flow Logs:
+
+resource "aws_flow_log" "vpc" {
+
+vpc_id          = aws_vpc.main.id
+
+traffic_type    = "ALL"       # ACCEPT, REJECT, or ALL
+
+log_destination = aws_s3_bucket.flow_logs.arn
+
+# Or send to CloudWatch Logs for real-time analysis
+
+}
+
+
+
+DEBUGGING WITH FLOW LOGS:
+
+
+
+"Why can't pod A reach the database?"
+
+Filter flow logs for:
+
+ srcaddr=<pod-node-ip> dstaddr=<rds-ip> dstport=5432
+
+If action=REJECT → Security Group or NACL blocking
+
+If no entries at all → routing issue (packets never reached the ENI)
+
+
+
+"Where is this suspicious traffic coming from?"
+
+Filter for: dstport=22 action=ACCEPT srcaddr NOT in <known-cidrs>
+
+Find unauthorized SSH access
+
+
+
+"How much cross-AZ traffic are we generating?"
+
+Filter by src/dst subnets in different AZs
+
+Calculate data transfer costs
+
+
+
+Athena query for flow logs in S3:
+
+CREATE EXTERNAL TABLE vpc_flow_logs (...)
+
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ' '
+
+LOCATION 's3://flow-logs-bucket/AWSLogs/...'
+
+#
+
+SELECT srcaddr, dstaddr, dstport, action, SUM(bytes)
+
+FROM vpc_flow_logs
+
+WHERE action = 'REJECT' AND dstport = 5432
+
+GROUP BY srcaddr, dstaddr, dstport, action
+
+```
+
+---
+
+### Production Scenarios:
+
+#### Scenario 1: Service Works Inside Cluster But Not From Outside
+
+```bash
+
+Symptoms:
+
+curl from inside cluster → works
+
+curl from internet → timeout
+
+
+
+Debug:
+
+
+
+1. Check Service type
+
+kubectl get svc my-service
+
+TYPE: ClusterIP ← This is internal only!
+
+ClusterIP is NOT accessible from outside the cluster
+
+
+
+Fix options:
+
+a) Change to LoadBalancer → creates ALB/NLB
+
+b) Create Ingress resource → routes through Ingress Controller
+
+c) Change to NodePort → accessible via node_ip:port (not recommended for prod)
+
+
+
+2. If Service type is LoadBalancer:
+
+kubectl get svc my-service
+
+EXTERNAL-IP: <pending>  ← LB not created yet
+
+
+
+Check AWS Load Balancer Controller logs:
+
+kubectl logs -n kube-system deployment/aws-load-balancer-controller
+
+Common errors:
+
+- IAM role missing permissions
+
+- Subnet not tagged correctly for auto-discovery
+
+- Security group limit reached
+
+
+
+Required subnet tags for ALB:
+
+Public subnets:  kubernetes.io/role/elb = 1
+
+Private subnets: kubernetes.io/role/internal-elb = 1
+
+
+
+3. If LB exists but still timeout:
+
+Check: LB security group allows inbound 80/443 from 0.0.0.0/0?
+
+Check: LB target group has healthy targets?
+
+Check: Target security group allows inbound from LB security group?
+
+```
+
+#### Scenario 2: Pod-to-Pod Communication Fails After NetworkPolicy
+
+```bash
+
+Symptoms:
+
+Deployed new NetworkPolicy for database isolation
+
+API service immediately can't reach the database
+
+"Connection timed out" from API to database
+
+
+
+Investigation:
+
+kubectl get networkpolicy -n production
+
+NAME              POD-SELECTOR    AGE
+
+db-isolation      app=database    2m
+
+
+
+kubectl describe networkpolicy db-isolation -n production
+
+Spec:
+
+ PodSelector: app=database
+
+ Allowing ingress traffic:
+
+   From:
+
+     PodSelector: app=api
+
+   To Port: 5432/TCP
+
+
+
+Looks correct... but let's check the API pod labels:
+
+kubectl get pods -n production --show-labels | grep api
+
+api-deployment-xxx   app=api-service   ← MISMATCH!
+
+
+
+NetworkPolicy says: allow from app=api
+
+API pod has: app=api-service
+
+Labels don't match → traffic denied
+
+
+
+Fix:
+
+Either update NetworkPolicy selector to app=api-service
+
+Or update deployment labels to app=api
+
+
+
+LESSON: NetworkPolicy label mismatches are the #1 cause of
+
+"it worked before the policy" issues
+
+ALWAYS verify labels with --show-labels after policy changes
+
+```
+
+#### Scenario 3: Mysterious 10x Latency Increase After IPVS Migration
+
+```bash
+
+Symptoms:
+
+Migrated kube-proxy from iptables to IPVS mode
+
+Service-to-service latency increased 10x
+
+Only affects certain service pairs
+
+
+
+Investigation:
+
+IPVS uses connection-based load balancing by default
+
+With iptables: random selection per packet
+
+With IPVS rr (round-robin): all packets for a connection go to same pod
+
+
+
+But the real issue:
+
+IPVS session affinity was enabled by default
+
+Timeout: 360 seconds
+
+All connections from Pod A to Service B go to the SAME backend pod
+
+If that pod is slow → ALL requests from A to B are slow
+
+No automatic failover to healthy pods
+
+
+
+Check IPVS session persistence:
+
+ipvsadm -Ln --persistent-conn
+
+
+
+Fix:
+
+Disable persistence or reduce timeout:
+
+In kube-proxy config:
+
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+
+kind: KubeProxyConfiguration
+
+mode: ipvs
+
+ipvs:
+
+scheduler: rr
+
+tcpTimeout: 0s         # Disable session persistence
+
+udpTimeout: 0s
+
+```
+
+#### Scenario 4: Conntrack Table Full on EKS Nodes Running Many Services
+
+```bash
+
+Symptoms:
+
+Random packet drops across multiple services
+
+dmesg: "nf_conntrack: table full, dropping packet"
+
+Node has 200+ services configured
+
+
+
+Root cause:
+
+Each Service creates iptables rules
+
+Each connection through iptables creates conntrack entry
+
+200 services × 1000 connections each = 200,000 conntrack entries
+
+Default nf_conntrack_max: 131072
+
+EXCEEDED
+
+
+
+Immediate fix (on the node):
+
+sysctl -w net.netfilter.nf_conntrack_max=1048576
+
+
+
+Permanent fix — in EKS node launch template:
+
+Add to user_data:
+
+echo "net.netfilter.nf_conntrack_max=1048576" >> /etc/sysctl.d/40-k8s.conf
+
+sysctl --system
+
+
+
+Long-term fix — migrate to Cilium:
+
+Cilium uses eBPF, which BYPASSES conntrack entirely for pod traffic
+
+No conntrack table = no conntrack exhaustion
+
+This is one of the primary reasons companies adopt Cilium at scale
+
+
+
+Monitor:
+
+node_nf_conntrack_entries / node_nf_conntrack_entries_limit
+
+Alert at 75% saturation
+
+```
+---
+
+# 📋 LESSON 10 QUICK REFERENCE — Kubernetes Networking
+
+```
+
+CNI PLUGINS:
+
+AWS VPC CNI: Real VPC IPs, no overlay, fast, eats IPs
+
+Calico: Overlay/BGP, NetworkPolicy support, most popular
+
+Cilium: eBPF-based, bypasses iptables, L7 policies, next-gen
+
+Flannel: Simple overlay, no NetworkPolicy, learning only
+
+
+
+POD NETWORKING:
+
+Same node: veth pairs → Linux bridge → direct delivery
+
+Different nodes:
+
+  VPC CNI: direct VPC routing (no encapsulation)
+
+  Overlay: VXLAN/IPIP encapsulation (~50 byte overhead)
+
+  BGP: native IP routing (best performance, requires L3 network)
+
+
+
+SERVICE TYPES:
+
+ClusterIP: internal only, iptables/IPVS rules
+
+NodePort: every node listens on 30000-32767
+
+LoadBalancer: cloud LB → NodePort → pod
+
+ExternalName: CNAME alias to external service
+
+Headless (ClusterIP: None): returns pod IPs directly
+
+
+
+KUBE-PROXY MODES:
+
+iptables: default, O(n) rule scanning, simple
+
+IPVS: O(1) hash lookup, multiple algorithms, better at scale
+
+Cilium: replaces kube-proxy entirely with eBPF
+
+
+
+externalTrafficPolicy:
+
+Cluster: extra hop, source IP lost, even distribution
+
+Local: direct delivery, source IP preserved, uneven distribution
+
+
+
+INGRESS:
+
+L7 routing (path, host), TLS termination
+
+Controllers: nginx, AWS LB Controller, Traefik, Istio
+
+AWS: Ingress → ALB, Service LB → NLB
+
+
+
+NETWORKPOLICY:
+
+Default: all pods open, any NetworkPolicy = deny by default
+
+ALWAYS include DNS egress (UDP/TCP 53) when restricting egress
+
+Label mismatch = silent traffic deny (check --show-labels!)
+
+Requires: Calico, Cilium, or Weave (VPC CNI alone doesn't enforce)
+
+
+
+VPC FLOW LOGS:
+
+Captures: src/dst IP, ports, protocol, action (ACCEPT/REJECT)
+
+NOT packet contents
+
+Send to S3 + Athena for analysis
+
+REJECT entries = firewall blocking
+
+
+
+PRODUCTION GOTCHAS:
+
+- LB subnet tags required: kubernetes.io/role/elb = 1
+
+- VPC CNI IP exhaustion: prefix delegation or secondary CIDR
+
+- Conntrack exhaustion: increase nf_conntrack_max or use Cilium
+
+- IPVS session persistence causes uneven distribution
+
+- NetworkPolicy label mismatch = silent failure
+
+```
+
+
+---
+
+# 📝 Retention Questions — Lesson 10
+
+**Q1:** Your EKS cluster uses AWS VPC CNI. A `m5.large` node can only run 29 pods despite having plenty of CPU and memory. Why is it limited to 29, and how do you increase it?
+
+**Q2:** After deploying a NetworkPolicy to restrict database access, the API service can no longer resolve DNS for the database service name. The NetworkPolicy only has Ingress rules on the database pod. Explain why DNS broke and how to fix it.
+
+**Q3:** You're running 500 Kubernetes Services. An engineer proposes migrating kube-proxy from iptables mode to IPVS mode. Explain why this improves performance and what potential gotcha they should watch for during migration.
+
+**Q4:** You need to expose a service externally and preserve the real client IP for rate limiting. The service is behind an AWS NLB. What `externalTrafficPolicy` should you use, and what's the trade-off?
+
+**Go.** 🎯
+===========================================================================
+
+# PHASE 2 — Lesson 1B: Git Commands & Workflows (The Missing Half)
+
+---
+
+### Fetch vs Pull — The Distinction That Matters
+
+```bash
+
+\git fetch: downloads objects and refs from remote. Touches NOTHING local.
+
+git fetch origin
+
+\Updates: .git/refs/remotes/origin/main
+
+\Does NOT update: your local main branch, your working directory
+
+\Safe. Always safe. You're just getting information.
+
+
+
+\git pull: fetch + merge (or fetch + rebase if configured)
+
+git pull origin main
+
+\Equivalent to:
+
+git fetch origin
+
+git merge origin/main
+
+
+
+\git pull --rebase:
+
+git pull --rebase origin main
+
+\Equivalent to:
+
+git fetch origin
+
+git rebase origin/main
+
+
+
+\WHY THIS MATTERS:
+
+\git pull with merge creates merge commits on your local branch
+
+\Your history:    A → B → C (local)
+
+\Remote history:  A → B → D (someone pushed)
+
+\git pull creates: A → B → C → M (merge commit)
+
+\                       └→ D ↗
+
+\Ugly. Pollutes history with "Merge branch 'main' of origin..."
+
+\\#
+
+\git pull --rebase:
+
+\Replays your C on top of D:  A → B → D → C'
+
+\Clean linear history.
+
+\\#
+
+\Configure globally:
+
+git config --global pull.rebase true
+
+\Now git pull always rebases instead of merging.
+
+\This is the standard at most serious engineering orgs.
+
+```
+
+---
+
+### Reset — The Three Modes
+
+```bash
+
+\git reset moves the branch pointer AND optionally changes
+
+\the staging area and working directory.
+
+
+
+\SETUP: You have 3 commits
+
+\A → B → C (HEAD)
+
+
+
+\--soft: moves HEAD only. Staging and working dir UNTOUCHED.
+
+git reset --soft HEAD~1
+
+\HEAD now at B
+
+\Staging area: still has C's changes (ready to commit)
+
+\Working directory: unchanged
+
+\Use case: "I want to redo that commit with a different message"
+
+\          or "I want to combine the last 2 commits"
+
+
+
+\--mixed (DEFAULT): moves HEAD + resets staging. Working dir UNTOUCHED.
+
+git reset HEAD~1        # --mixed is the default
+
+git reset --mixed HEAD~1
+
+\HEAD now at B
+
+\Staging area: reset to match B (C's changes are UNSTAGED)
+
+\Working directory: still has C's changes as modified files
+
+\Use case: "I want to unstage everything and re-add selectively"
+
+
+
+\--hard: moves HEAD + resets staging + resets working directory.
+
+git reset --hard HEAD~1
+
+\HEAD now at B
+
+\Staging area: matches B
+
+\Working directory: matches B
+
+\C's changes are GONE from working dir
+
+\Use case: "Throw everything away, go back to this state"
+
+\DANGEROUS: working directory changes are NOT recoverable
+
+\           (unless they were committed — then reflog saves you)
+
+
+
+\COMMON PATTERNS:
+
+\Undo last commit but keep changes staged:
+
+git reset --soft HEAD~1
+
+
+
+\Unstage a file (without losing changes):
+
+git reset HEAD myfile.txt     # old way
+
+git restore --staged myfile.txt  # new way (Git 2.23+)
+
+
+
+\Nuke everything and match remote exactly:
+
+git fetch origin
+
+git reset --hard origin/main
+
+\Your local main is now identical to remote. All local changes gone.
+
+```
+
+Visual:
+
+```
+
+\                  --soft       --mixed      --hard
+
+HEAD (branch ptr)  MOVES        MOVES        MOVES
+
+Staging area       unchanged    RESET        RESET
+
+Working directory  unchanged    unchanged    RESET
+
+```
+
+---
+
+### Revert vs Reset — Undo Strategies
+
+```bash
+
+\RESET: rewrites history (moves the branch pointer backward)
+
+\REVERT: creates a NEW commit that undoes a previous commit
+
+
+
+\Reset:
+
+\A → B → C → D (HEAD)
+
+git reset --hard HEAD~2
+
+\A → B (HEAD)
+
+\C and D are orphaned. History is rewritten.
+
+\If C and D were pushed, you need --force to push.
+
+\NEVER reset shared branches.
+
+
+
+\Revert:
+
+\A → B → C → D (HEAD)
+
+git revert HEAD
+
+\A → B → C → D → D' (HEAD)
+
+\D' is a new commit that undoes D's changes
+
+\History is PRESERVED. No force push needed.
+
+\Safe for shared branches.
+
+
+
+\Revert a specific commit (not the latest):
+
+git revert abc1234
+
+\Creates a new commit that undoes abc1234's changes
+
+\May conflict if later commits depend on abc1234
+
+
+
+\Revert a merge commit:
+
+git revert -m 1 <merge-commit-hash>
+
+\-m 1 means "keep the first parent's side" (usually main)
+
+\This undoes the merged branch's changes
+
+\GOTCHA: if you later want to re-merge that branch,
+
+\you must REVERT THE REVERT first, or Git thinks
+
+\those changes are already in history
+
+
+
+\THE RULE:
+
+\Pushed to shared branch? → git revert
+
+\Local only, not pushed? → git reset
+
+\No exceptions.
+
+```
+
+---
+
+### Cherry-Pick
+
+```bash
+
+\Copy a specific commit from one branch to another
+
+\WITHOUT merging the entire branch
+
+
+
+\Scenario: hotfix commit on develop needs to go to main NOW
+
+git checkout main
+
+git cherry-pick abc1234
+
+\Creates a NEW commit on main with the same diff as abc1234
+
+\Different hash (it's a new commit), same changes
+
+
+
+\Cherry-pick multiple commits:
+
+git cherry-pick abc1234 def5678
+
+
+
+\Cherry-pick a range:
+
+git cherry-pick abc1234..def5678
+
+\Applies everything AFTER abc1234 up to and including def5678
+
+
+
+\Cherry-pick without committing (stage only):
+
+git cherry-pick --no-commit abc1234
+
+\Changes are staged but not committed
+
+\Useful when you want to combine multiple cherry-picks into one commit
+
+
+
+\CONFLICTS during cherry-pick:
+
+git cherry-pick abc1234
+
+\CONFLICT in file.txt
+
+\Fix the conflict, then:
+
+git add file.txt
+
+git cherry-pick --continue
+
+\Or abort:
+
+git cherry-pick --abort
+
+
+
+\WHEN TO USE:
+
+\- Hotfixes that need to go to release branch
+
+\- Extracting a single useful commit from an abandoned branch
+
+\- Backporting fixes to older versions
+
+
+
+\WHEN NOT TO USE:
+
+\- Moving large sets of commits (use merge or rebase)
+
+\- Cherry-picking creates duplicate commits in history
+
+\  (same diff, different hashes on different branches)
+
+```
+
+---
+
+### Conflict Resolution — The Full Workflow
+
+```bash
+
+\WHEN CONFLICTS HAPPEN:
+
+\merge, rebase, cherry-pick, stash pop — any operation that
+
+\combines changes from two sources
+
+
+
+\Git marks conflicts in the file:
+
+<<<<<<< HEAD
+
+const port = 3000;
+
+=======
+
+const port = 8080;
+
+>>>>>>> feature-branch
+
+
+
+\HEAD section: what's on your current branch
+
+\======= divider
+
+\feature-branch section: what's on the incoming branch
+
+
+
+\RESOLUTION STEPS:
+
+\1. Open the file
+
+\2. Choose which version (or combine both)
+
+\3. Remove the conflict markers entirely
+
+\4. git add the resolved file
+
+\5. git merge --continue (or git rebase --continue)
+
+
+
+\USEFUL TOOLS:
+
+\See all conflicted files:
+
+git diff --name-only --diff-filter=U
+
+
+
+\Use a merge tool:
+
+git mergetool
+
+\Opens configured diff tool (vimdiff, meld, VS Code, IntelliJ)
+
+
+
+\Accept one side entirely:
+
+git checkout --ours file.txt     # keep current branch version
+
+git checkout --theirs file.txt   # keep incoming branch version
+
+
+
+\During rebase conflicts — CAREFUL:
+
+\"ours" and "theirs" are SWAPPED during rebase!
+
+\Because rebase replays YOUR commits onto THEIR base
+
+\--ours = the branch you're rebasing ONTO (main)
+
+\--theirs = YOUR commits being replayed
+
+\This confuses everyone. Every time.
+
+
+
+\ABORT if things go wrong:
+
+git merge --abort
+
+git rebase --abort
+
+git cherry-pick --abort
+
+\Returns to pre-operation state. No damage done.
+
+```
+
+---
+
+### Git Log — Actually Useful
+
+```bash
+
+\Basic:
+
+git log --oneline              # short hash + message, one line each
+
+git log --graph --oneline      # ASCII branch visualization
+
+git log --graph --oneline --all  # ALL branches, not just current
+
+
+
+\Filter by author:
+
+git log --author="john"        # partial match works
+
+
+
+\Filter by date:
+
+git log --since="2024-01-01" --until="2024-06-01"
+
+git log --since="2 weeks ago"
+
+
+
+\Filter by message:
+
+git log --grep="hotfix"        # commits whose message contains "hotfix"
+
+
+
+\Filter by file:
+
+git log -- path/to/file.txt    # only commits that touched this file
+
+git log -p -- path/to/file.txt # show the actual diff for each commit
+
+
+
+\Filter by content change (pickaxe):
+
+git log -S "DATABASE_URL"      # commits that added/removed this STRING
+
+git log -G "port.*8080"        # commits matching this REGEX in diff
+
+\Incredibly powerful for: "who changed this config value and when?"
+
+
+
+\Show stats:
+
+git log --stat                 # files changed, insertions/deletions
+
+git log --shortstat            # summary only
+
+
+
+\Limit output:
+
+git log -5                     # last 5 commits
+
+git log main..feature          # commits in feature NOT in main
+
+git log feature..main          # commits in main NOT in feature
+
+
+
+\Format for scripts:
+
+git log --format="%H %an %s"  # full hash, author name, subject
+
+```
+
+---
+
+### Git Blame, Show, Diff
+
+```bash
+
+\BLAME — who wrote each line:
+
+git blame file.txt
+
+\a1b2c3d (John 2024-01-15 14:30:00 +0000  1) const port = 3000;
+
+\b2c3d4e (Jane 2024-02-20 09:15:00 +0000  2) const host = "0.0.0.0";
+
+
+
+\Blame a specific range of lines:
+
+git blame -L 10,20 file.txt    # lines 10-20 only
+
+
+
+\Ignore whitespace changes:
+
+git blame -w file.txt
+
+
+
+\SHOW — inspect any object:
+
+git show HEAD                   # latest commit diff
+
+git show abc1234                # specific commit
+
+git show abc1234:path/to/file   # file contents at that commit
+
+git show v1.0.0                 # tag details
+
+
+
+\DIFF:
+
+git diff                        # working dir vs staging (unstaged changes)
+
+git diff --staged               # staging vs last commit (staged changes)
+
+git diff HEAD                   # working dir vs last commit (all changes)
+
+git diff main..feature          # difference between two branches
+
+git diff abc1234 def5678        # difference between two commits
+
+git diff --stat main..feature   # summary: files changed, lines +/-
+
+git diff --name-only HEAD~3     # just filenames changed in last 3 commits
+
+```
+
+---
+
+### Restore and Switch (Git 2.23+ — The Modern Way)
+
+```bash
+
+\Git 2.23 split `git checkout` into two focused commands:
+
+
+
+\OLD (overloaded):
+
+git checkout main                 # switch branches
+
+git checkout -- file.txt          # discard working dir changes
+
+git checkout abc1234 -- file.txt  # restore file from specific commit
+
+
+
+\NEW (clear intent):
+
+\git switch — for branch operations:
+
+git switch main                   # switch to main
+
+git switch -c new-branch          # create and switch
+
+git switch -                      # switch to previous branch
+
+
+
+\git restore — for file operations:
+
+git restore file.txt              # discard working dir changes (from index)
+
+git restore --staged file.txt     # unstage (move from index to working dir)
+
+git restore --source=HEAD~3 file.txt  # restore from specific commit
+
+git restore --staged --worktree file.txt  # unstage AND discard changes
+
+
+
+\git checkout still works. But switch/restore make intent explicit.
+
+\In scripts and CI, prefer the new commands.
+
+```
+
+---
+
+### Git Clean — Remove Untracked Files
+
+```bash
+
+git clean -n          # dry run — show what WOULD be deleted
+
+git clean -f          # delete untracked files
+
+git clean -fd         # delete untracked files AND directories
+
+git clean -fdx        # delete untracked files, dirs, AND ignored files
+
+\                     # WARNING: -x removes things in .gitignore too
+
+\                     # (node_modules, build artifacts, .env files)
+
+
+
+\Use case: "I want a pristine state matching the repo exactly"
+
+git reset --hard HEAD
+
+git clean -fd
+
+\Working directory now matches HEAD commit perfectly
+
+```
+
+---
+
+### Git LFS — Large File Storage
+
+```bash
+
+\Problem: Git stores full copies of every version of every file
+
+\Binary files (images, videos, ML models, JARs) bloat the repo
+
+\A 100MB model file × 50 versions = 5GB repo
+
+
+
+\Git LFS replaces large files with lightweight POINTERS in the repo
+
+\Actual file content stored on a separate LFS server
+
+
+
+\Setup:
+
+git lfs install                              # one-time setup
+
+git lfs track "*.psd"                        # track Photoshop files
+
+git lfs track "models/**"                    # track ML models directory
+
+\This creates/updates .gitattributes:
+
+*.psd filter=lfs diff=lfs merge=lfs -text
+
+
+
+git add .gitattributes                       # commit the tracking rules
+
+git add large-file.psd
+
+git commit -m "add design file"
+
+git push                                     # pushes pointer to Git, content to LFS
+
+
+
+\What's in the repo:
+
+git cat-file -p HEAD:large-file.psd
+
+\version https://git-lfs.github.com/spec/v1
+
+\oid sha256:abc123...
+
+\size 104857600
+
+\← That's it. A 130-byte pointer, not 100MB.
+
+
+
+\CI CONSIDERATION:
+
+\git clone fetches LFS files automatically (if lfs is installed)
+
+\To skip LFS in CI (if you don't need the actual binaries):
+
+GIT_LFS_SKIP_SMUDGE=1 git clone repo.git
+
+\Saves bandwidth and time in pipelines that don't need binary assets
+
+```
+
+---
+
+### .gitattributes — Beyond LFS
+
+```bash
+
+\Line ending normalization (cross-platform teams):
+
+* text=auto                  # Git auto-detects text files, normalizes endings
+
+*.sh text eol=lf             # Shell scripts always LF (even on Windows)
+
+*.bat text eol=crlf          # Batch files always CRLF
+
+*.png binary                 # Never treat as text, never normalize
+
+
+
+\Custom merge strategies per file:
+
+database/schema.sql merge=ours    # always keep our version on conflict
+
+package-lock.json merge=ours      # avoid lockfile merge nightmares
+
+\(requires: git config merge.ours.driver true)
+
+
+
+\Diff drivers:
+
+*.zip diff=zip                # custom diff for zip files
+
+*.md diff=markdown            # better diff formatting for markdown
+
+```
+
+---
+
+### Git Hooks — In Detail
+
+```bash
+
+\.git/hooks/ contains sample scripts (*.sample)
+
+\Remove .sample suffix to activate
+
+
+
+\CLIENT-SIDE HOOKS:
+
+pre-commit        # runs before commit is created
+
+\                 # exit 1 = abort commit
+
+\                 # use for: lint, format, secrets scan
+
+
+
+commit-msg        # runs after message entered, before commit finalized
+
+\                 # receives message file path as arg
+
+\                 # use for: enforce message format (JIRA-123: description)
+
+
+
+pre-push          # runs before push
+
+\                 # use for: run tests, prevent push to main
+
+
+
+post-checkout     # runs after git checkout / git switch
+
+\                 # use for: npm install after branch switch
+
+
+
+\SERVER-SIDE HOOKS (Bitbucket/GitLab/self-hosted):
+
+pre-receive       # runs before accepting a push
+
+\                 # use for: enforce branch naming, reject force push
+
+\                 # exit 1 = reject the entire push
+
+
+
+update            # like pre-receive but per-branch
+
+\                 # use for: per-branch policies
+
+
+
+post-receive      # runs after push is accepted
+
+\                 # use for: trigger CI, notify Slack, deploy
+
+
+
+\SHARED HOOKS (team-wide):
+
+\.git/hooks/ is NOT committed (it's inside .git/)
+
+\Solution: use a framework
+
+
+
+\pre-commit framework (Python):
+
+\.pre-commit-config.yaml (committed to repo):
+
+repos:
+
+\ - repo: https://github.com/pre-commit/pre-commit-hooks
+
+\   rev: v4.5.0
+
+\   hooks:
+
+\     - id: trailing-whitespace
+
+\     - id: end-of-file-fixer
+
+\     - id: check-yaml
+
+\     - id: check-added-large-files
+
+\       args: ['--maxkb=500']
+
+\ - repo: https://github.com/gitleaks/gitleaks
+
+\   rev: v8.18.1
+
+\   hooks:
+
+\     - id: gitleaks        # scan for secrets
+
+
+
+\Install: pre-commit install
+
+\Now every developer who runs pre-commit install
+
+\gets these hooks locally
+
+
+
+\Husky (Node.js projects):
+
+\package.json:
+
+"husky": {
+
+\ "hooks": {
+
+\   "pre-commit": "lint-staged",
+
+\   "commit-msg": "commitlint -E HUSKY_GIT_PARAMS"
+
+\ }
+
+}
+
+```
+
+---
+
+### Submodules vs Subtrees
+
+```bash
+
+\SUBMODULES: embed another repo as a subdirectory
+
+git submodule add https://github.com/org/shared-lib.git libs/shared
+
+\Creates .gitmodules file:
+
+[submodule "libs/shared"]
+
+\  path = libs/shared
+
+\  url = https://github.com/org/shared-lib.git
+
+
+
+\The parent repo stores a POINTER (commit hash) to the submodule
+
+\NOT the submodule's contents
+
+
+
+\Clone with submodules:
+
+git clone --recurse-submodules repo.git
+
+\Or after clone:
+
+git submodule update --init --recursive
+
+
+
+\Update submodule to latest:
+
+cd libs/shared
+
+git pull origin main
+
+cd ../..
+
+git add libs/shared
+
+git commit -m "update shared-lib to latest"
+
+
+
+\PAIN POINTS (and there are many):
+
+\- Developers forget --recurse-submodules on clone
+
+\- CI must explicitly init submodules
+
+\- Detached HEAD inside submodule is the default
+
+\- Merge conflicts on submodule pointer are confusing
+
+\- Nested submodules compound all these problems
+
+
+
+\SUBTREES: copy another repo INTO your repo as actual files
+
+git subtree add --prefix=libs/shared https://github.com/org/shared-lib.git main --squash
+
+
+
+\Pull updates:
+
+git subtree pull --prefix=libs/shared https://github.com/org/shared-lib.git main --squash
+
+
+
+\Push changes back upstream:
+
+git subtree push --prefix=libs/shared https://github.com/org/shared-lib.git main
+
+
+
+\SUBTREE ADVANTAGES:
+
+\- No special clone commands — files are in the repo
+
+\- No .gitmodules, no detached HEAD confusion
+
+\- Works with existing tooling without modifications
+
+
+
+\SUBTREE DISADVANTAGES:
+
+\- Repo size grows (full copy of subtree code)
+
+\- History can be messy without --squash
+
+\- Push back to upstream is awkward
+
+
+
+\RECOMMENDATION:
+
+\Small shared libraries → subtree (simpler)
+
+\Large external dependencies → submodule (saves space)
+
+\Or better: use a proper package manager (npm, pip, Maven)
+
+\  and publish shared code as packages
+
+```
+
+---
+
+### Git Worktrees
+
+```bash
+
+\Problem: you're working on feature-x, urgent hotfix needed on main
+
+\Without worktrees: stash, switch, fix, switch back, pop stash
+
+\With worktrees: check out another branch in a SEPARATE directory
+
+
+
+git worktree add ../hotfix-dir main
+
+\Creates ../hotfix-dir with main checked out
+
+\SHARES the same .git database (no re-clone)
+
+
+
+cd ../hotfix-dir
+
+\fix the issue
+
+git commit -am "hotfix"
+
+git push
+
+
+
+\Go back to original directory — feature-x is untouched
+
+cd ../original-dir
+
+
+
+\Clean up when done:
+
+git worktree remove ../hotfix-dir
+
+
+
+\List all worktrees:
+
+git worktree list
+
+
+
+\USE CASES:
+
+\- Hotfixes without disrupting current work
+
+\- Running tests on one branch while coding on another
+
+\- Comparing behavior across branches side by side
+
+\- CI that needs multiple branches checked out simultaneously
+
+```
+
+# 📋 QUICK REFERENCE — Git Commands (Lesson 1B)
+
+```
+
+FETCH vs PULL:
+
+\ fetch: download, touch nothing local
+
+\ pull: fetch + merge (or + rebase if configured)
+
+\ Always: git config --global pull.rebase true
+
+
+
+RESET:
+
+\ --soft:  HEAD moves. Staging + working dir untouched.
+
+\ --mixed: HEAD moves. Staging reset. Working dir untouched.
+
+\ --hard:  HEAD moves. Staging reset. Working dir reset. DESTRUCTIVE.
+
+
+
+UNDO:
+
+\ Pushed? → git revert (new commit, safe)
+
+\ Local only? → git reset (rewrite history)
+
+\ Revert a merge: git revert -m 1 <hash>
+
+\ Re-merge after revert: must revert the revert first
+
+
+
+CHERRY-PICK:
+
+\ git cherry-pick <hash>           single commit
+
+\ git cherry-pick --no-commit      stage only
+
+\ Use for hotfixes, backports. Not for bulk moves.
+
+
+
+CONFLICTS:
+
+\ ours/theirs SWAP during rebase (everyone forgets this)
+
+\ git checkout --ours/--theirs for bulk resolution
+
+\ Always: git merge --abort / git rebase --abort if lost
+
+
+
+LOG:
+
+\ -S "string"    pickaxe: who added/removed this string
+
+\ -G "regex"     grep through diffs
+
+\ main..feature  commits in feature not in main
+
+\ --author, --since, --grep for filtering
+
+
+
+LFS:
+
+\ git lfs track "*.bin"
+
+\ GIT_LFS_SKIP_SMUDGE=1 git clone   (skip in CI)
+
+\ Repo stores 130-byte pointer, LFS server stores content
+
+
+
+SUBMODULES vs SUBTREES:
+
+\ Submodules: pointer to external repo (saves space, painful workflow)
+
+\ Subtrees: full copy in your repo (simple workflow, larger repo)
+
+\ Best: publish shared code as packages instead
+
+
+
+WORKTREES:
+
+\ git worktree add ../dir branch
+
+\ Multiple branches checked out simultaneously
+
+\ Shares .git database — no re-clone
+
+```
+
+---
+
+# 📝 Retention Questions — Lesson 1B
+
+**Q1:** A junior developer on your team ran `git reset --hard HEAD~3` on the `main` branch, then did `git push --force`. Three commits are gone from remote. Two other developers have already pulled the old `main`. Walk through the full recovery process.
+
+**Q2:** A critical bug is found in production. The fix exists as a single commit on the `develop` branch, but `develop` has 40 other untested commits. How do you get ONLY that fix onto the `release` branch? What happens if the fix conflicts?
+
+**Q3:** Your team reverted a merge to `main` because it caused issues. The feature branch was fixed and they want to re-merge it. But `git merge feature` says "Already up to date." Explain why and how to fix it.
+
+**Q4:** Explain the difference between `git reset --mixed HEAD~1` and `git restore --staged .` — when would you use each?
+
+**Go.** 🎯
+
+
+
+# PHASE 2 — Lesson 2B: Docker Production Deep Dive (The Missing Half)
+
+---
+
+### ENTRYPOINT vs CMD — The PID 1 Problem
+
+```dockerfile
+
+TWO FORMS:
+
+
+
+SHELL FORM (string):
+
+CMD echo "hello"
+
+Actually runs: /bin/sh -c 'echo "hello"'
+
+PID 1 = /bin/sh (NOT your process)
+
+Your process is a CHILD of sh
+
+SIGTERM sent to PID 1 (sh) → sh does NOT forward it to your process
+
+Container doesn't gracefully shut down → waits 10s → SIGKILL
+
+YOUR APP NEVER RECEIVES SIGTERM
+
+
+
+EXEC FORM (array):
+
+CMD \["echo", "hello"]
+
+Runs: echo "hello" directly
+
+PID 1 = echo (YOUR process)
+
+SIGTERM goes directly to your process
+
+Graceful shutdown works
+
+
+
+ALWAYS USE EXEC FORM IN PRODUCTION
+
+
+
+ENTRYPOINT vs CMD:
+
+ENTRYPOINT = the executable (fixed)
+
+CMD = default arguments (overridable)
+
+
+
+ENTRYPOINT \["python", "app.py"]
+
+CMD \["--port", "8080"]
+
+docker run myapp → python app.py --port 8080
+
+docker run myapp --port 9090 → python app.py --port 9090
+
+CMD is replaced, ENTRYPOINT stays
+
+
+
+Only CMD:
+
+CMD \["python", "app.py"]
+
+docker run myapp → python app.py
+
+docker run myapp /bin/sh → /bin/sh (CMD completely replaced)
+
+
+
+Only ENTRYPOINT:
+
+ENTRYPOINT \["python", "app.py"]
+
+docker run myapp → python app.py
+
+docker run myapp --debug → python app.py --debug (args appended)
+
+Can't override without --entrypoint flag
+
+
+
+PRODUCTION PATTERN:
+
+ENTRYPOINT \["java", "-jar", "app.jar"]
+
+CMD \[]
+
+Or with a wrapper script:
+
+ENTRYPOINT \["/docker-entrypoint.sh"]
+
+CMD \["start"]
+
+docker run myapp start → /docker-entrypoint.sh start
+
+docker run myapp migrate → /docker-entrypoint.sh migrate
+
+```
+
+### The PID 1 Zombie Reaping Problem
+
+```bash
+
+In Linux, PID 1 (init) has a special responsibility:
+
+It must REAP orphaned child processes (zombies)
+
+A zombie = process that exited but parent hasn't called wait()
+
+Normal OS: systemd (PID 1) reaps zombies
+
+Container: YOUR process is PID 1
+
+
+
+Problem scenario:
+
+Your app spawns child processes (workers, scripts)
+
+Child exits → becomes zombie
+
+Your app doesn't call wait() → zombie accumulates
+
+100s of zombies → PID namespace exhaustion → container can't fork
+
+
+
+SOLUTION 1: tini (lightweight init)
+
+FROM python:3.11-slim
+
+RUN apt-get update \&\& apt-get install -y tini \&\& rm -rf /var/lib/apt/lists/\*
+
+ENTRYPOINT \["tini", "--"]
+
+CMD \["python", "app.py"]
+
+tini is PID 1 → reaps zombies, forwards signals to your app
+
+tini receives SIGTERM → forwards to python → graceful shutdown
+
+Only 30KB binary
+
+
+
+SOLUTION 2: dumb-init (Yelp)
+
+ENTRYPOINT \["dumb-init", "--"]
+
+CMD \["python", "app.py"]
+
+Same concept, slightly different signal handling
+
+
+
+SOLUTION 3: Docker's built-in init
+
+docker run --init myapp
+
+Docker injects tini automatically
+
+Or in compose:
+
+services:
+
+ app:
+
+   init: true
+
+In Kubernetes:
+
+No built-in equivalent — must include tini/dumb-init in image
+
+OR use shareProcessNamespace: true (but that has other implications)
+
+
+
+WHEN YOU NEED IT:
+
+- Shell scripts that spawn background processes
+
+- Applications using process pools (Gunicorn prefork, Celery workers)
+
+- Anything that forks child processes
+
+
+
+WHEN YOU DON'T:
+
+- Single-process containers (Go binary, Node.js single-thread)
+
+- JVM (handles its own threads internally, not separate processes)
+
+```
+
+---
+
+### Signal Handling in Containers
+
+```bash
+
+SHUTDOWN SEQUENCE:
+
+docker stop <container>:
+
+1. Sends SIGTERM to PID 1
+
+2. Waits --stop-timeout (default 10s)
+
+3. Sends SIGKILL
+
+
+
+docker kill <container>:
+
+1. Sends SIGKILL immediately (no grace period)
+
+
+
+SHELL FORM TRAP:
+
+Dockerfile: CMD python app.py
+
+Actually runs: /bin/sh -c "python app.py"
+
+PID 1 = sh
+
+sh does NOT forward SIGTERM to python
+
+Python never knows it should shut down
+
+After 10s → SIGKILL → dirty shutdown (connections dropped, data loss)
+
+
+
+FIX 1: exec form (already covered)
+
+CMD \["python", "app.py"]
+
+
+
+FIX 2: exec in shell script
+
+\#!/bin/sh
+
+docker-entrypoint.sh
+
+echo "Starting app..."
+
+exec python app.py
+
+exec REPLACES the shell process with python
+
+python becomes PID 1 → receives SIGTERM directly
+
+
+
+FIX 3: trap in shell script
+
+\#!/bin/sh
+
+cleanup() {
+
+   echo "Caught signal, shutting down..."
+
+   kill -TERM "$child"
+
+   wait "$child"
+
+}
+
+trap cleanup SIGTERM SIGINT
+
+
+
+python app.py \&
+
+child=$!
+
+wait "$child"
+
+Shell traps signal, forwards to child, waits for clean exit
+
+
+
+STOPSIGNAL directive:
+
+Some apps listen for different signals:
+
+STOPSIGNAL SIGQUIT    # Nginx uses SIGQUIT for graceful shutdown
+
+STOPSIGNAL SIGINT     # Some apps prefer SIGINT
+
+
+
+Kubernetes:
+
+preStop hook runs BEFORE SIGTERM
+
+terminationGracePeriodSeconds = total time for preStop + shutdown
+
+SIGKILL after grace period — unconditional
+
+```
+
+---
+
+### Volume Types — Bind Mounts vs Volumes vs tmpfs
+
+```bash
+
+THREE TYPES:
+
+
+
+1. NAMED VOLUMES (Docker-managed):
+
+docker volume create my-data
+
+docker run -v my-data:/app/data myapp
+
+Stored at: /var/lib/docker/volumes/my-data/\_data
+
+Docker manages lifecycle
+
+Survives container removal
+
+Can be backed by drivers (local, NFS, EBS, etc.)
+
+PREFERRED for persistent data
+
+
+
+2. BIND MOUNTS (host path):
+
+docker run -v /host/path:/container/path myapp
+
+Direct mount of host directory into container
+
+Changes visible immediately on both sides
+
+Use for: development (live reload), host config files
+
+DANGER: container can modify host files
+
+NOT portable (depends on host path existing)
+
+
+
+3. TMPFS (memory-backed):
+
+docker run --tmpfs /tmp:rw,noexec,nosuid,size=64m myapp
+
+RAM-backed filesystem
+
+Fast, auto-cleaned on container stop
+
+Use for: sensitive temp files (secrets processing), scratch space
+
+Not persisted, not shared between containers
+
+
+
+VOLUME DRIVERS:
+
+docker volume create --driver local \\
+
+ --opt type=nfs \\
+
+ --opt o=addr=nfs-server.example.com,rw \\
+
+ --opt device=:/shared/data \\
+
+ nfs-data
+
+local driver with NFS options
+
+Other drivers: REX-Ray (EBS/EFS), Portworx, Flocker
+
+
+
+COMPOSE VOLUME SYNTAX:
+
+services:
+
+ app:
+
+   volumes:
+
+     - my-data:/app/data              # named volume
+
+     - ./config:/app/config:ro        # bind mount, read-only
+
+     - type: tmpfs                    # tmpfs
+
+       target: /tmp
+
+       tmpfs:
+
+         size: 67108864               # 64MB
+
+
+
+READ-ONLY VOLUMES:
+
+docker run -v my-data:/app/data:ro myapp
+
+Container can read but not write
+
+Use for: shared config, certificates
+
+
+
+VOLUME INSPECTION:
+
+docker volume ls
+
+docker volume inspect my-data
+
+Shows: mount point, driver, labels, creation date
+
+
+
+ORPHANED VOLUMES:
+
+docker volume ls -f dangling=true
+
+Volumes not referenced by any container
+
+Common source of disk space leak
+
+docker volume prune    # remove all dangling volumes
+
+```
+
+---
+
+### Docker Disk Management
+
+```bash
+
+DISK USAGE:
+
+docker system df
+
+TYPE            TOTAL   ACTIVE   SIZE      RECLAIMABLE
+
+Images          45      12       12.5GB    8.3GB (66%)
+
+Containers      15      8        2.1GB     1.8GB (85%)
+
+Local Volumes   23      8        5.6GB     3.2GB (57%)
+
+Build Cache     -       -        4.2GB     4.2GB
+
+
+
+docker system df -v    # verbose — per-image, per-container breakdown
+
+
+
+CLEANUP:
+
+Remove stopped containers:
+
+docker container prune
+
+
+
+Remove unused images (not referenced by any container):
+
+docker image prune
+
+Remove ALL images not used by running containers:
+
+docker image prune -a
+
+
+
+Remove unused volumes:
+
+docker volume prune
+
+
+
+Remove unused networks:
+
+docker network prune
+
+
+
+NUCLEAR: remove everything unused:
+
+docker system prune -a --volumes
+
+Removes: stopped containers, unused networks, unused images,
+
+          build cache, dangling volumes
+
+DANGEROUS in production — removes cached images = slow next pull
+
+
+
+BUILD CACHE:
+
+docker builder prune
+
+Remove build cache (can be massive after many builds)
+
+docker builder prune --keep-storage=5GB
+
+Keep 5GB of most recently used cache
+
+
+
+AUTOMATED CLEANUP IN PRODUCTION:
+
+K8s kubelet handles image GC:
+
+--image-gc-high-threshold=85 (start GC when disk is 85% full)
+
+--image-gc-low-threshold=80 (GC until disk is 80% full)
+
+Removes least recently used images first
+
+On EKS: configured via kubelet extra args in launch template
+
+
+
+LOG ROTATION (often missed source of disk fill):
+
+Docker logs can grow unbounded by default!
+
+/var/lib/docker/containers/<id>/<id>-json.log
+
+
+
+Configure in /etc/docker/daemon.json:
+
+{
+
+ "log-driver": "json-file",
+
+ "log-opts": {
+
+   "max-size": "50m",        
+
+   "max-file": "3"           
+
+ }
+
+}
+
+Each container: max 3 log files × 50MB = 150MB max
+
+Without this: a verbose app can fill a 100GB disk in hours
+
+
+
+PER-CONTAINER override:
+
+docker run --log-opt max-size=10m --log-opt max-file=3 myapp
+
+```
+
+---
+
+### Docker Logging Drivers
+
+```bash
+
+Docker supports multiple log drivers:
+
+
+
+json-file (DEFAULT):
+
+Writes JSON-formatted logs to disk
+
+docker logs command works
+
+Needs rotation configured (see above)
+
+
+
+journald:
+
+Sends to systemd journal
+
+docker logs still works
+
+journalctl CONTAINER\_NAME=my-container
+
+
+
+syslog:
+
+Sends to syslog daemon
+
+docker logs does NOT work (logs go to syslog, not local)
+
+
+
+fluentd:
+
+Sends to Fluentd collector
+
+docker logs does NOT work
+
+Use for: centralized logging pipelines
+
+
+
+awslogs:
+
+Sends directly to AWS CloudWatch Logs
+
+docker logs does NOT work
+
+Use for: ECS tasks, standalone Docker on EC2
+
+{
+
+ "log-driver": "awslogs",
+
+ "log-opts": {
+
+   "awslogs-region": "us-east-1",
+
+   "awslogs-group": "/docker/my-app",
+
+   "awslogs-stream": "my-container",
+
+   "awslogs-create-group": "true"
+
+ }
+
+}
+
+
+
+IMPORTANT:
+
+In Kubernetes: DON'T use Docker log drivers
+
+kubelet reads container logs from the default json-file/local driver
+
+kubectl logs depends on this
+
+If you change the driver → kubectl logs stops working
+
+K8s logging: use DaemonSet (Fluentbit/Fluentd) to ship log files
+
+from /var/log/containers/\*.log to your logging backend
+
+```
+
+---
+
+### Docker Restart Policies
+
+```bash
+
+docker run --restart=no myapp          # DEFAULT: never restart
+
+docker run --restart=on-failure:5 myapp  # restart on non-zero exit, max 5 times
+
+docker run --restart=always myapp      # always restart (even on clean exit)
+
+docker run --restart=unless-stopped myapp  # like always, but not after docker stop
+
+
+
+BACKOFF:
+
+Docker uses exponential backoff for restarts:
+
+1st: immediate
+
+2nd: 1 second
+
+3rd: 2 seconds
+
+4th: 4 seconds
+
+...up to 1 minute cap
+
+Reset to 0 after container runs successfully for 10+ seconds
+
+
+
+COMPOSE:
+
+services:
+
+ app:
+
+   restart: unless-stopped
+
+   # or deploy.restart\_policy for Swarm mode
+
+
+
+KUBERNETES EQUIVALENT:
+
+restartPolicy: Always (default for Deployments)
+
+restartPolicy: OnFailure (for Jobs)
+
+restartPolicy: Never (for one-shot pods)
+
+K8s kubelet manages restarts with its own backoff:
+
+CrashLoopBackOff: 10s → 20s → 40s → 80s → 160s → 300s (5 min cap)
+
+```
+
+---
+
+### Multi-Architecture Builds (buildx)
+
+```bash
+
+WHY: ARM instances (Graviton on AWS) are 20-40% cheaper
+
+Your image built on AMD64 laptop won't run on ARM nodes
+
+You need images for BOTH architectures
+
+
+
+SETUP:
+
+docker buildx create --name multiarch --driver docker-container --use
+
+docker buildx inspect --bootstrap
+
+
+
+BUILD FOR MULTIPLE PLATFORMS:
+
+docker buildx build \\
+
+ --platform linux/amd64,linux/arm64 \\
+
+ --tag my-app:v1.2.3 \\
+
+ --push \\
+
+ .
+
+Builds TWO images, creates a manifest list
+
+When pulled: Docker automatically selects the right architecture
+
+docker pull my-app:v1.2.3 on AMD64 → gets AMD64 image
+
+docker pull my-app:v1.2.3 on ARM64 → gets ARM64 image
+
+
+
+Dockerfile considerations for multi-arch:
+
+Most base images support multi-arch (python:3.11-slim, node:20-slim)
+
+But if you compile native code:
+
+FROM --platform=$BUILDPLATFORM golang:1.21 AS builder
+
+ARG TARGETARCH
+
+RUN GOARCH=$TARGETARCH go build -o /app/server
+
+$BUILDPLATFORM = where you're building (your laptop)
+
+$TARGETARCH = target architecture (amd64 or arm64)
+
+Cross-compilation happens on your machine → fast
+
+
+
+CHECK IMAGE ARCHITECTURE:
+
+docker manifest inspect my-app:v1.2.3
+
+Shows all platforms available in the manifest list
+
+
+
+CI PIPELINE:
+
+Build multi-arch in CI (Jenkins/GitHub Actions):
+
+Use QEMU emulation for cross-platform builds
+
+docker buildx create --name ci-builder \\
+
+ --driver docker-container \\
+
+ --driver-opt image=moby/buildkit:latest
+
+Or: use native ARM runners (GitHub has Graviton runners)
+
+
+
+EKS WITH GRAVITON:
+
+m6g.xlarge, c6g.large, r6g.2xlarge = ARM (Graviton)
+
+Karpenter can select these automatically:
+
+requirements:
+
+- key: kubernetes.io/arch
+
+  operator: In
+
+  values: \["amd64", "arm64"]   # allow both
+
+Karpenter picks cheapest → usually Graviton
+
+Your image MUST support arm64 or pods will crash
+
+```
+
+---
+
+### Image Signing and Verification
+
+```bash
+
+PROBLEM: how do you know the image you're pulling
+
+hasn't been tampered with?
+
+
+
+COSIGN (Sigstore — industry standard):
+
+Sign:
+
+cosign sign --key cosign.key my-registry/my-app:v1.2.3
+
+Signature stored alongside image in registry
+
+
+
+Verify:
+
+cosign verify --key cosign.pub my-registry/my-app:v1.2.3
+
+If signature doesn't match → verification fails
+
+
+
+Keyless signing (using OIDC identity — CI pipeline identity):
+
+cosign sign my-registry/my-app:v1.2.3
+
+Uses GitHub Actions OIDC token / Fulcio CA
+
+No key management needed
+
+Signature tied to: "this image was built by THIS CI pipeline in THIS repo"
+
+
+
+ENFORCE IN KUBERNETES:
+
+Kyverno policy to require signed images:
+
+apiVersion: kyverno.io/v1
+
+kind: ClusterPolicy
+
+metadata:
+
+ name: verify-images
+
+spec:
+
+ validationFailureAction: Enforce
+
+ rules:
+
+ - name: verify-cosign
+
+   match:
+
+     any:
+
+     - resources:
+
+         kinds:
+
+         - Pod
+
+   verifyImages:
+
+   - imageReferences:
+
+     - "my-registry/\*"
+
+     attestors:
+
+     - entries:
+
+       - keyless:
+
+           issuer: "https://token.actions.githubusercontent.com"
+
+           subject: "https://github.com/myorg/\*"
+
+
+
+DOCKER CONTENT TRUST (DCT):
+
+export DOCKER\_CONTENT\_TRUST=1
+
+docker push my-app:v1.2.3
+
+Push signs the image with Notary
+
+docker pull my-app:v1.2.3
+
+Pull verifies signature
+
+Any unsigned image → pull rejected
+
+
+
+DCT is older, less flexible than Cosign
+
+Industry is moving toward Cosign/Sigstore
+
+```
+
+---
+
+### Docker-in-Docker vs Docker-out-of-Docker
+
+```bash
+
+CI pipelines need to build Docker images.
+
+How do you build images inside a container?
+
+
+
+DOCKER-IN-DOCKER (DinD):
+
+Run a full Docker daemon INSIDE a container
+
+docker run --privileged -d docker:dind
+
+The inner Docker daemon is completely separate
+
+Builds happen inside the inner daemon
+
+\#
+
+PROBLEMS:
+
+--privileged = full host capabilities = SECURITY NIGHTMARE
+
+File system layers get nested (slow, complex)
+
+Build cache is lost when container stops
+
+NOT recommended for production CI
+
+
+
+DOCKER-OUT-OF-DOCKER (DooD):
+
+Mount the HOST's Docker socket into the container
+
+docker run -v /var/run/docker.sock:/var/run/docker.sock docker
+
+Container uses the HOST's Docker daemon
+
+Builds appear on the host
+
+Cache is shared with host
+
+\#
+
+PROBLEMS:
+
+Container has FULL CONTROL of host Docker
+
+Can start privileged containers, mount host filesystem
+
+Effectively root on the host
+
+Containers built are siblings, not children (confusing networking)
+
+
+
+KANIKO (the right answer for Kubernetes):
+
+Builds OCI images inside a container WITHOUT Docker daemon
+
+No privileged mode, no Docker socket
+
+apiVersion: v1
+
+kind: Pod
+
+metadata:
+
+ name: kaniko-build
+
+spec:
+
+ containers:
+
+ - name: kaniko
+
+   image: gcr.io/kaniko-project/executor:latest
+
+   args:
+
+   - "--dockerfile=Dockerfile"
+
+   - "--context=git://github.com/myorg/myrepo"
+
+   - "--destination=my-registry/my-app:v1.2.3"
+
+   - "--cache=true"                 # layer caching via registry
+
+   - "--cache-repo=my-registry/my-app/cache"
+
+   volumeMounts:
+
+   - name: docker-config
+
+     mountPath: /kaniko/.docker/
+
+ volumes:
+
+ - name: docker-config
+
+   secret:
+
+     secretName: docker-registry-creds
+
+No privileged mode, no Docker socket
+
+Builds happen in userspace using snapshotting
+
+Standard for Kubernetes-based CI (Jenkins on K8s, Tekton, etc.)
+
+
+
+BUILDAH (daemonless alternative):
+
+buildah bud -t my-app:v1.2.3 .
+
+buildah push my-app:v1.2.3 docker://my-registry/my-app:v1.2.3
+
+No daemon required
+
+Can run rootless
+
+OCI-compliant images
+
+Good for: non-Kubernetes CI environments
+
+```
+
+---
+
+### Docker Inspect and Filesystem Debugging
+
+```bash
+
+INSPECT — full container metadata:
+
+docker inspect <container>
+
+Returns JSON with EVERYTHING:
+
+- State (running, paused, dead, exit code, OOMKilled, pid)
+
+- NetworkSettings (IP, ports, networks)
+
+- Mounts (volumes, bind mounts)
+
+- Config (env vars, cmd, entrypoint, labels)
+
+- HostConfig (resources, restart policy, capabilities)
+
+
+
+Useful filters:
+
+docker inspect --format='{{.State.ExitCode}}' <container>
+
+docker inspect --format='{{.State.OOMKilled}}' <container>
+
+docker inspect --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' <container>
+
+docker inspect --format='{{json .Config.Env}}' <container> | jq
+
+docker inspect --format='{{.HostConfig.Memory}}' <container>
+
+
+
+DIFF — see what changed in the container filesystem:
+
+docker diff <container>
+
+A /app/data/new-file.txt          (Added)
+
+C /var/log                         (Changed)
+
+D /tmp/old-file.txt               (Deleted)
+
+Useful for: debugging unexpected writes, auditing changes
+
+
+
+CP — copy files in/out:
+
+docker cp <container>:/app/config.yaml ./config.yaml    # out
+
+docker cp ./fix.py <container>:/app/fix.py              # in
+
+Use for: extracting logs, injecting hotfixes (NOT for production)
+
+
+
+EXPORT — full container filesystem as tar:
+
+docker export <container> > container-fs.tar
+
+For deep forensic analysis
+
+
+
+HISTORY — see how image was built:
+
+docker history my-app:v1.2.3 --no-trunc
+
+Shows every layer, command that created it, size
+
+Useful for: understanding third-party images, finding bloat
+
+
+
+EVENTS — real-time Docker daemon events:
+
+docker events
+
+container create, start, die, kill, oom, health\_status
+
+image pull, push, tag, delete
+
+volume create, mount, unmount
+
+network connect, disconnect
+
+Useful for: debugging startup issues, OOM events
+
+docker events --filter event=oom --filter event=die
+
+Monitor only death and OOM events
+
+```
+
+---
+
+### Docker Compose Production Patterns
+
+```yaml
+
+DEVELOPMENT vs PRODUCTION compose:
+
+
+
+docker-compose.yml (base):
+
+services:
+
+ api:
+
+   image: my-app:${APP\_VERSION}
+
+   restart: unless-stopped
+
+   healthcheck:
+
+     test: \["CMD", "curl", "-f", "http://localhost:8080/health"]
+
+     interval: 30s
+
+     timeout: 5s
+
+     retries: 3
+
+     start\_period: 40s     # don't check health during startup
+
+
+
+docker-compose.override.yml (auto-loaded, development):
+
+services:
+
+ api:
+
+   build:
+
+     context: .
+
+     target: development
+
+   volumes:
+
+     - ./src:/app/src     # live reload
+
+   ports:
+
+     - "8080:8080"        # expose to host
+
+   environment:
+
+     - DEBUG=true
+
+
+
+docker-compose.prod.yml (explicit, production):
+
+services:
+
+ api:
+
+   deploy:
+
+     replicas: 3
+
+     resources:
+
+       limits:
+
+         cpus: '2'
+
+         memory: 1G
+
+       reservations:
+
+         cpus: '0.5'
+
+         memory: 256M
+
+   logging:
+
+     driver: json-file
+
+     options:
+
+       max-size: "50m"
+
+       max-file: "3"
+
+
+
+Usage:
+
+Dev (auto-loads override):
+
+docker compose up
+
+
+
+Prod (explicit file):
+
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+
+
+PROFILES (selective service startup):
+
+services:
+
+ api:
+
+   profiles: \["app"]
+
+ worker:
+
+   profiles: \["app"]
+
+ debug-tools:
+
+   profiles: \["debug"]       # only started when explicitly requested
+
+ db:
+
+   # no profile = always started
+
+
+
+docker compose --profile app up        # api + worker + db
+
+docker compose --profile debug up      # debug-tools + db
+
+
+
+DEPENDS\_ON with conditions:
+
+services:
+
+ api:
+
+   depends\_on:
+
+     db:
+
+       condition: service\_healthy      # wait for health check
+
+     redis:
+
+       condition: service\_started      # just wait for start
+
+     migrate:
+
+       condition: service\_completed\_successfully  # wait for completion
+
+```
+
+---
+
+### Container Resource Visibility — /proc and Cgroup Awareness
+
+```bash
+
+CRITICAL ISSUE:
+
+Inside a container, /proc/meminfo and /proc/cpuinfo show HOST values
+
+Not the container's cgroup limits
+
+
+
+cat /proc/meminfo
+
+MemTotal: 65536000 kB    ← HOST has 64GB
+
+But container is limited to 512MB via cgroup
+
+
+
+cat /proc/cpuinfo | grep processor | wc -l
+
+16                        ← HOST has 16 CPUs
+
+But container is limited to 2 CPUs
+
+
+
+WHY THIS MATTERS:
+
+Applications that auto-configure based on /proc:
+
+- JVM: calculates heap from /proc/meminfo (old JVMs)
+
+- Node.js: UV\_THREADPOOL\_SIZE defaults to 4, could set based on CPUs
+
+- Go: GOMAXPROCS defaults to /proc/cpuinfo CPU count
+
+- Python multiprocessing: os.cpu\_count() reads /proc/cpuinfo
+
+
+
+FIXES:
+
+Java 10+: reads cgroup limits automatically (UseContainerSupport)
+
+Go: use automaxprocs library (uber-go/automaxprocs)
+
+  import \_ "go.uber.org/automaxprocs"
+
+  Reads cgroup CPU quota, sets GOMAXPROCS correctly
+
+Node.js: UV\_THREADPOOL\_SIZE=<your CPU limit>
+
+Python: read cgroup directly or use container-aware libraries
+
+
+
+LXCFS (advanced):
+
+Mounts cgroup-aware /proc into container
+
+/proc/meminfo shows container's memory limit, not host's
+
+/proc/cpuinfo shows container's CPU limit
+
+Used in: multi-tenant environments where apps MUST see correct resources
+
+Not common in K8s (most apps handle this natively now)
+
+```
+
+---
+
+### Container Networking — Advanced Patterns
+
+```bash
+
+DNS RESOLUTION IN CONTAINERS:
+
+
+
+Default bridge network:
+
+docker run --name web nginx
+
+docker run --name app myapp
+
+app CANNOT reach web by name "web"
+
+Must use IP address (which changes on restart)
+
+Default bridge: no DNS resolution between containers
+
+
+
+Custom bridge network:
+
+docker network create mynet
+
+docker run --network mynet --name web nginx
+
+docker run --network mynet --name app myapp
+
+app CAN reach web by name "web"
+
+Docker's embedded DNS server resolves container names
+
+DNS server at 127.0.0.11 inside the container
+
+
+
+MULTIPLE NETWORKS (isolation):
+
+docker network create frontend
+
+docker network create backend
+
+docker run --network frontend --name web nginx
+
+docker run --network frontend --network backend --name api myapp
+
+docker run --network backend --name db postgres
+
+web can reach api (both on frontend)
+
+api can reach db (both on backend)
+
+web CANNOT reach db (different networks, no route)
+
+This is network segmentation without firewall rules
+
+
+
+ALIAS:
+
+docker run --network mynet --network-alias search elasticsearch
+
+docker run --network mynet --network-alias search elasticsearch
+
+Both containers respond to DNS name "search"
+
+DNS round-robin load balancing
+
+Primitive but functional for development
+
+
+
+HOST NETWORKING WITH SPECIFIC PORTS:
+
+--network=host bypasses ALL Docker networking
+
+Container uses host's network stack directly
+
+Performance: eliminates NAT overhead (\~5-10% improvement in high-throughput)
+
+Use case: performance-critical network applications, monitoring tools
+
+Trade-off: no network isolation, port conflicts
+
+
+
+CONTAINER NETWORKING:
+
+docker run --network container:<other-container-name> myapp
+
+Shares ANOTHER container's network namespace
+
+Same IP, same ports, same interfaces
+
+Use case: sidecar pattern without Kubernetes
+
+Debug container sharing network with target container
+
+```
+
+---
+
+### Health Checks — Docker vs Kubernetes
+
+```bash
+
+DOCKER HEALTHCHECK:
+
+In Dockerfile:
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=60s \\
+
+ CMD curl -f http://localhost:8080/health || exit 1
+
+
+
+Or at runtime:
+
+docker run \\
+
+ --health-cmd="curl -f http://localhost:8080/health || exit 1" \\
+
+ --health-interval=30s \\
+
+ --health-timeout=5s \\
+
+ --health-retries=3 \\
+
+ --health-start-period=60s \\
+
+ myapp
+
+
+
+States:
+
+starting: within start-period, health not yet checked
+
+healthy: health check passing
+
+unhealthy: failed retries threshold
+
+
+
+Docker health check vs K8s probes:
+
+Docker HEALTHCHECK: only affects container STATUS display
+
+  Docker restart policy can use it (restart unhealthy containers)
+
+  docker compose depends\_on: service\_healthy uses it
+
+  But it does NOT control traffic routing
+
+\#
+
+K8s probes: control EVERYTHING
+
+  Liveness: restart on failure
+
+  Readiness: remove from Service endpoints on failure
+
+  Startup: gate liveness/readiness until ready
+
+\#
+
+In K8s: Docker HEALTHCHECK is IGNORED
+
+K8s uses its own probes defined in pod spec
+
+Don't rely on Dockerfile HEALTHCHECK for K8s workloads
+
+But keep it for: docker-compose, standalone Docker, ECS
+
+```
+
+---
+
+### Docker Build Optimization — Advanced
+
+```bash
+
+BUILDKIT CACHE MOUNTS:
+
+Persist package manager caches across builds
+
+
+
+Go:
+
+RUN --mount=type=cache,target=/go/pkg/mod \\
+
+   --mount=type=cache,target=/root/.cache/go-build \\
+
+   go build -o /app/server
+
+
+
+Python:
+
+RUN --mount=type=cache,target=/root/.cache/pip \\
+
+   pip install -r requirements.txt
+
+
+
+Node.js:
+
+RUN --mount=type=cache,target=/root/.cache/npm \\
+
+   npm ci
+
+
+
+apt:
+
+RUN --mount=type=cache,target=/var/cache/apt \\
+
+   --mount=type=cache,target=/var/lib/apt/lists \\
+
+   apt-get update \&\& apt-get install -y curl
+
+
+
+RESULT: package downloads cached across ALL builds
+
+Even if requirements.txt changes, only new packages downloaded
+
+
+
+SECRET MOUNTS (BuildKit):
+
+Pass secrets without embedding in image layers:
+
+RUN --mount=type=secret,id=npm\_token \\
+
+   NPM\_TOKEN=$(cat /run/secrets/npm\_token) npm install
+
+Build:
+
+docker build --secret id=npm\_token,src=.npmrc .
+
+Secret available only during that RUN instruction
+
+NOT stored in any image layer
+
+NOT visible in docker history
+
+
+
+SSH MOUNTS (BuildKit):
+
+Forward SSH agent for private repo access:
+
+RUN --mount=type=ssh git clone git@github.com:private/repo.git
+
+Build:
+
+docker build --ssh default .
+
+SSH keys never touch the image
+
+
+
+REGISTRY CACHE:
+
+docker buildx build \\
+
+ --cache-from type=registry,ref=my-registry/my-app:cache \\
+
+ --cache-to type=registry,ref=my-registry/my-app:cache,mode=max \\
+
+ --push \\
+
+ -t my-registry/my-app:v1.2.3 .
+
+Pushes build cache to registry
+
+Next build pulls cache from registry
+
+Works across different CI runners (no local cache dependency)
+
+mode=max: cache ALL layers (not just final stage)
+
+
+
+BUILD ARGS vs ENV:
+
+ARG BUILD\_VERSION=unknown    # available ONLY during build
+
+ENV APP\_VERSION=${BUILD\_VERSION}  # persisted in image
+
+ARG: use for build-time configuration (versions, flags)
+
+ENV: use for runtime configuration
+
+SECURITY: ARG values visible in docker history!
+
+Never pass secrets via ARG
+
+```
+
+---
+
+### Docker Troubleshooting Playbook
+
+```bash
+
+CONTAINER WON'T START:
+
+docker logs <container>                    # check stdout/stderr
+
+docker inspect <container> | jq '.State'   # check exit code, OOMKilled
+
+Exit code 0: clean exit (CMD finished)
+
+Exit code 1: application error
+
+Exit code 126: permission denied (can't execute CMD)
+
+Exit code 127: command not found (CMD doesn't exist in image)
+
+Exit code 137: SIGKILL (OOM killed or docker kill)
+
+Exit code 139: SIGSEGV (segfault — native code crash)
+
+Exit code 143: SIGTERM (docker stop, graceful)
+
+
+
+HIGH DISK USAGE:
+
+docker system df                           # overview
+
+docker system df -v                        # detailed
+
+Check: dangling images, stopped containers, unused volumes
+
+Check: container log sizes
+
+du -sh /var/lib/docker/containers/\*/      # log file sizes per container
+
+
+
+NETWORKING ISSUES:
+
+docker exec <container> cat /etc/resolv.conf  # DNS config
+
+docker exec <container> ping <other-container>
+
+docker network inspect <network>              # see connected containers
+
+iptables -t nat -L -n | grep DOCKER           # see port mappings
+
+
+
+IMAGE WON'T PULL:
+
+1. Auth: docker login / ECR token expired
+
+2. Network: DNS resolution, proxy settings
+
+3. Rate limit: Docker Hub limits (100 pulls/6h anonymous)
+
+   Fix: use ECR pull-through cache or mirror
+
+4. Image doesn't exist for your architecture (arm64 vs amd64)
+
+
+
+CONTAINER RUNNING BUT APP NOT RESPONDING:
+
+docker exec <container> ss -tlnp           # is app listening?
+
+docker exec <container> curl localhost:8080 # can app reach itself?
+
+docker port <container>                     # port mapping correct?
+
+If app binds to 127.0.0.1 inside container → not reachable from outside
+
+Must bind to 0.0.0.0 inside container for port mapping to work
+
+```
+
+===================================================================================
+# PHASE 2 — Lesson 3: Kubernetes Architecture & Core Objects
+
+We covered K8s networking in Phase 1. Now we go deeper into the control plane, how scheduling works, and the core objects you'll manage daily.
+
+---
+
+### The Control Plane — What Runs Kubernetes
+
+```
+
+┌─────────────────────── CONTROL PLANE ───────────────────────┐
+
+│                                                              │
+
+│  ┌──────────────┐  ┌───────────────┐  ┌──────────────────┐  │
+
+│  │  API Server   │  │   Scheduler   │  │ Controller       │  │
+
+│  │  (kube-apiserver)│ (kube-scheduler)│ │ Manager          │  │
+
+│  │               │  │               │  │ (kube-controller │  │
+
+│  │ THE gatekeeper│  │ WHERE does    │  │  -manager)       │  │
+
+│  │ ALL traffic   │  │ this pod go?  │  │                  │  │
+
+│  │ goes through  │  │               │  │ Reconciliation   │  │
+
+│  │ here. Period. │  │               │  │ loops. Desired   │  │
+
+│  └──────┬───────┘  └───────────────┘  │ vs actual state. │  │
+
+│         │                              └──────────────────┘  │
+
+│         │                                                    │
+
+│  ┌──────▼───────┐  ┌───────────────────────────────────┐     │
+
+│  │    etcd       │  │  Cloud Controller Manager         │     │
+
+│  │               │  │  (cloud-specific: AWS, GCP, Azure)│     │
+
+│  │ The database. │  │  Manages: LBs, nodes, routes      │     │
+
+│  │ All cluster   │  │  EKS: runs as AWS-managed service  │     │
+
+│  │ state lives   │  └───────────────────────────────────┘     │
+
+│  │ here.         │                                           │
+
+│  └──────────────┘                                            │
+
+└──────────────────────────────────────────────────────────────┘
+
+
+
+┌─────────────────────── WORKER NODE ─────────────────────────┐
+
+│                                                              │
+
+│  ┌──────────────┐  ┌───────────────┐  ┌──────────────────┐  │
+
+│  │   kubelet     │  │  kube-proxy   │  │  Container       │  │
+
+│  │               │  │               │  │  Runtime          │  │
+
+│  │ Agent on each │  │ Network rules │  │  (containerd)    │  │
+
+│  │ node. Talks   │  │ iptables/IPVS │  │                  │  │
+
+│  │ to API server.│  │ for Services  │  │  Actually runs   │  │
+
+│  │ Ensures pods  │  │               │  │  containers      │  │
+
+│  │ are running.  │  │               │  │                  │  │
+
+│  └──────────────┘  └───────────────┘  └──────────────────┘  │
+
+│                                                              │
+
+│  ┌──────────────────────────────────────────────────────┐    │
+
+│  │  Pods    \[ container ] \[ container ] \[ container ]    │    │
+
+│  └──────────────────────────────────────────────────────┘    │
+
+└──────────────────────────────────────────────────────────────┘
+
+```
+
+### What Each Component Actually Does
+
+```bash
+
+API SERVER (kube-apiserver):
+
+- REST API endpoint for ALL cluster operations
+
+- ONLY component that talks to etcd directly
+
+- Authenticates requests (certs, tokens, OIDC)
+
+- Authorizes requests (RBAC)
+
+- Validates objects (admission controllers)
+
+- Serves watch streams (controllers subscribe to changes)
+
+kubectl → API server → etcd
+
+Scheduler → API server → etcd
+
+kubelet → API server → etcd
+
+EVERYTHING goes through the API server. No exceptions.
+
+
+
+ETCD:
+
+- Distributed key-value store (Raft consensus)
+
+- Stores ALL cluster state: pods, services, secrets, configmaps
+
+- NOT a general-purpose database — don't abuse it
+
+- Performance sensitive: SSD required, latency < 10ms
+
+- Backup etcd = backup your entire cluster state
+
+- EKS: managed by AWS (you don't touch it)
+
+- Self-managed: 3 or 5 node etcd cluster (odd number for Raft quorum)
+
+\#
+
+Key structure:
+
+/registry/pods/default/my-pod → pod spec JSON
+
+/registry/services/default/my-service → service spec JSON
+
+/registry/secrets/default/my-secret → encrypted secret
+
+
+
+SCHEDULER (kube-scheduler):
+
+Watches for unscheduled pods (pods with no node assigned)
+
+Decision process:
+
+  1. FILTERING: eliminate nodes that can't run the pod
+
+     - Insufficient CPU/memory
+
+     - Node taints that pod doesn't tolerate
+
+     - Node affinity/anti-affinity rules
+
+     - PV topology constraints
+
+  2. SCORING: rank remaining nodes
+
+     - Spread pods across nodes (LeastRequestedPriority)
+
+     - Pack pods tightly (MostRequestedPriority) — for cost
+
+     - Prefer nodes with image already cached
+
+     - Topology spread constraints
+
+  3. BINDING: assign pod to highest-scoring node
+
+     - Writes node name to pod spec via API server
+
+\#
+
+The scheduler ONLY decides WHERE. It doesn't start anything.
+
+kubelet on the chosen node sees the assignment and starts the pod.
+
+
+
+CONTROLLER MANAGER:
+
+Runs \~30+ control loops, each watching a resource type:
+
+\#
+
+Deployment controller:
+
+  Watches Deployments → creates/updates ReplicaSets
+
+ReplicaSet controller:
+
+  Watches ReplicaSets → creates/deletes Pods to match desired count
+
+Node controller:
+
+  Watches node heartbeats → marks nodes NotReady after timeout
+
+Job controller:
+
+  Watches Jobs → creates Pods, tracks completion
+
+Endpoint controller:
+
+  Watches Services + Pods → creates Endpoint objects
+
+ServiceAccount controller:
+
+  Creates default ServiceAccount for new namespaces
+
+\#
+
+Each controller follows the same pattern:
+
+  1. Watch desired state (spec)
+
+  2. Observe actual state (status)
+
+  3. Take action to reconcile (create/delete/update resources)
+
+  4. Repeat forever
+
+This is the "declarative model" — you declare WHAT, controllers figure out HOW
+
+
+
+KUBELET:
+
+Agent on every node. Responsibilities:
+
+  - Registers node with API server
+
+  - Watches for pods assigned to this node
+
+  - Pulls images, creates containers via container runtime
+
+  - Monitors pod health (liveness/readiness probes)
+
+  - Reports node status (capacity, conditions) to API server
+
+  - Mounts volumes, manages secrets/configmaps
+
+  - Evicts pods if node is under pressure (disk, memory, PIDs)
+
+\#
+
+kubelet does NOT manage pods not created by the API server
+
+(except static pods defined in /etc/kubernetes/manifests/)
+
+```
+
+---
+
+### How Pod Creation Actually Works — The Full Chain
+
+```
+
+kubectl apply -f pod.yaml
+
+
+
+Step 1: kubectl sends POST /api/v1/namespaces/default/pods to API server
+
+
+
+Step 2: API server:
+
+ a) Authenticates (is this user who they claim to be?)
+
+ b) Authorizes via RBAC (can this user create pods in default namespace?)
+
+ c) Runs Admission Controllers:
+
+    - Mutating: inject sidecar (Istio), add labels, set defaults
+
+    - Validating: check resource limits exist, enforce policies (OPA)
+
+ d) Persists pod to etcd (status: Pending, no node assigned)
+
+
+
+Step 3: Scheduler watches API server (via watch stream):
+
+ - Sees new pod with no nodeName
+
+ - Runs filtering → scoring → selects best node
+
+ - PATCHes pod with nodeName via API server → etcd updated
+
+
+
+Step 4: kubelet on selected node watches API server:
+
+ - Sees pod assigned to this node
+
+ - Pulls image (if not cached) via container runtime
+
+ - Creates containers (containerd → runc)
+
+ - Sets up networking (CNI plugin creates veth, assigns IP)
+
+ - Mounts volumes
+
+ - Starts containers
+
+ - Reports pod status back to API server → etcd updated
+
+ - Status: Running
+
+
+
+Step 5: kube-proxy on ALL nodes:
+
+ - If pod matches a Service selector
+
+ - Endpoint controller adds pod IP to Endpoints
+
+ - kube-proxy on every node updates iptables/IPVS rules
+
+ - Pod is now reachable via Service ClusterIP
+
+
+
+TOTAL TIME: typically 2-10 seconds for a simple pod
+
+```
+
+---
+
+### Pods — The Atomic Unit
+
+```yaml
+
+apiVersion: v1
+
+kind: Pod
+
+metadata:
+
+ name: my-app
+
+ labels:
+
+   app: my-app
+
+   version: v1
+
+spec:
+
+ # INIT CONTAINERS — run BEFORE main containers, sequentially
+
+ initContainers:
+
+ - name: db-migration
+
+   image: my-app:v1.2.3
+
+   command: \["./migrate", "--up"]
+
+   # Must complete successfully before main containers start
+
+   # Use for: DB migrations, config generation, wait-for-dependency
+
+
+
+ containers:
+
+ - name: app
+
+   image: my-app:v1.2.3
+
+   ports:
+
+   - containerPort: 8080
+
+   
+
+   # RESOURCE MANAGEMENT:
+
+   resources:
+
+     requests:
+
+       cpu: 250m        # 0.25 CPU cores — used for SCHEDULING
+
+       memory: 256Mi    # used for scheduling
+
+     limits:
+
+       cpu: 1000m       # 1 CPU core — hard ceiling (throttled beyond this)
+
+       memory: 512Mi    # hard ceiling (OOM killed beyond this)
+
+   
+
+   # requests = what scheduler uses to find a node with enough capacity
+
+   # limits = what cgroups enforce at runtime
+
+   # requests < limits = "burstable" — can use more if available
+
+   # requests = limits = "guaranteed" QoS class (highest priority)
+
+   # no requests/limits = "best effort" QoS class (first to be evicted)
+
+
+
+   # PROBES:
+
+   livenessProbe:
+
+     httpGet:
+
+       path: /healthz
+
+       port: 8080
+
+     initialDelaySeconds: 15    # wait before first check
+
+     periodSeconds: 10          # check every 10s
+
+     failureThreshold: 3        # 3 failures → restart container
+
+     # LIVENESS = "is the process alive?"
+
+     # Failure action: RESTART the container
+
+     # Use for: detecting deadlocks, infinite loops, hung processes
+
+     # DON'T check dependencies here (DB, cache) — will cause restart loops
+
+
+
+   readinessProbe:
+
+     httpGet:
+
+       path: /ready
+
+       port: 8080
+
+     initialDelaySeconds: 5
+
+     periodSeconds: 5
+
+     failureThreshold: 3
+
+     # READINESS = "is the process ready to receive traffic?"
+
+     # Failure action: REMOVE from Service endpoints (no traffic sent)
+
+     # Use for: warming caches, waiting for dependencies, graceful drain
+
+     # Check dependencies here — if DB is down, stop sending traffic
+
+
+
+   startupProbe:
+
+     httpGet:
+
+       path: /healthz
+
+       port: 8080
+
+     failureThreshold: 30
+
+     periodSeconds: 10
+
+     # STARTUP = "has the process finished starting?"
+
+     # While startup probe is running, liveness/readiness are DISABLED
+
+     # failureThreshold × periodSeconds = 300s = 5 min max startup time
+
+     # Use for: slow-starting apps (Java, large ML models)
+
+     # Without this: liveness probe kills the app before it finishes booting
+
+
+
+   # LIFECYCLE HOOKS:
+
+   lifecycle:
+
+     postStart:
+
+       exec:
+
+         command: \["/bin/sh", "-c", "echo started > /tmp/started"]
+
+       # Runs AFTER container starts, but NOT guaranteed before ENTRYPOINT
+
+       # Runs in parallel with the main process
+
+       
+
+     preStop:
+
+       exec:
+
+         command: \["/bin/sh", "-c", "sleep 10"]
+
+       # Runs BEFORE container is sent SIGTERM
+
+       # Use for: graceful shutdown, deregister from service discovery
+
+       # The sleep 10 trick: gives kube-proxy time to update iptables
+
+       # and stop routing traffic BEFORE the app shuts down
+
+       # Without this: app receives SIGTERM, starts shutting down,
+
+       # but kube-proxy hasn't updated yet → requests hit a dying pod → 502s
+
+
+
+ # TERMINATION SEQUENCE:
+
+ terminationGracePeriodSeconds: 30   # default: 30
+
+ # 1. Pod marked for deletion
+
+ # 2. Endpoints controller removes pod from Service endpoints
+
+ # 3. preStop hook runs (if defined)
+
+ # 4. SIGTERM sent to PID 1 in container
+
+ # 5. Wait up to terminationGracePeriodSeconds
+
+ # 6. SIGKILL sent (unconditional kill)
+
+ # Steps 2 and 3 happen IN PARALLEL — this is why preStop sleep matters
+
+
+
+ # VOLUMES:
+
+ volumes:
+
+ - name: config
+
+   configMap:
+
+     name: app-config
+
+ - name: secrets
+
+   secret:
+
+     secretName: app-secrets
+
+ - name: tmp
+
+   emptyDir:
+
+     medium: Memory
+
+     sizeLimit: 64Mi
+
+ - name: data
+
+   persistentVolumeClaim:
+
+     claimName: app-data
+
+```
+
+---
+
+### Deployments and ReplicaSets
+
+```yaml
+
+apiVersion: apps/v1
+
+kind: Deployment
+
+metadata:
+
+ name: api
+
+ namespace: production
+
+spec:
+
+ replicas: 3
+
+ revisionHistoryLimit: 5      # keep 5 old ReplicaSets for rollback
+
+ 
+
+ selector:
+
+   matchLabels:
+
+     app: api                  # MUST match template labels
+
+ 
+
+ strategy:
+
+   type: RollingUpdate
+
+   rollingUpdate:
+
+     maxSurge: 1              # can create 1 extra pod during update (4 total)
+
+     maxUnavailable: 0        # never have fewer than 3 running
+
+     # maxSurge=1 + maxUnavailable=0 = safest, slowest
+
+     # maxSurge=25% + maxUnavailable=25% = default, balanced
+
+     # maxSurge=0 + maxUnavailable=1 = resource-constrained (no extra pod)
+
+
+
+ template:
+
+   metadata:
+
+     labels:
+
+       app: api
+
+   spec:
+
+     containers:
+
+     - name: api
+
+       image: my-api:v1.2.3
+
+       # ... probes, resources, etc.
+
+```
+
+### What Happens During a Rolling Update
+
+```
+
+Current state: 3 pods running v1
+
+
+
+kubectl set image deployment/api api=my-api:v1.3.0
+
+(or kubectl apply with updated image tag)
+
+
+
+With maxSurge=1, maxUnavailable=0:
+
+
+
+Step 1: Create new ReplicaSet (v1.3.0) with 1 replica
+
+Total pods: 3 (v1) + 1 (v1.3.0) = 4
+
+
+
+Step 2: Wait for v1.3.0 pod to be Ready (readiness probe passes)
+
+
+
+Step 3: Scale down old ReplicaSet to 2
+
+Total pods: 2 (v1) + 1 (v1.3.0) = 3
+
+
+
+Step 4: Scale up new ReplicaSet to 2
+
+Total pods: 2 (v1) + 2 (v1.3.0) = 4
+
+
+
+Step 5: Wait for second v1.3.0 pod to be Ready
+
+
+
+Step 6: Scale down old to 1, scale up new to 3
+
+... repeat until all pods are v1.3.0
+
+
+
+Old ReplicaSet kept (scaled to 0) for rollback
+
+
+
+ROLLBACK:
+
+kubectl rollout undo deployment/api
+
+Scales old ReplicaSet back up, scales new one down
+
+Instant — no image pull needed (old pods were just scaled to 0)
+
+
+
+kubectl rollout undo deployment/api --to-revision=3
+
+Roll back to specific revision
+
+
+
+kubectl rollout history deployment/api
+
+See all revisions and their change causes
+
+
+
+kubectl rollout status deployment/api
+
+Watch rollout progress in real time
+
+```
+
+### Deployment vs StatefulSet vs DaemonSet vs Job
+
+```
+
+DEPLOYMENT:
+
+ - Stateless workloads
+
+ - Pods are interchangeable (no identity)
+
+ - Pod names: api-deployment-7b8f9c6d4-x2k9w (random suffix)
+
+ - Rolling updates, rollback
+
+ - Use for: APIs, web servers, workers
+
+
+
+STATEFULSET:
+
+ - Stateful workloads
+
+ - Pods have STABLE identity: db-0, db-1, db-2
+
+ - Ordered creation: db-0 must be running before db-1 starts
+
+ - Ordered deletion: db-2 deleted before db-1
+
+ - Stable DNS: db-0.db-headless.namespace.svc.cluster.local
+
+ - Each pod gets its own PVC (not shared)
+
+ - Use for: databases, Kafka, ZooKeeper, Redis Cluster, etcd
+
+ 
+
+ # REQUIRES headless service:
+
+ apiVersion: v1
+
+ kind: Service
+
+ metadata:
+
+   name: db-headless
+
+ spec:
+
+   clusterIP: None            # headless
+
+   selector:
+
+     app: database
+
+   ports:
+
+   - port: 5432
+
+
+
+DAEMONSET:
+
+ - Runs ONE pod on EVERY node (or subset via nodeSelector)
+
+ - New node joins → pod automatically scheduled
+
+ - Node removed → pod removed
+
+ - Use for: log collectors (Fluentd), monitoring agents (node-exporter),
+
+   CNI plugins (Calico), storage daemons (EBS CSI), kube-proxy
+
+ - Updates: rolling or OnDelete
+
+
+
+JOB:
+
+ - Run-to-completion workload
+
+ - Pod runs, completes, exits
+
+ - Retries on failure (backoffLimit)
+
+ - parallelism: how many pods run simultaneously
+
+ - completions: how many successful completions needed
+
+ - Use for: database migrations, batch processing, backups
+
+
+
+CRONJOB:
+
+ - Job on a schedule (cron syntax)
+
+ - Creates Job objects at scheduled times
+
+ - concurrencyPolicy:
+
+     Allow: multiple jobs can run simultaneously
+
+     Forbid: skip if previous still running
+
+     Replace: kill previous, start new
+
+ - Use for: periodic backups, report generation, cleanup tasks
+
+```
+
+---
+
+### ConfigMaps and Secrets
+
+```yaml
+
+CONFIGMAP — non-sensitive configuration:
+
+apiVersion: v1
+
+kind: ConfigMap
+
+metadata:
+
+ name: app-config
+
+data:
+
+ DATABASE\_HOST: "db.production.svc.cluster.local"
+
+ LOG\_LEVEL: "info"
+
+ config.yaml: |
+
+   server:
+
+     port: 8080
+
+     timeout: 30s
+
+   features:
+
+     new\_checkout: true
+
+
+
+Mount as environment variables:
+
+env:
+
+\- name: DATABASE\_HOST
+
+ valueFrom:
+
+   configMapKeyRef:
+
+     name: app-config
+
+     key: DATABASE\_HOST
+
+
+
+Mount as file:
+
+volumeMounts:
+
+\- name: config
+
+ mountPath: /etc/app/config.yaml
+
+ subPath: config.yaml          # mount single file, not entire dir
+
+volumes:
+
+\- name: config
+
+ configMap:
+
+   name: app-config
+
+
+
+AUTO-RELOAD:
+
+Environment variables: NOT updated on ConfigMap change (requires pod restart)
+
+Mounted files: updated automatically (\~60-90 seconds)
+
+BUT: app must watch the file for changes (not all apps do)
+
+
+
+SECRET — sensitive data:
+
+apiVersion: v1
+
+kind: Secret
+
+metadata:
+
+ name: app-secrets
+
+type: Opaque
+
+data:
+
+ DB\_PASSWORD: cGFzc3dvcmQxMjM=     # base64 encoded (NOT encrypted!)
+
+ API\_KEY: c2VjcmV0a2V5MTIz
+
+
+
+base64 is NOT encryption. Anyone with cluster access can decode:
+
+echo "cGFzc3dvcmQxMjM=" | base64 -d
+
+password123
+
+
+
+ENCRYPTING SECRETS AT REST:
+
+EKS: enable envelope encryption with KMS
+
+AWS encrypts the etcd data using a CMK
+
+Without this: secrets stored in etcd in plaintext
+
+
+
+EXTERNAL SECRETS (production approach):
+
+Don't store secrets in K8s at all
+
+Use: External Secrets Operator → pulls from:
+
+  - AWS Secrets Manager
+
+  - HashiCorp Vault
+
+  - Azure Key Vault
+
+  - GCP Secret Manager
+
+Syncs external secrets into K8s Secret objects automatically
+
+Rotation handled by the external provider
+
+```
+
+---
+
+### Namespaces — Not Just Organization
+
+```bash
+
+Namespaces are more than folders. They're:
+
+1. RBAC boundary (who can do what WHERE)
+
+2. Resource quota boundary (how much a team can consume)
+
+3. Network policy boundary (which pods can talk to which)
+
+4. Service DNS scope (svc-name.namespace.svc.cluster.local)
+
+
+
+Resource Quotas:
+
+apiVersion: v1
+
+kind: ResourceQuota
+
+metadata:
+
+ name: team-alpha-quota
+
+ namespace: team-alpha
+
+spec:
+
+ hard:
+
+   requests.cpu: "20"          # total CPU requests across all pods
+
+   requests.memory: 40Gi
+
+   limits.cpu: "40"
+
+   limits.memory: 80Gi
+
+   pods: "100"                 # max 100 pods in this namespace
+
+   services: "20"
+
+   persistentvolumeclaims: "30"
+
+
+
+LimitRange — defaults and constraints per pod/container:
+
+apiVersion: v1
+
+kind: LimitRange
+
+metadata:
+
+ name: default-limits
+
+ namespace: team-alpha
+
+spec:
+
+ limits:
+
+ - type: Container
+
+   default:                    # applied if no limits specified
+
+     cpu: 500m
+
+     memory: 256Mi
+
+   defaultRequest:             # applied if no requests specified
+
+     cpu: 100m
+
+     memory: 128Mi
+
+   max:                        # hard ceiling per container
+
+     cpu: 4
+
+     memory: 8Gi
+
+   min:                        # minimum per container
+
+     cpu: 50m
+
+     memory: 64Mi
+
+
+
+WHY THIS MATTERS:
+
+Without LimitRange, a developer can deploy a pod with no resource limits
+
+That pod can consume ALL node resources → starves other pods
+
+LimitRange ensures every container has at least default limits
+
+ResourceQuota ensures a namespace can't consume the entire cluster
+
+```
+
+---
+
+### Scheduling — Taints, Tolerations, Affinity
+
+```yaml
+
+TAINTS — "this node repels pods unless they tolerate the taint"
+
+Applied to NODES:
+
+kubectl taint nodes node1 dedicated=gpu:NoSchedule
+
+Only pods that tolerate "dedicated=gpu" can be scheduled here
+
+
+
+Three taint effects:
+
+NoSchedule: don't schedule new pods (existing pods stay)
+
+PreferNoSchedule: try to avoid, but allow if necessary
+
+NoExecute: evict existing pods AND don't schedule new ones
+
+
+
+TOLERATIONS — "this pod can tolerate this taint"
+
+Applied to PODS:
+
+spec:
+
+ tolerations:
+
+ - key: "dedicated"
+
+   operator: "Equal"
+
+   value: "gpu"
+
+   effect: "NoSchedule"
+
+
+
+Common pattern — dedicated node pools:
+
+Taint GPU nodes: dedicated=gpu:NoSchedule
+
+ML pods tolerate the taint → scheduled on GPU nodes
+
+Regular pods don't tolerate → stay on regular nodes
+
+
+
+NODE AFFINITY — "this pod prefers/requires specific nodes"
+
+spec:
+
+ affinity:
+
+   nodeAffinity:
+
+     requiredDuringSchedulingIgnoredDuringExecution:
+
+       nodeSelectorTerms:
+
+       - matchExpressions:
+
+         - key: topology.kubernetes.io/zone
+
+           operator: In
+
+           values:
+
+           - us-east-1a
+
+           - us-east-1b
+
+       # Pod MUST run in us-east-1a or us-east-1b
+
+       
+
+     preferredDuringSchedulingIgnoredDuringExecution:
+
+     - weight: 80
+
+       preference:
+
+         matchExpressions:
+
+         - key: node.kubernetes.io/instance-type
+
+           operator: In
+
+           values:
+
+           - m5.xlarge
+
+       # PREFER m5.xlarge, but don't fail if unavailable
+
+
+
+POD ANTI-AFFINITY — "spread my replicas across nodes/zones"
+
+spec:
+
+ affinity:
+
+   podAntiAffinity:
+
+     requiredDuringSchedulingIgnoredDuringExecution:
+
+     - labelSelector:
+
+         matchExpressions:
+
+         - key: app
+
+           operator: In
+
+           values:
+
+           - api
+
+       topologyKey: kubernetes.io/hostname
+
+       # NEVER put two api pods on the same node
+
+       
+
+     # Or use topology spread constraints (more flexible):
+
+ topologySpreadConstraints:
+
+ - maxSkew: 1                    # max difference in pod count across zones
+
+   topologyKey: topology.kubernetes.io/zone
+
+   whenUnsatisfiable: DoNotSchedule
+
+   labelSelector:
+
+     matchLabels:
+
+       app: api
+
+   # Spread api pods evenly across AZs
+
+   # 3 pods, 3 AZs → 1 per AZ
+
+   # 4 pods, 3 AZs → 2-1-1 (skew=1 allowed)
+
+```
+
+---
+
+### RBAC — Who Can Do What
+
+```yaml
+
+RBAC has 4 objects:
+
+Role/ClusterRole: WHAT actions are allowed
+
+RoleBinding/ClusterRoleBinding: WHO gets those permissions
+
+
+
+Role — namespace-scoped:
+
+apiVersion: rbac.authorization.k8s.io/v1
+
+kind: Role
+
+metadata:
+
+ name: pod-reader
+
+ namespace: production
+
+rules:
+
+\- apiGroups: \[""]           # "" = core API group (pods, services, etc.)
+
+ resources: \["pods"]
+
+ verbs: \["get", "list", "watch"]
+
+\- apiGroups: \[""]
+
+ resources: \["pods/log"]    # subresource
+
+ verbs: \["get"]
+
+
+
+ClusterRole — cluster-wide:
+
+apiVersion: rbac.authorization.k8s.io/v1
+
+kind: ClusterRole
+
+metadata:
+
+ name: node-reader
+
+rules:
+
+\- apiGroups: \[""]
+
+ resources: \["nodes"]
+
+ verbs: \["get", "list", "watch"]
+
+Nodes are cluster-scoped — can't be in a namespace Role
+
+
+
+RoleBinding — binds Role to users/groups/service accounts:
+
+apiVersion: rbac.authorization.k8s.io/v1
+
+kind: RoleBinding
+
+metadata:
+
+ name: read-pods
+
+ namespace: production
+
+subjects:
+
+\- kind: User
+
+ name: jane@company.com
+
+ apiGroup: rbac.authorization.k8s.io
+
+\- kind: Group
+
+ name: developers
+
+ apiGroup: rbac.authorization.k8s.io
+
+\- kind: ServiceAccount
+
+ name: ci-pipeline
+
+ namespace: ci
+
+roleRef:
+
+ kind: Role
+
+ name: pod-reader
+
+ apiGroup: rbac.authorization.k8s.io
+
+
+
+TEST RBAC:
+
+kubectl auth can-i create pods --namespace production --as jane@company.com
+
+yes / no
+
+
+
+kubectl auth can-i '\*' '\*' --as system:serviceaccount:ci:ci-pipeline
+
+Check if SA has full access (should be no)
+
+
+
+PRINCIPLE OF LEAST PRIVILEGE:
+
+Don't give cluster-admin to CI pipelines
+
+Don't give \* verbs unless absolutely necessary
+
+Audit with: kubectl auth can-i --list --as <user>
+
+```
+
+---
+
+### Production Scenarios
+
+#### Scenario 1: Pod Stuck in Pending
+
+```bash
+
+kubectl get pods
+
+NAME         READY   STATUS    AGE
+
+api-xyz      0/1     Pending   15m
+
+
+
+kubectl describe pod api-xyz
+
+Events:
+
+"0/10 nodes are available: 4 Insufficient cpu, 
+
+ 3 node(s) had taint {dedicated=gpu:NoSchedule}, 
+
+ 3 node(s) didn't match Pod's node affinity/selector"
+
+
+
+Translation:
+
+10 nodes total
+
+4 nodes: not enough CPU for the pod's requests
+
+3 nodes: GPU-tainted, pod doesn't tolerate
+
+3 nodes: wrong AZ (node affinity constraint)
+
+Result: 0 eligible nodes
+
+
+
+Debug checklist:
+
+1. Check resource requests vs node capacity:
+
+kubectl describe nodes | grep -A 5 "Allocated resources"
+
+2. Check taints:
+
+kubectl describe nodes | grep Taints
+
+3. Check affinity rules in pod spec
+
+4. Check ResourceQuota:
+
+kubectl describe quota -n production
+
+Maybe namespace has hit its pod or CPU quota
+
+
+
+Fix depends on root cause:
+
+- Scale up node group (cluster autoscaler should handle this)
+
+- Reduce resource requests
+
+- Add tolerations
+
+- Relax affinity constraints
+
+- Increase ResourceQuota
+
+```
+
+#### Scenario 2: Deployment Rollout Stuck
+
+```bash
+
+kubectl rollout status deployment/api
+
+Waiting for deployment "api" rollout to finish: 
+
+1 old replicas are pending termination...
+
+
+
+Why it sticks:
+
+maxUnavailable=0 means old pod can't terminate until new pod is Ready
+
+But new pod is never Ready because:
+
+
+
+kubectl get pods
+
+api-new-xxx   0/1   CrashLoopBackOff   5
+
+
+
+kubectl logs api-new-xxx
+
+Error: missing DATABASE\_URL environment variable
+
+
+
+New image requires a new env var that wasn't added
+
+New pod crashes → never becomes Ready
+
+Old pod can't be terminated (maxUnavailable=0)
+
+Rollout is deadlocked
+
+
+
+Fix:
+
+kubectl rollout undo deployment/api
+
+Rolls back to previous ReplicaSet immediately
+
+Then fix the ConfigMap/Secret, redeploy properly
+
+
+
+PREVENTION:
+
+progressDeadlineSeconds (default: 600 = 10 min)
+
+If rollout hasn't progressed in 10 minutes:
+
+Deployment condition: Progressing=False, reason=ProgressDeadlineExceeded
+
+Alert on this in monitoring
+
+```
+
+#### Scenario 3: Pods Evicted — Node Under Pressure
+
+```bash
+
+kubectl get pods
+
+api-abc   0/1   Evicted   0s
+
+
+
+kubectl describe pod api-abc
+
+Status: Failed
+
+Reason: Evicted
+
+Message: The node was low on resource: memory.
+
+
+
+kubelet eviction order (by QoS class):
+
+1. BestEffort (no requests/limits) — evicted FIRST
+
+2. Burstable (requests < limits) — evicted SECOND
+
+3. Guaranteed (requests = limits) — evicted LAST
+
+
+
+If your production pods are Burstable and a BestEffort
+
+monitoring agent isn't enough to free memory,
+
+YOUR production pods get evicted
+
+
+
+Fix:
+
+1. Set requests = limits for critical pods (Guaranteed QoS)
+
+2. Use PodDisruptionBudgets to limit concurrent evictions
+
+3. Set proper resource requests so scheduler doesn't overcommit
+
+4. Monitor node memory with alerts at 80% utilization
+
+5. Use LimitRange to prevent pods with no limits
+
+```
+
+#### Scenario 4: 502 Errors During Deployment
+
+```bash
+
+Symptoms:
+
+During rolling update, 1-2% of requests get 502
+
+App logs show graceful shutdown completing normally
+
+
+
+Root cause: RACE CONDITION between:
+
+- Endpoints controller removing pod from Service (async)
+
+- kubelet sending SIGTERM to pod (immediate)
+
+These happen IN PARALLEL
+
+Window: kube-proxy hasn't updated iptables yet, but pod is shutting down
+
+Traffic still routes to dying pod → 502
+
+
+
+Fix:
+
+lifecycle:
+
+ preStop:
+
+   exec:
+
+     command: \["sleep", "10"]
+
+preStop runs BEFORE SIGTERM
+
+During those 10 seconds:
+
+- Endpoints controller removes pod from Service
+
+- kube-proxy updates iptables on all nodes
+
+- After 10s, SIGTERM sent to already-deregistered pod
+
+No traffic hits the dying pod → no 502s
+
+
+
+Also ensure:
+
+terminationGracePeriodSeconds: 45
+
+Must be > preStop sleep + app shutdown time
+
+10s preStop + 30s app shutdown = 40s needed, 45s gives buffer
+
+```
+
+# 📋 QUICK REFERENCE — K8s Architecture & Core Objects (continued)
+
+```
+
+POD CREATION CHAIN:
+
+ kubectl → API server (auth→RBAC→admission→etcd)
+
+ → scheduler (filter→score→bind) → kubelet (pull→create→network→start)
+
+ → kube-proxy (update endpoints/iptables on ALL nodes)
+
+
+
+PROBES:
+
+ Liveness:  is it alive?     Fail → restart container
+
+ Readiness: is it ready?     Fail → remove from Service endpoints
+
+ Startup:   has it started?  Disables liveness/readiness until pass
+
+ DON'T check dependencies in liveness (restart loops)
+
+ DO check dependencies in readiness (stop traffic)
+
+
+
+QoS CLASSES:
+
+ Guaranteed: requests = limits          (last to evict)
+
+ Burstable:  requests < limits          (middle)
+
+ BestEffort: no requests or limits      (first to evict)
+
+
+
+RESOURCE MANAGEMENT:
+
+ requests: scheduling decision (does node have capacity?)
+
+ limits: runtime enforcement (cgroup hard ceiling)
+
+ CPU over limit → throttled
+
+ Memory over limit → OOM killed
+
+
+
+TERMINATION SEQUENCE:
+
+ 1. Pod marked for deletion
+
+ 2. Endpoints controller removes from Service (async)
+
+ 3. preStop hook runs (parallel with step 2)
+
+ 4. SIGTERM sent to PID 1
+
+ 5. Wait terminationGracePeriodSeconds
+
+ 6. SIGKILL
+
+ Steps 2+3 are parallel → preStop sleep(10) prevents 502s
+
+
+
+WORKLOAD TYPES:
+
+ Deployment:  stateless, rolling updates, rollback
+
+ StatefulSet: stable identity (pod-0, pod-1), ordered, per-pod PVC
+
+ DaemonSet:   one pod per node (logging, monitoring, CNI)
+
+ Job:         run to completion, retries, parallelism
+
+ CronJob:     Job on schedule, concurrencyPolicy
+
+
+
+CONFIGMAP vs SECRET:
+
+ ConfigMap: non-sensitive, plaintext
+
+ Secret: base64 (NOT encrypted by default), enable KMS envelope encryption
+
+ Env vars: NOT updated on change (requires restart)
+
+ Mounted files: updated in \~60-90s (app must watch)
+
+ Production: External Secrets Operator → Vault/AWS Secrets Manager
+
+
+
+SCHEDULING:
+
+ Taints (on nodes): repel pods unless tolerated
+
+   NoSchedule / PreferNoSchedule / NoExecute
+
+ Tolerations (on pods): allow scheduling on tainted nodes
+
+ Node affinity: required vs preferred node selection
+
+ Pod anti-affinity: spread replicas across nodes/zones
+
+ TopologySpreadConstraints: maxSkew control across topology domains
+
+
+
+RBAC:
+
+ Role/ClusterRole: WHAT (verbs on resources)
+
+ RoleBinding/ClusterRoleBinding: WHO gets WHAT
+
+ Test: kubectl auth can-i <verb> <resource> --as <user>
+
+ Principle of least privilege. Always.
+
+
+
+NAMESPACES:
+
+ ResourceQuota: total resource cap per namespace
+
+ LimitRange: default/min/max per container
+
+ Without LimitRange: pods can deploy with no limits → resource starvation
+
+
+
+ROLLOUT:
+
+ maxSurge + maxUnavailable control speed vs safety
+
+ maxSurge=1, maxUnavailable=0: safest (never below desired count)
+
+ Rollback: kubectl rollout undo deployment/<name>
+
+ Stuck rollout: new pod CrashLoopBackOff + maxUnavailable=0 = deadlock
+
+ progressDeadlineSeconds: alert when rollout stalls
+
+
+
+DEBUGGING:
+
+ Pending: describe pod → check resources, taints, affinity, quota
+
+ CrashLoopBackOff: logs, describe → check image, env vars, probes
+
+ Evicted: node memory pressure → check QoS class, set requests=limits
+
+ 502 during deploy: add preStop sleep(10), increase terminationGracePeriod
+
+```
+
+---
+
+# 📝 Retention Questions — Lesson 3
+
+**Q1:** A pod is stuck in `Pending` for 20 minutes. `kubectl describe pod` shows: `0/15 nodes are available: 8 Insufficient cpu, 4 had taint {team=data:NoSchedule}, 3 didn't match pod affinity rules.` The cluster autoscaler is enabled. Explain why the autoscaler hasn't added a node, and walk through your full debugging approach.
+
+**Q2:** During a rolling deployment, your monitoring shows 502 errors affecting ~2% of requests. The application logs show clean graceful shutdowns. The pod spec has no `preStop` hook and `terminationGracePeriodSeconds: 30`. Explain the exact race condition causing this and the precise fix with correct values.
+
+**Q3:** Your team deploys a pod with `requests.memory: 128Mi` and no memory limit. Another team's pod in the same namespace has `requests.memory: 512Mi` and `limits.memory: 512Mi`. The node runs out of memory. Which pod gets evicted first and why?
+
+**Q4:** A developer creates a ConfigMap and mounts it as environment variables in their pod. They update the ConfigMap value and wait 10 minutes, but the pod still sees the old value. They ask you why. Explain the behavior and give them two options to pick up the new value.
+
+**Go.** 🎯
+
+==================================================================================
+
+# PHASE 2 — Lesson 3B: Kubernetes Production Deep Dive (The Missing Half)
+
+---
+
+### Storage — The Entire Layer I Skipped
+
+```
+
+STORAGE HIERARCHY:
+
+
+
+ PersistentVolume (PV)
+
+   ↑ bound to
+
+ PersistentVolumeClaim (PVC)
+
+   ↑ used by
+
+ Pod (volumeMounts)
+
+   
+
+ StorageClass → defines HOW PVs are dynamically provisioned
+
+ CSI Driver → interfaces between K8s and actual storage backends
+
+```
+
+```yaml
+
+STORAGECLASS — defines provisioning behavior:
+
+apiVersion: storage.k8s.io/v1
+
+kind: StorageClass
+
+metadata:
+
+ name: fast-ssd
+
+provisioner: ebs.csi.aws.com         # CSI driver
+
+parameters:
+
+ type: gp3                           # EBS volume type
+
+ iops: "5000"
+
+ throughput: "250"                   # MB/s
+
+ encrypted: "true"
+
+ kmsKeyId: "arn:aws:kms:..."
+
+reclaimPolicy: Retain                 # what happens when PVC is deleted
+
+ # Retain: PV and data preserved (manual cleanup needed)
+
+ # Delete: PV and underlying storage deleted (DEFAULT — dangerous for DBs)
+
+volumeBindingMode: WaitForFirstConsumer
+
+ # WaitForFirstConsumer: don't provision until pod is scheduled
+
+ #   WHY: EBS volumes are AZ-specific
+
+ #   If PV created in us-east-1a but pod scheduled in us-east-1b → stuck
+
+ #   WaitForFirstConsumer ensures PV created in same AZ as pod
+
+ # Immediate: provision as soon as PVC is created
+
+ #   Use only when storage is not topology-constrained
+
+allowVolumeExpansion: true            # allow PVC resize without recreating
+
+
+
+\---
+
+PERSISTENTVOLUMECLAIM:
+
+apiVersion: v1
+
+kind: PersistentVolumeClaim
+
+metadata:
+
+ name: db-data
+
+ namespace: production
+
+spec:
+
+ accessModes:
+
+ - ReadWriteOnce          # RWO: mounted by ONE node
+
+ # ReadWriteMany (RWX): mounted by MANY nodes (EFS, NFS — NOT EBS)
+
+ # ReadOnlyMany (ROX): read-only by many nodes
+
+ storageClassName: fast-ssd
+
+ resources:
+
+   requests:
+
+     storage: 100Gi
+
+
+
+\---
+
+POD using PVC:
+
+spec:
+
+ containers:
+
+ - name: db
+
+   volumeMounts:
+
+   - name: data
+
+     mountPath: /var/lib/postgresql/data
+
+ volumes:
+
+ - name: data
+
+   persistentVolumeClaim:
+
+     claimName: db-data
+
+```
+
+### CSI Drivers — What Actually Provides Storage
+
+```bash
+
+CSI (Container Storage Interface) is the standard API
+
+between Kubernetes and storage providers
+
+
+
+AWS EBS CSI Driver:
+
+- Block storage (RWO only — one node at a time)
+
+- AZ-specific (can't move between AZs without snapshot)
+
+- gp3: 3000 IOPS baseline, up to 16000
+
+- io2: up to 64000 IOPS (databases)
+
+- Snapshot support (VolumeSnapshot CRD)
+
+Install: EKS add-on or Helm chart
+
+REQUIRES: IRSA (IAM Role for Service Account) with EBS permissions
+
+
+
+AWS EFS CSI Driver:
+
+- NFS-based (RWX — multiple pods across multiple nodes)
+
+- Regional (works across AZs)
+
+- Elastic (auto-grows, no pre-provisioning)
+
+- Higher latency than EBS
+
+- Use for: shared config, CMS uploads, ML training data
+
+- Access points for per-pod isolation
+
+
+
+AWS FSx CSI Driver:
+
+- High-performance filesystem (Lustre, NetApp ONTAP)
+
+- Use for: HPC, ML training at scale
+
+
+
+VOLUME SNAPSHOTS:
+
+apiVersion: snapshot.storage.k8s.io/v1
+
+kind: VolumeSnapshot
+
+metadata:
+
+ name: db-backup-2024-01-15
+
+spec:
+
+ volumeSnapshotClassName: ebs-snapclass
+
+ source:
+
+   persistentVolumeClaimName: db-data
+
+Creates EBS snapshot → can restore to new PVC
+
+Use for: backup before migrations, disaster recovery
+
+```
+
+### StatefulSet + Storage — The Full Picture
+
+```yaml
+
+apiVersion: apps/v1
+
+kind: StatefulSet
+
+metadata:
+
+ name: postgres
+
+spec:
+
+ serviceName: postgres-headless    # required for DNS
+
+ replicas: 3
+
+ selector:
+
+   matchLabels:
+
+     app: postgres
+
+ template:
+
+   metadata:
+
+     labels:
+
+       app: postgres
+
+   spec:
+
+     containers:
+
+     - name: postgres
+
+       image: postgres:15
+
+       volumeMounts:
+
+       - name: data
+
+         mountPath: /var/lib/postgresql/data
+
+ 
+
+ # VOLUMECLAIMTEMPLATES — each pod gets its OWN PVC:
+
+ volumeClaimTemplates:
+
+ - metadata:
+
+     name: data
+
+   spec:
+
+     accessModes: \["ReadWriteOnce"]
+
+     storageClassName: fast-ssd
+
+     resources:
+
+       requests:
+
+         storage: 100Gi
+
+
+
+Result:
+
+postgres-0 → PVC: data-postgres-0 → PV: pv-abc123 (100Gi EBS in us-east-1a)
+
+postgres-1 → PVC: data-postgres-1 → PV: pv-def456 (100Gi EBS in us-east-1b)
+
+postgres-2 → PVC: data-postgres-2 → PV: pv-ghi789 (100Gi EBS in us-east-1c)
+
+\#
+
+If postgres-1 pod dies and restarts:
+
+It reattaches to data-postgres-1 → same data, same identity
+
+This is WHY StatefulSets exist
+
+\#
+
+DANGER: if you delete a StatefulSet with --cascade=foreground
+
+PVCs are NOT deleted (by design — data protection)
+
+You must manually delete PVCs if you want to clean up
+
+```
+
+---
+
+### Horizontal Pod Autoscaler (HPA)
+
+```yaml
+
+apiVersion: autoscaling/v2
+
+kind: HorizontalPodAutoscaler
+
+metadata:
+
+ name: api-hpa
+
+ namespace: production
+
+spec:
+
+ scaleTargetRef:
+
+   apiVersion: apps/v1
+
+   kind: Deployment
+
+   name: api
+
+ minReplicas: 3
+
+ maxReplicas: 50
+
+ behavior:
+
+   scaleUp:
+
+     stabilizationWindowSeconds: 60     # wait 60s before scaling up again
+
+     policies:
+
+     - type: Pods
+
+       value: 4                         # add max 4 pods per 60s
+
+       periodSeconds: 60
+
+   scaleDown:
+
+     stabilizationWindowSeconds: 300    # wait 5 min before scaling down
+
+     policies:
+
+     - type: Percent
+
+       value: 10                        # remove max 10% of pods per 60s
+
+       periodSeconds: 60
+
+     # Scale down slowly to prevent thrashing
+
+     # Aggressive scale-down + traffic spike = not enough pods = outage
+
+ 
+
+ metrics:
+
+ # CPU-based (requires metrics-server):
+
+ - type: Resource
+
+   resource:
+
+     name: cpu
+
+     target:
+
+       type: Utilization
+
+       averageUtilization: 70           # target 70% CPU utilization
+
+ 
+
+ # Memory-based:
+
+ - type: Resource
+
+   resource:
+
+     name: memory
+
+     target:
+
+       type: Utilization
+
+       averageUtilization: 80
+
+ 
+
+ # Custom metrics (from Prometheus via prometheus-adapter):
+
+ - type: Pods
+
+   pods:
+
+     metric:
+
+       name: http\_requests\_per\_second
+
+     target:
+
+       type: AverageValue
+
+       averageValue: 1000               # 1000 RPS per pod
+
+ 
+
+ # External metrics (SQS queue depth):
+
+ - type: External
+
+   external:
+
+     metric:
+
+       name: sqs\_queue\_length
+
+       selector:
+
+         matchLabels:
+
+           queue: order-processing
+
+     target:
+
+       type: AverageValue
+
+       averageValue: 20                 # scale when > 20 messages per pod
+
+
+
+HOW IT WORKS:
+
+1. HPA controller queries metrics every 15s (default)
+
+2. Calculates: desiredReplicas = ceil(currentReplicas × (currentMetric / targetMetric))
+
+3. Example: 5 pods at 90% CPU, target 70%
+
+   desiredReplicas = ceil(5 × (90/70)) = ceil(6.43) = 7
+
+4. HPA updates Deployment replicas from 5 to 7
+
+5. Deployment controller creates 2 new pods
+
+
+
+REQUIREMENTS:
+
+metrics-server must be installed (EKS add-on)
+
+Pods MUST have resource requests defined
+
+Without requests, HPA can't calculate utilization percentage
+
+This is why LimitRange with defaultRequest is critical
+
+
+
+GOTCHA:
+
+HPA and manual replica count conflict
+
+If you set replicas: 3 in Deployment AND have HPA
+
+Every kubectl apply resets replicas to 3
+
+Fix: remove replicas field from Deployment when using HPA
+
+Or use kubectl apply --server-side with field management
+
+```
+
+### Vertical Pod Autoscaler (VPA)
+
+```yaml
+
+apiVersion: autoscaling.k8s.io/v1
+
+kind: VerticalPodAutoscaler
+
+metadata:
+
+ name: api-vpa
+
+spec:
+
+ targetRef:
+
+   apiVersion: apps/v1
+
+   kind: Deployment
+
+   name: api
+
+ updatePolicy:
+
+   updateMode: "Off"          # RECOMMENDATION ONLY — don't auto-apply
+
+   # Off: just recommend (safest, use this first)
+
+   # Auto: evict and recreate pods with new resources (disruptive!)
+
+   # Initial: apply only to new pods (doesn't touch running ones)
+
+ resourcePolicy:
+
+   containerPolicies:
+
+   - containerName: api
+
+     minAllowed:
+
+       cpu: 100m
+
+       memory: 128Mi
+
+     maxAllowed:
+
+       cpu: 4
+
+       memory: 8Gi
+
+     controlledResources: \["cpu", "memory"]
+
+
+
+Check recommendations:
+
+kubectl describe vpa api-vpa
+
+Recommendation:
+
+  Container: api
+
+    Lower Bound:  cpu: 250m,  memory: 256Mi
+
+    Target:       cpu: 500m,  memory: 512Mi    ← use this
+
+    Upper Bound:  cpu: 2,     memory: 2Gi
+
+    Uncapped:     cpu: 3.5,   memory: 4Gi
+
+
+
+CRITICAL RULE:
+
+DO NOT use HPA (CPU-based) and VPA together on the same Deployment
+
+HPA scales horizontally based on CPU %
+
+VPA changes CPU requests
+
+Changing requests changes the utilization percentage
+
+They fight each other in a feedback loop
+
+\#
+
+Exception: HPA on custom metrics (RPS, queue depth) + VPA on resources = OK
+
+Because HPA isn't using CPU utilization
+
+```
+
+### Cluster Autoscaler vs Karpenter
+
+```bash
+
+CLUSTER AUTOSCALER (traditional):
+
+- Watches for pods that can't be scheduled (Pending)
+
+- Adds nodes to existing Auto Scaling Groups (ASGs)
+
+- Watches for underutilized nodes → drains and removes them
+
+- Configuration:
+
+  --scale-down-utilization-threshold=0.5   (50% util → consider removing)
+
+  --scale-down-delay-after-add=10m         (don't remove recently added nodes)
+
+  --skip-nodes-with-local-storage=true     (don't evict pods with emptyDir)
+
+  --skip-nodes-with-system-pods=true
+
+  --balance-similar-node-groups=true       (balance across AZs)
+
+\#
+
+LIMITATIONS:
+
+- Tied to ASG/node group (pre-defined instance types)
+
+- Slow: Pending pod → CA evaluates → ASG launches → node joins → pod scheduled
+
+  Total: 3-7 minutes
+
+- Can't mix instance types dynamically
+
+
+
+KARPENTER (next generation — AWS native):
+
+- NOT tied to ASGs
+
+- Watches for unschedulable pods directly
+
+- Launches RIGHT-SIZED instances from a wide pool
+
+- Provisions nodes in \~60 seconds (vs 3-7 min for CA)
+
+- Consolidation: automatically replaces underutilized nodes
+
+- Drift detection: replaces nodes with outdated AMIs
+
+- Spot instance support with automatic fallback to on-demand
+
+- THE standard for EKS autoscaling now
+
+
+
+apiVersion: karpenter.sh/v1beta1
+
+kind: NodePool
+
+metadata:
+
+ name: default
+
+spec:
+
+ template:
+
+   spec:
+
+     requirements:
+
+     - key: kubernetes.io/arch
+
+       operator: In
+
+       values: \["amd64"]
+
+     - key: karpenter.sh/capacity-type
+
+       operator: In
+
+       values: \["spot", "on-demand"]     # prefer spot, fallback on-demand
+
+     - key: karpenter.k8s.aws/instance-category
+
+       operator: In
+
+       values: \["m", "c", "r"]           # m5, c5, r5 families
+
+     - key: karpenter.k8s.aws/instance-size
+
+       operator: In
+
+       values: \["large", "xlarge", "2xlarge"]
+
+     nodeClassRef:
+
+       name: default
+
+ limits:
+
+   cpu: "1000"                           # max 1000 vCPUs total
+
+   memory: 2000Gi
+
+ disruption:
+
+   consolidationPolicy: WhenUnderutilized  # auto-consolidate
+
+   expireAfter: 720h                       # recycle nodes every 30 days
+
+   # Forces AMI updates — prevents "snowflake" nodes running for months
+
+
+
+\---
+
+apiVersion: karpenter.k8s.aws/v1beta1
+
+kind: EC2NodeClass
+
+metadata:
+
+ name: default
+
+spec:
+
+ amiFamily: AL2
+
+ subnetSelectorTerms:
+
+ - tags:
+
+     karpenter.sh/discovery: my-cluster
+
+ securityGroupSelectorTerms:
+
+ - tags:
+
+     karpenter.sh/discovery: my-cluster
+
+ instanceProfile: KarpenterNodeInstanceProfile
+
+ blockDeviceMappings:
+
+ - deviceName: /dev/xvda
+
+   ebs:
+
+     volumeSize: 100Gi
+
+     volumeType: gp3
+
+     encrypted: true
+
+```
+
+---
+
+### PodDisruptionBudgets (PDBs)
+
+```yaml
+
+PDBs protect against VOLUNTARY disruptions:
+
+- Node drain (kubectl drain)
+
+- Cluster autoscaler removing a node
+
+- Karpenter consolidation
+
+- Node upgrades (EKS managed node group updates)
+
+
+
+PDBs do NOT protect against INVOLUNTARY disruptions:
+
+- Node crash, hardware failure
+
+- OOM kill
+
+- Kernel panic
+
+
+
+apiVersion: policy/v1
+
+kind: PodDisruptionBudget
+
+metadata:
+
+ name: api-pdb
+
+ namespace: production
+
+spec:
+
+ # Option 1: minimum available
+
+ minAvailable: 2              # always keep at least 2 pods running
+
+ # OR
+
+ # Option 2: maximum unavailable
+
+ maxUnavailable: 1            # at most 1 pod can be down at a time
+
+ 
+
+ selector:
+
+   matchLabels:
+
+     app: api
+
+
+
+HOW IT WORKS:
+
+kubectl drain node-1:
+
+  kubelet asks API server: "can I evict api-abc on this node?"
+
+  API server checks PDB: "api has 3 pods, minAvailable=2"
+
+  If evicting api-abc leaves 2 pods → allowed
+
+  If evicting api-abc leaves 1 pod → BLOCKED
+
+  drain command waits until another pod is healthy elsewhere
+
+\#
+
+Without PDB:
+
+  Node drain evicts ALL pods at once
+
+  If all 3 replicas on same node → 0 available → outage
+
+
+
+GOTCHA:
+
+PDB with minAvailable = replicas count (e.g., minAvailable: 3, replicas: 3)
+
+→ NOTHING can be evicted → node drain hangs forever
+
+→ Cluster autoscaler can't remove nodes
+
+→ EKS node group updates stuck
+
+Always: minAvailable < replicas OR maxUnavailable >= 1
+
+
+
+COMMON PATTERN:
+
+3 replicas → minAvailable: 2 (or maxUnavailable: 1)
+
+5 replicas → maxUnavailable: "20%" (1 pod max)
+
+1 replica → no PDB (can't protect a single pod from drain)
+
+            better: increase to 2+ replicas
+
+```
+
+---
+
+### PriorityClasses and Preemption
+
+```yaml
+
+PriorityClasses determine which pods survive when resources are scarce
+
+
+
+apiVersion: scheduling.k8s.io/v1
+
+kind: PriorityClass
+
+metadata:
+
+ name: critical
+
+value: 1000000              # higher = more important
+
+globalDefault: false
+
+preemptionPolicy: PreemptLowerPriority
+
+description: "Critical production services"
+
+
+
+\---
+
+apiVersion: scheduling.k8s.io/v1
+
+kind: PriorityClass
+
+metadata:
+
+ name: standard
+
+value: 100000
+
+globalDefault: true         # default for pods without explicit priority
+
+
+
+\---
+
+apiVersion: scheduling.k8s.io/v1
+
+kind: PriorityClass
+
+metadata:
+
+ name: batch
+
+value: 10000
+
+preemptionPolicy: Never     # can be preempted but won't preempt others
+
+description: "Batch jobs, can be evicted"
+
+
+
+Usage in pod spec:
+
+spec:
+
+ priorityClassName: critical
+
+
+
+HOW PREEMPTION WORKS:
+
+1. Critical pod can't be scheduled (no resources)
+
+2. Scheduler looks for lower-priority pods to evict
+
+3. Evicts enough lower-priority pods to make room
+
+4. Critical pod gets scheduled
+
+\#
+
+ORDER OF EVICTION (combined with QoS):
+
+First: BestEffort + lowest priority
+
+Then: Burstable + lowest priority
+
+Last: Guaranteed + highest priority
+
+\#
+
+SYSTEM PRIORITY CLASSES (built-in):
+
+system-cluster-critical: 2000000000 (coredns, metrics-server)
+
+system-node-critical: 2000001000 (kube-proxy, CNI, CSI)
+
+Don't assign these to your workloads
+
+```
+
+---
+
+### Node Maintenance — Drain, Cordon, Uncordon
+
+```bash
+
+CORDON — mark node as unschedulable (no new pods):
+
+kubectl cordon node-1
+
+Existing pods keep running
+
+New pods won't be scheduled here
+
+Use: before maintenance, investigation
+
+
+
+UNCORDON — mark node as schedulable again:
+
+kubectl uncordon node-1
+
+
+
+DRAIN — cordon + evict all pods:
+
+kubectl drain node-1 \\
+
+ --ignore-daemonsets \\           # don't try to evict DaemonSet pods
+
+ --delete-emptydir-data \\        # allow eviction of pods with emptyDir
+
+ --grace-period=60 \\             # time for graceful shutdown
+
+ --timeout=300s                  # give up after 5 min if pods won't evict
+
+
+
+What drain does:
+
+1. Cordons the node (marks unschedulable)
+
+2. Evicts pods one by one (respecting PDBs)
+
+3. Waits for pods to terminate gracefully
+
+4. DaemonSet pods are skipped (they MUST run on every node)
+
+5. Pods with local storage block drain unless --delete-emptydir-data
+
+
+
+DRAIN STUCK? Common causes:
+
+- PDB preventing eviction (minAvailable too high)
+
+- Pod with no controller (standalone pod, no Deployment/RS)
+
+  Fix: --force (deletes standalone pods, they WON'T be recreated)
+
+- Finalizer on pod preventing deletion
+
+- terminationGracePeriodSeconds too high
+
+
+
+EKS MANAGED NODE GROUP UPDATE:
+
+AWS does this automatically:
+
+1. Launches new node with new AMI
+
+2. Cordons old node
+
+3. Drains old node (respects PDBs!)
+
+4. Terminates old node
+
+If PDB blocks drain → update hangs → you get paged
+
+```
+
+---
+
+### Kubelet Eviction Thresholds
+
+```bash
+
+kubelet monitors node resources and evicts pods when thresholds are crossed
+
+
+
+SOFT EVICTION (graceful):
+
+evictionSoft:
+
+  memory.available: "500Mi"          # trigger when < 500Mi free
+
+  nodefs.available: "10%"            # trigger when < 10% disk free
+
+  imagefs.available: "15%"           # trigger when image fs < 15%
+
+evictionSoftGracePeriod:
+
+  memory.available: "1m30s"          # must stay below threshold for 1.5 min
+
+Eviction respects terminationGracePeriodSeconds
+
+
+
+HARD EVICTION (immediate, no grace period):
+
+evictionHard:
+
+  memory.available: "100Mi"          # trigger when < 100Mi free
+
+  nodefs.available: "5%"
+
+  nodefs.inodesFree: "5%"            # inode exhaustion!
+
+  imagefs.available: "5%"
+
+  pid.available: "5%"
+
+Immediate SIGKILL — no graceful shutdown
+
+
+
+EVICTION ORDER:
+
+1. BestEffort pods using most memory relative to requests (which are 0)
+
+2. Burstable pods exceeding their requests by the most
+
+3. Guaranteed pods (only if they exceed their limits, which shouldn't happen)
+
+
+
+NODE CONDITIONS:
+
+MemoryPressure: memory.available below threshold
+
+DiskPressure: nodefs.available or imagefs.available below threshold
+
+PIDPressure: pid.available below threshold
+
+These conditions prevent NEW pods from being scheduled on the node
+
+
+
+INODE EXHAUSTION — the silent killer:
+
+Lots of small files → inodes run out before disk space does
+
+Common with: container log files, temp files, metrics
+
+Node shows plenty of disk space but can't create new files
+
+df -i  ← check inode usage
+
+Alert on: nodefs.inodesFree approaching 10%
+
+
+
+EKS DEFAULT EVICTION THRESHOLDS:
+
+memory.available: 100Mi (hard)
+
+nodefs.available: 10% (hard)
+
+imagefs.available: 10% (hard)
+
+Configure via kubelet extra args in launch template
+
+```
+
+---
+
+### IRSA — IAM Roles for Service Accounts
+
+```yaml
+
+IRSA lets Kubernetes pods assume AWS IAM roles
+
+WITHOUT embedding AWS credentials in pods
+
+
+
+HOW IT WORKS:
+
+1. EKS cluster has an OIDC provider
+
+2. IAM role trusts the EKS OIDC provider
+
+3. K8s ServiceAccount annotated with IAM role ARN
+
+4. Pod uses the ServiceAccount
+
+5. kubelet injects AWS STS token into pod (projected volume)
+
+6. AWS SDK in pod uses token to assume IAM role
+
+7. Pod gets temporary credentials — no access keys, no secrets
+
+
+
+Step 1: Create IAM role with trust policy:
+
+{
+
+ "Version": "2012-10-17",
+
+ "Statement": \[{
+
+   "Effect": "Allow",
+
+   "Principal": {
+
+     "Federated": "arn:aws:iam::123456:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCDEF"
+
+   },
+
+   "Action": "sts:AssumeRoleWithWebIdentity",
+
+   "Condition": {
+
+     "StringEquals": {
+
+       "oidc.eks.us-east-1.amazonaws.com/id/ABCDEF:sub": 
+
+         "system:serviceaccount:production:api-sa",
+
+       "oidc.eks.us-east-1.amazonaws.com/id/ABCDEF:aud": 
+
+         "sts.amazonaws.com"
+
+     }
+
+   }
+
+ }]
+
+}
+
+CRITICAL: the Condition locks this role to a SPECIFIC ServiceAccount
+
+in a SPECIFIC namespace. Without this condition, ANY pod in the cluster
+
+could assume the role.
+
+
+
+Step 2: Annotate ServiceAccount:
+
+apiVersion: v1
+
+kind: ServiceAccount
+
+metadata:
+
+ name: api-sa
+
+ namespace: production
+
+ annotations:
+
+   eks.amazonaws.com/role-arn: arn:aws:iam::123456:role/api-role
+
+
+
+Step 3: Pod uses ServiceAccount:
+
+spec:
+
+ serviceAccountName: api-sa
+
+
+
+Step 4: Verify in pod:
+
+aws sts get-caller-identity
+
+Account: 123456
+
+Arn: arn:aws:sts::123456:assumed-role/api-role/...
+
+
+
+GOTCHAS:
+
+- OIDC provider must be configured for the cluster
+
+- Trust policy condition MUST include namespace + SA name
+
+- Pod must be restarted after SA annotation changes
+
+- AWS SDK must be recent enough to support IRSA token chain
+
+- EBS CSI driver, ALB controller, External DNS all need IRSA
+
+```
+
+---
+
+### Admission Controllers — Mutating and Validating
+
+```bash
+
+Admission controllers intercept API requests AFTER authentication/authorization
+
+but BEFORE persistence to etcd
+
+
+
+TWO TYPES:
+
+1. Mutating: modify the request (inject sidecars, add labels, set defaults)
+
+2. Validating: accept or reject the request (enforce policies)
+
+Order: Mutating runs FIRST, then Validating
+
+
+
+BUILT-IN ADMISSION CONTROLLERS:
+
+NamespaceLifecycle: prevent operations in terminating namespaces
+
+LimitRanger: apply default resource limits from LimitRange
+
+ServiceAccount: auto-mount SA token
+
+DefaultStorageClass: assign default StorageClass to PVCs
+
+ResourceQuota: enforce namespace quotas
+
+PodSecurity: enforce Pod Security Standards (replaced PodSecurityPolicy)
+
+MutatingAdmissionWebhook: call external webhooks to mutate
+
+ValidatingAdmissionWebhook: call external webhooks to validate
+
+
+
+WEBHOOK-BASED (custom):
+
+You deploy a web server that receives AdmissionReview JSON
+
+Returns: allow/deny + optional patches (mutations)
+
+
+
+Example: Istio sidecar injection:
+
+1. Pod created with label: sidecar.istio.io/inject: "true"
+
+2. Mutating webhook intercepts the pod creation
+
+3. Webhook server adds Envoy sidecar container to the pod spec
+
+4. Modified pod is persisted to etcd
+
+The developer never adds the sidecar manually — it's injected automatically
+
+
+
+OPA GATEKEEPER — policy engine:
+
+Validates resources against policies written in Rego language
+
+
+
+Example: require all pods to have resource limits
+
+apiVersion: constraints.gatekeeper.sh/v1beta1
+
+kind: K8sRequiredResources
+
+metadata:
+
+ name: require-limits
+
+spec:
+
+ match:
+
+   kinds:
+
+   - apiGroups: \[""]
+
+     kinds: \["Pod"]
+
+   namespaces: \["production"]
+
+ parameters:
+
+   limits:
+
+   - cpu
+
+   - memory
+
+
+
+Now any pod in production without CPU/memory limits → REJECTED by API server
+
+
+
+KYVERNO — alternative to OPA (simpler, YAML-native):
+
+apiVersion: kyverno.io/v1
+
+kind: ClusterPolicy
+
+metadata:
+
+ name: require-labels
+
+spec:
+
+ validationFailureAction: Enforce
+
+ rules:
+
+ - name: require-team-label
+
+   match:
+
+     any:
+
+     - resources:
+
+         kinds:
+
+         - Pod
+
+   validate:
+
+     message: "All pods must have a 'team' label"
+
+     pattern:
+
+       metadata:
+
+         labels:
+
+           team: "?\*"
+
+
+
+WHEN WEBHOOKS GO WRONG:
+
+If webhook server is down → API requests hang or fail
+
+failurePolicy: Fail → if webhook unreachable, reject ALL requests
+
+failurePolicy: Ignore → if webhook unreachable, allow ALL requests
+
+Fail = safer but risky (webhook outage = cluster-wide impact)
+
+Ignore = dangerous (policies not enforced during outage)
+
+ALWAYS: set timeoutSeconds (default 10s), have webhook HA (multiple replicas)
+
+```
+
+---
+
+### Pod Security Standards (PSA) — Replacing PSP
+
+```yaml
+
+PodSecurityPolicy (PSP) was removed in K8s 1.25
+
+Replaced by Pod Security Admission (PSA)
+
+
+
+THREE LEVELS:
+
+Privileged: no restrictions (system namespaces)
+
+Baseline: prevents known privilege escalations
+
+Restricted: heavily restricted (production workloads)
+
+
+
+ENFORCE per namespace via labels:
+
+apiVersion: v1
+
+kind: Namespace
+
+metadata:
+
+ name: production
+
+ labels:
+
+   pod-security.kubernetes.io/enforce: restricted
+
+   pod-security.kubernetes.io/audit: restricted
+
+   pod-security.kubernetes.io/warn: restricted
+
+   # enforce: block non-compliant pods
+
+   # audit: log non-compliant pods (but allow)
+
+   # warn: show warning to user (but allow)
+
+
+
+WHAT "RESTRICTED" ENFORCES:
+
+- Must run as non-root (runAsNonRoot: true)
+
+- Must drop ALL capabilities
+
+- No privilege escalation (allowPrivilegeEscalation: false)
+
+- No hostNetwork, hostPID, hostIPC
+
+- No hostPath volumes
+
+- Read-only root filesystem recommended
+
+- Seccomp profile must be set
+
+
+
+COMPLIANT POD:
+
+spec:
+
+ securityContext:
+
+   runAsNonRoot: true
+
+   runAsUser: 1000
+
+   fsGroup: 1000
+
+   seccompProfile:
+
+     type: RuntimeDefault
+
+ containers:
+
+ - name: app
+
+   securityContext:
+
+     allowPrivilegeEscalation: false
+
+     capabilities:
+
+       drop: \["ALL"]
+
+     readOnlyRootFilesystem: true
+
+```
+
+---
+
+### Helm — Package Manager for Kubernetes
+
+```bash
+
+Helm packages K8s manifests into CHARTS
+
+Charts are versioned, parameterized, shareable
+
+
+
+CHART STRUCTURE:
+
+mychart/
+
+ Chart.yaml          # metadata (name, version, dependencies)
+
+ values.yaml         # default configuration values
+
+ templates/          # K8s manifests with Go template syntax
+
+   deployment.yaml
+
+   service.yaml
+
+   ingress.yaml
+
+   configmap.yaml
+
+   \_helpers.tpl      # reusable template functions
+
+   NOTES.txt         # post-install message
+
+ charts/             # sub-charts (dependencies)
+
+
+
+values.yaml:
+
+replicaCount: 3
+
+image:
+
+ repository: my-app
+
+ tag: v1.2.3
+
+ pullPolicy: IfNotPresent
+
+resources:
+
+ requests:
+
+   cpu: 250m
+
+   memory: 256Mi
+
+ limits:
+
+   cpu: 1000m
+
+   memory: 512Mi
+
+ingress:
+
+ enabled: true
+
+ host: api.example.com
+
+
+
+templates/deployment.yaml:
+
+apiVersion: apps/v1
+
+kind: Deployment
+
+metadata:
+
+ name: {{ include "mychart.fullname" . }}
+
+ labels:
+
+   {{- include "mychart.labels" . | nindent 4 }}
+
+spec:
+
+ replicas: {{ .Values.replicaCount }}
+
+ template:
+
+   spec:
+
+     containers:
+
+     - name: {{ .Chart.Name }}
+
+       image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+
+       resources:
+
+         {{- toYaml .Values.resources | nindent 12 }}
+
+```
+
+```bash
+
+COMMANDS:
+
+helm repo add bitnami https://charts.bitnami.com/bitnami
+
+helm repo update
+
+
+
+helm search repo postgres              # find charts
+
+helm show values bitnami/postgresql     # see configurable values
+
+
+
+Install:
+
+helm install my-db bitnami/postgresql \\
+
+ --namespace production \\
+
+ --values custom-values.yaml \\
+
+ --set postgresqlPassword=secret \\
+
+ --version 12.1.0                      # pin chart version!
+
+
+
+Upgrade:
+
+helm upgrade my-db bitnami/postgresql \\
+
+ --namespace production \\
+
+ --values custom-values.yaml \\
+
+ --set image.tag=15.2
+
+
+
+Rollback:
+
+helm rollback my-db 1                   # rollback to revision 1
+
+helm history my-db                      # see all revisions
+
+
+
+Template rendering (debug without applying):
+
+helm template my-release mychart/ --values prod-values.yaml
+
+Outputs rendered YAML — review before applying
+
+
+
+Dry run:
+
+helm install my-release mychart/ --dry-run --debug
+
+
+
+HOOKS — run actions at specific lifecycle points:
+
+pre-install:  DB migrations before app deploys
+
+post-install: seed data, notifications
+
+pre-upgrade:  backup before upgrade
+
+post-upgrade: run tests
+
+pre-delete:   backup before teardown
+
+
+
+Hook example:
+
+apiVersion: batch/v1
+
+kind: Job
+
+metadata:
+
+ name: db-migrate
+
+ annotations:
+
+   "helm.sh/hook": pre-upgrade
+
+   "helm.sh/hook-weight": "0"          # order among hooks
+
+   "helm.sh/hook-delete-policy": hook-succeeded
+
+spec:
+
+ template:
+
+   spec:
+
+     containers:
+
+     - name: migrate
+
+       image: my-app:v1.2.3
+
+       command: \["./migrate", "--up"]
+
+     restartPolicy: Never
+
+
+
+HELM + ARGOCD (GitOps):
+
+Store Helm values in Git
+
+ArgoCD watches Git, renders Helm template, applies to cluster
+
+Changes to values.yaml in Git → ArgoCD syncs → cluster updated
+
+No manual helm install/upgrade commands
+
+```
+
+---
+
+### Custom Resource Definitions (CRDs) and Operators
+
+```yaml
+
+CRDs extend the Kubernetes API with custom resource types
+
+Operators are controllers that manage CRDs
+
+
+
+Example: A custom "Database" resource:
+
+apiVersion: apiextensions.k8s.io/v1
+
+kind: CustomResourceDefinition
+
+metadata:
+
+ name: databases.mycompany.io
+
+spec:
+
+ group: mycompany.io
+
+ versions:
+
+ - name: v1
+
+   served: true
+
+   storage: true
+
+   schema:
+
+     openAPIV3Schema:
+
+       type: object
+
+       properties:
+
+         spec:
+
+           type: object
+
+           properties:
+
+             engine:
+
+               type: string
+
+               enum: \["postgres", "mysql"]
+
+             version:
+
+               type: string
+
+             replicas:
+
+               type: integer
+
+               minimum: 1
+
+               maximum: 5
+
+             storage:
+
+               type: string
+
+ scope: Namespaced
+
+ names:
+
+   plural: databases
+
+   singular: database
+
+   kind: Database
+
+   shortNames:
+
+   - db
+
+
+
+Now you can create:
+
+apiVersion: mycompany.io/v1
+
+kind: Database
+
+metadata:
+
+ name: orders-db
+
+ namespace: production
+
+spec:
+
+ engine: postgres
+
+ version: "15"
+
+ replicas: 3
+
+ storage: 100Gi
+
+
+
+An OPERATOR watches these Database resources and:
+
+1. Creates StatefulSet with PostgreSQL containers
+
+2. Configures replication between replicas
+
+3. Sets up automated backups
+
+4. Handles failover
+
+5. Manages upgrades
+
+The operator encodes operational knowledge into code
+
+
+
+POPULAR OPERATORS IN PRODUCTION:
+
+- prometheus-operator: Prometheus + Alertmanager + Grafana
+
+- cert-manager: TLS certificate lifecycle
+
+- external-secrets-operator: sync secrets from Vault/AWS SM
+
+- strimzi: Kafka on Kubernetes
+
+- zalando postgres-operator: PostgreSQL with HA
+
+- istio operator: service mesh
+
+- ArgoCD: GitOps
+
+- crossplane: provision cloud resources via K8s API
+
+
+
+OPERATOR PATTERN:
+
+Watch → Compare desired vs actual → Act → Repeat
+
+Same reconciliation loop as built-in controllers
+
+But for YOUR custom resources
+
+```
+
+---
+
+### Finalizers — Why Resources Get Stuck
+
+```bash
+
+Finalizers are keys in metadata.finalizers\[]
+
+They BLOCK deletion until the controller removes the finalizer
+
+
+
+Flow:
+
+1. kubectl delete myresource
+
+2. API server sets deletionTimestamp (resource is "terminating")
+
+3. Controllers see deletionTimestamp, run cleanup logic
+
+4. Controller removes its finalizer from the list
+
+5. When finalizers list is empty → resource actually deleted from etcd
+
+
+
+STUCK RESOURCES:
+
+If the controller that owns the finalizer is:
+
+- Crashed
+
+- Deleted
+
+- Misconfigured
+
+The finalizer is NEVER removed → resource stuck in Terminating FOREVER
+
+
+
+Diagnosis:
+
+kubectl get namespace production -o yaml
+
+metadata:
+
+  deletionTimestamp: "2024-01-15T10:00:00Z"
+
+  finalizers:
+
+  - kubernetes                    ← namespace controller
+
+  - some-operator.io/cleanup      ← operator that's been deleted
+
+
+
+Fix (DANGEROUS — bypasses cleanup logic):
+
+kubectl patch namespace production -p '{"metadata":{"finalizers":\[]}}' --type=merge
+
+Or for specific resources:
+
+kubectl patch database orders-db -p '{"metadata":{"finalizers":null}}' --type=merge
+
+
+
+WHY IT'S DANGEROUS:
+
+Finalizers exist for a reason — cleanup of external resources
+
+Removing a finalizer for a Database operator might leave:
+
+- EBS volumes orphaned
+
+- DNS records not cleaned up
+
+- IAM roles not deleted
+
+- Cloud resources leaking
+
+
+
+PROPER FIX:
+
+1. Restore the controller/operator
+
+2. Let it run cleanup
+
+3. It removes the finalizer naturally
+
+Only patch finalizers as last resort after manual cleanup
+
+```
+
+---
+
+### Ephemeral Containers — Debugging Production Pods
+
+```bash
+
+Production pods often have:
+
+- No shell (distroless/scratch images)
+
+- No debugging tools (no curl, no netstat, no tcpdump)
+
+- Read-only filesystem
+
+You can't kubectl exec and debug
+
+
+
+EPHEMERAL CONTAINERS (K8s 1.25+ stable):
+
+kubectl debug -it pod/api-abc \\
+
+ --image=nicolaka/netshoot \\
+
+ --target=api
+
+Injects a temporary container INTO the running pod
+
+Shares the pod's network namespace (can see all connections)
+
+--target=api: shares process namespace with api container
+
+  (can see its processes, /proc filesystem)
+
+When you exit, ephemeral container is cleaned up
+
+
+
+DEBUG A NODE:
+
+kubectl debug node/ip-10-0-1-100 -it --image=ubuntu
+
+Creates a pod on that specific node with host PID/network access
+
+Useful for: checking node-level networking, iptables, kubelet logs
+
+
+
+DEBUG WITH COPY (non-intrusive):
+
+kubectl debug pod/api-abc -it \\
+
+ --image=nicolaka/netshoot \\
+
+ --copy-to=debug-pod \\
+
+ --share-processes
+
+Creates a COPY of the pod with debug container added
+
+Original pod is untouched
+
+Use when you can't risk affecting production traffic
+
+
+
+COMMON DEBUG IMAGES:
+
+nicolaka/netshoot: curl, dig, nslookup, tcpdump, iptables, ss, ip
+
+busybox: minimal Unix tools
+
+ubuntu: full OS for complex debugging
+
+amazon/aws-cli: AWS debugging
+
+```
+
+---
+
+### kubectl Power Tools — Daily Use
+
+```bash
+
+CONTEXT MANAGEMENT:
+
+kubectl config get-contexts                      # list all contexts
+
+kubectl config use-context production-cluster    # switch
+
+kubectl config set-context --current --namespace=production  # set default ns
+
+
+
+MULTI-CLUSTER:
+
+kubectx: fast context switching
+
+kubectx production    # switch to production cluster
+
+kubectx -             # switch to previous context
+
+kubens: fast namespace switching
+
+kubens production     # switch to production namespace
+
+
+
+PORT-FORWARD — access internal services without ingress:
+
+kubectl port-forward svc/my-db 5432:5432 -n production
+
+localhost:5432 → my-db service in cluster
+
+Use for: debugging, one-off queries, admin access
+
+NOT for production traffic
+
+
+
+kubectl port-forward pod/my-pod 8080:8080
+
+Direct to specific pod (bypass service)
+
+
+
+LOGS:
+
+kubectl logs pod/api-abc                     # current logs
+
+kubectl logs pod/api-abc --previous          # previous container (after crash)
+
+kubectl logs pod/api-abc -c sidecar          # specific container
+
+kubectl logs -l app=api --all-containers     # all pods matching label
+
+kubectl logs -f pod/api-abc                  # follow (tail -f)
+
+kubectl logs --since=1h pod/api-abc          # last hour
+
+kubectl logs --tail=100 pod/api-abc          # last 100 lines
+
+
+
+EVENTS — cluster-wide activity log:
+
+kubectl get events --sort-by=.lastTimestamp
+
+kubectl get events -n production --field-selector reason=Killing
+
+kubectl get events --field-selector type=Warning
+
+Events expire after 1 hour by default
+
+For longer retention: ship to logging system
+
+
+
+RESOURCE USAGE:
+
+kubectl top nodes                            # node CPU/memory usage
+
+kubectl top pods -n production               # pod CPU/memory usage
+
+kubectl top pods --sort-by=memory            # sort by memory
+
+Requires metrics-server installed
+
+
+
+JSONPATH — extract specific fields:
+
+kubectl get pods -o jsonpath='{.items\[\*].status.podIP}'
+
+kubectl get nodes -o jsonpath='{range .items\[\*]}{.metadata.name}{"\\t"}{.status.capacity.cpu}{"\\n"}{end}'
+
+
+
+CUSTOM COLUMNS:
+
+kubectl get pods -o custom-columns=\\
+
+NAME:.metadata.name,\\
+
+STATUS:.status.phase,\\
+
+NODE:.spec.nodeName,\\
+
+IP:.status.podIP
+
+
+
+DRY-RUN + DIFF:
+
+kubectl apply -f deployment.yaml --dry-run=server
+
+Server validates but doesn't persist
+
+kubectl diff -f deployment.yaml
+
+Shows what WOULD change (like terraform plan)
+
+
+
+FIELD SELECTORS:
+
+kubectl get pods --field-selector status.phase=Running
+
+kubectl get pods --field-selector spec.nodeName=node-1
+
+kubectl get events --field-selector reason=FailedScheduling
+
+```
+
+---
+
+### Image Pull Policies and Secrets
+
+```yaml
+
+PULL POLICIES:
+
+spec:
+
+ containers:
+
+ - name: app
+
+   image: my-app:v1.2.3
+
+   imagePullPolicy: IfNotPresent
+
+   # IfNotPresent: use cached image if available (DEFAULT for tagged images)
+
+   # Always: always pull (DEFAULT for :latest)
+
+   # Never: never pull, must exist on node
+
+   
+
+   # GOTCHA:
+
+   # :latest + IfNotPresent = uses stale cached image
+
+   # This is why :latest is dangerous — different nodes may have
+
+   # different cached versions of :latest
+
+   # ALWAYS use specific tags + IfNotPresent
+
+
+
+PRIVATE REGISTRY AUTH:
+
+apiVersion: v1
+
+kind: Secret
+
+metadata:
+
+ name: ecr-creds
+
+type: kubernetes.io/dockerconfigjson
+
+data:
+
+ .dockerconfigjson: <base64-encoded docker config>
+
+
+
+Usage:
+
+spec:
+
+ imagePullSecrets:
+
+ - name: ecr-creds
+
+
+
+EKS + ECR:
+
+EKS nodes have IAM instance profile with ECR read access
+
+No imagePullSecrets needed for same-account ECR
+
+Cross-account ECR: need ECR repository policy + IRSA or imagePullSecrets
+
+
+
+ECR TOKEN REFRESH:
+
+ECR auth tokens expire every 12 hours
+
+For non-EKS clusters pulling from ECR:
+
+Use a CronJob or controller to refresh the pull secret
+
+Or use ECR credential helper
+
+```
+
+---
+
+### Container Patterns
+
+```yaml
+
+SIDECAR PATTERN:
+
+Helper container running alongside main container in same pod
+
+Shares network namespace (localhost) and volumes
+
+spec:
+
+ containers:
+
+ - name: app
+
+   image: my-app:v1.2.3
+
+   ports:
+
+   - containerPort: 8080
+
+ - name: log-shipper
+
+   image: fluentbit:latest
+
+   volumeMounts:
+
+   - name: logs
+
+     mountPath: /var/log/app
+
+ volumes:
+
+ - name: logs
+
+   emptyDir: {}
+
+App writes logs to /var/log/app
+
+Fluentbit reads and ships to Elasticsearch
+
+Other sidecars: Envoy proxy (Istio), Vault agent, metrics exporters
+
+
+
+AMBASSADOR PATTERN:
+
+Sidecar that proxies connections to external services
+
+App talks to localhost → ambassador handles auth, TLS, retries
+
+spec:
+
+ containers:
+
+ - name: app
+
+   # connects to localhost:5432
+
+ - name: cloud-sql-proxy
+
+   image: gcr.io/cloud-sql-connectors/cloud-sql-proxy
+
+   # proxies to Cloud SQL with IAM auth and TLS
+
+   
+
+ADAPTER PATTERN:
+
+Sidecar that transforms output from main container
+
+App outputs custom metrics format
+
+Adapter container converts to Prometheus exposition format
+
+spec:
+
+ containers:
+
+ - name: legacy-app
+
+   # outputs metrics in proprietary format
+
+ - name: prometheus-adapter
+
+   # reads proprietary metrics, serves /metrics in Prometheus format
+
+
+
+INIT CONTAINER PATTERNS:
+
+initContainers:
+
+Wait for dependency:
+
+\- name: wait-for-db
+
+ image: busybox
+
+ command: \['sh', '-c', 'until nc -z db-service 5432; do sleep 2; done']
+
+
+
+Download config from external source:
+
+\- name: fetch-config
+
+ image: curlimages/curl
+
+ command: \['curl', '-o', '/config/app.yaml', 'https://config-server/app.yaml']
+
+ volumeMounts:
+
+ - name: config
+
+   mountPath: /config
+
+
+
+Set permissions:
+
+\- name: fix-permissions
+
+ image: busybox
+
+ command: \['chown', '-R', '1000:1000', '/data']
+
+ securityContext:
+
+   runAsUser: 0    # init container runs as root to fix permissions
+
+ volumeMounts:
+
+ - name: data
+
+   mountPath: /data
+
+```
+
+---
+
+### Garbage Collection and Owner References
+
+```bash
+
+Kubernetes uses owner references to build a resource dependency tree
+
+Deployment → owns → ReplicaSet → owns → Pods
+
+When you delete a Deployment:
+
+  Cascade (default): delete Deployment → delete RS → delete Pods
+
+  Orphan: delete Deployment, leave RS and Pods running
+
+
+
+Owner references in pod metadata:
+
+kubectl get pod api-abc -o yaml
+
+metadata:
+
+  ownerReferences:
+
+  - apiVersion: apps/v1
+
+    kind: ReplicaSet
+
+    name: api-7b8f9c6d4
+
+    uid: abc123-def456
+
+    controller: true
+
+    blockOwnerDeletion: true
+
+
+
+CASCADE DELETION TYPES:
+
+kubectl delete deployment api
+
+Default: Foreground cascading deletion
+
+1. Deployment marked for deletion
+
+2. Children (RS, Pods) deleted first
+
+3. Deployment deleted after children are gone
+
+
+
+kubectl delete deployment api --cascade=orphan
+
+Deployment deleted, ReplicaSets and Pods remain
+
+Use case: you want to recreate the Deployment with different config
+
+without disrupting running pods
+
+
+
+ORPHANED RESOURCES — the garbage collector cleans these:
+
+If a pod's owner (ReplicaSet) no longer exists → pod is garbage
+
+GC controller deletes orphaned resources automatically
+
+Unless cascade=orphan was used
+
+```
+
+---
+
+### Production Scenarios (Additional)
+
+#### Scenario 5: PVC Stuck in Pending
+
+```bash
+
+kubectl get pvc
+
+NAME      STATUS    VOLUME   CAPACITY   STORAGECLASS   AGE
+
+db-data   Pending                       fast-ssd       10m
+
+
+
+kubectl describe pvc db-data
+
+Events:
+
+"waiting for first consumer to be created before binding"
+
+OR
+
+"no persistent volumes available for this claim"
+
+
+
+CAUSES:
+
+
+
+1. WaitForFirstConsumer — no pod using this PVC yet
+
+PVC won't provision until a pod referencing it is scheduled
+
+This is NORMAL if the pod hasn't been created yet
+
+
+
+2. No StorageClass matching the name
+
+kubectl get storageclass
+
+Is "fast-ssd" listed? Typo in storageClassName?
+
+
+
+3. CSI driver not installed
+
+EBS CSI driver not deployed → can't provision EBS volumes
+
+kubectl get pods -n kube-system | grep ebs
+
+
+
+4. IRSA permissions for CSI driver
+
+CSI driver SA needs IAM permissions to create EBS volumes
+
+Check: ec2:CreateVolume, ec2:AttachVolume, ec2:DescribeVolumes
+
+
+
+5. AZ mismatch
+
+StorageClass without WaitForFirstConsumer
+
+PV created in us-east-1a, pod scheduled in us-east-1b
+
+EBS can't be attached across AZs → pod stuck in Pending too
+
+
+
+6. Capacity
+
+Account EBS volume limit reached
+
+Or requested size exceeds maximum for volume type
+
+```
+
+#### Scenario 6: Helm Upgrade Rolled Back Automatically
+
+```bash
+
+helm upgrade my-app ./mychart --atomic --timeout 5m
+
+"UPGRADE FAILED: timed out waiting for condition"
+
+"Release rolled back to previous revision"
+
+
+
+--atomic: if upgrade fails, auto-rollback
+
+What went wrong?
+
+
+
+1. New pods failing readiness probe:
+
+kubectl get pods
+
+my-app-new-xyz   0/1   CrashLoopBackOff
+
+
+
+2. Helm waits for Deployment rollout to complete
+
+Deployment stuck (new pods not Ready within timeout)
+
+Helm detects failure → rolls back to previous release
+
+
+
+3. Check what changed:
+
+helm diff upgrade my-app ./mychart --values new-values.yaml
+
+Shows exactly what would change (requires helm-diff plugin)
+
+
+
+4. Debug the failing pod:
+
+kubectl logs my-app-new-xyz
+
+kubectl describe pod my-app-new-xyz
+
+
+
+COMMON CAUSES:
+
+- Missing env var / secret in new version
+
+- Health check endpoint changed but probe not updated
+
+- Image tag doesn't exist in registry
+
+- Resource limits too low for new version
+
+- Incompatible config with new code version
+
+```
+
+#### Scenario 7: Namespace Stuck in Terminating
+
+```bash
+
+kubectl delete namespace staging
+
+namespace "staging" deleted
+
+...but 30 minutes later:
+
+kubectl get ns staging
+
+NAME      STATUS        AGE
+
+staging   Terminating   30m
+
+
+
+CAUSES:
+
+1. Resources with finalizers still exist in the namespace
+
+kubectl api-resources --verbs=list --namespaced -o name | \\
+
+ xargs -n 1 kubectl get --show-kind --ignore-not-found -n staging
+
+
+
+Find resources with finalizers:
+
+kubectl get all -n staging -o json | jq '.items\[] | select(.metadata.finalizers != null) | {kind: .kind, name: .metadata.name, finalizers: .metadata.finalizers}'
+
+
+
+2. Webhook blocking deletion
+
+Validating webhook that targets this namespace and is down
+
+→ API server can't process deletion of resources in namespace
+
+Check: kubectl get validatingwebhookconfigurations
+
+
+
+3. API service unavailable
+
+Custom resources whose API server is not running
+
+kubectl get apiservices | grep False
+
+
+
+FIX:
+
+Step 1: delete all resources in namespace
+
+Step 2: if specific resources stuck, patch their finalizers
+
+Step 3: if namespace itself stuck:
+
+kubectl get namespace staging -o json | \\
+
+ jq '.spec.finalizers = \[]' | \\
+
+ kubectl replace --raw "/api/v1/namespaces/staging/finalize" -f -
+
+Nuclear option — only when cleanup is truly complete
+
+```
+
+#### Scenario 8: HPA Not Scaling
+
+```bash
+
+kubectl get hpa
+
+NAME     REFERENCE       TARGETS         MINPODS   MAXPODS   REPLICAS
+
+api-hpa  Deployment/api  <unknown>/70%   3         50        3
+
+
+
+<unknown> = HPA can't read metrics
+
+
+
+CAUSES:
+
+1. metrics-server not installed:
+
+kubectl get deployment metrics-server -n kube-system
+
+If missing: install EKS metrics-server add-on
+
+
+
+2. Pod has no resource requests:
+
+HPA calculates: current\_usage / request = utilization%
+
+No request = can't calculate percentage = <unknown>
+
+kubectl describe pod api-xyz | grep -A 3 Requests
+
+
+
+3. metrics-server can't reach kubelets:
+
+kubectl logs -n kube-system deployment/metrics-server
+
+"failed to get https://node-ip:10250/stats": dial tcp: i/o timeout
+
+Security group blocking port 10250 from metrics-server to nodes
+
+
+
+4. Custom metrics not available:
+
+If using custom metrics (RPS, queue depth):
+
+prometheus-adapter or KEDA must be installed
+
+Check: kubectl get --raw "/apis/custom.metrics.k8s.io/v1beta1"
+
+```
+---
+
+# 📝 Retention Questions — Lesson 3 + 3B Combined
+
+**Q1:** Your EKS cluster uses the EBS CSI driver. A developer creates a PVC with `storageClassName: gp3-encrypted` and `volumeBindingMode: Immediate`. The pod referencing this PVC is stuck in `Pending`. Investigation shows the PV was created in `us-east-1a` but the pod was scheduled in `us-east-1c`. Explain the root cause and the correct StorageClass configuration to prevent this.
+
+**Q2:** Your production namespace has an HPA targeting 70% CPU utilization. `kubectl get hpa` shows `TARGETS: <unknown>/70%`. The metrics-server is running and healthy. Pods are running and consuming CPU. Walk through your debugging steps to find why HPA can't read metrics.
+
+**Q3:** You need to perform an AMI update on your EKS managed node group. 15 nodes need to be rotated. Your critical API service has 6 replicas with a PDB of `maxUnavailable: 1`. Explain the full sequence of what happens during the node rotation, and what could cause it to get stuck.
+
+**Q4:** A developer's pod uses a distroless image (no shell, no debugging tools). The pod is running but returning 500 errors to some requests. They can't `kubectl exec` into it because there's no shell. How do you debug this pod in production without redeploying?
+
+**Q5:** Your team deleted a custom operator (CRD controller) before cleaning up its custom resources. Now 50 `Database` custom resources are stuck in `Terminating` state, each with a finalizer from the deleted operator. The resources reference EBS volumes and Route53 records. Walk through the proper cleanup process.
+
+**Go.** 🎯
+Q1: The Cluster Autoscaler (CA) Paradox
+
+Why the autoscaler hasn't added a node:
+The Cluster Autoscaler only triggers a scale-up if it believes that adding a new node from the Auto Scaling Group (ASG) will actually allow the pod to be scheduled.
+
+In this scenario, the pod is unschedulable on 15 nodes for three different reasons. The CA analyzes the pod's constraints:
+
+Insufficient CPU: This is a "scale-up" trigger. If this were the only reason, CA would add a node.
+
+Taints (team=data:NoSchedule): If the pod does not have a corresponding toleration for this taint, it can never be scheduled on these nodes.
+
+Affinity Rules: If the pod has nodeAffinity or podAffinity that requires specific labels (e.g., disk=ssd), and the nodes in the ASG do not have those labels, the pod can never be scheduled there.
+
+The Verdict: The CA has looked at the ASG configuration and realized that even if it adds a new node, that new node will either have the same taints or lack the required affinity labels. Therefore, adding a node would not solve the problem, and CA decides not to waste money/resources on a node that the pod still couldn't use.
+
+Debugging Approach:
+
+Inspect Pod Spec: Run kubectl get pod <pod> -o yaml and look specifically at tolerations and affinity.
+
+Inspect Node Templates: Check the ASG/Node Group configuration. Do the new nodes have the labels required by the pod's affinity? Do they have the same taints that the pod doesn't tolerate?
+
+Analyze CA Logs: Check the Cluster Autoscaler logs. Look for messages like "pod is unschedulable... but adding a node wouldn't help because..." This provides the exact reason why the scale-up was skipped.
+
+Q2: The Endpoint Propagation Race
+
+The Exact Race Condition:
+This is a synchronization failure between the Control Plane and the Data Plane.
+
+When a pod is terminated during a rolling update, two actions happen simultaneously:
+
+The Signal: The Kubelet sends a SIGTERM to the pod. Since the app is designed for "clean graceful shutdowns," it stops accepting new connections and exits almost immediately.
+
+The Update: The Endpoint Controller removes the pod's IP from the Service's Endpoint list. This change must then propagate to every single node in the cluster via kube-proxy (updating iptables or ipvs rules).
+
+The Gap: The SIGTERM reaches the pod in milliseconds. However, the iptables update on the worker nodes can take several seconds to propagate. For a brief window, some nodes still believe the pod is healthy and route traffic to it. Because the pod has already shut down its listener, the request fails with a 502 Bad Gateway.
+
+The Precise Fix:
+You must force the application to stay alive for a few seconds after it has been marked for deletion, allowing the network layer to "catch up."
+
+Add a preStop hook:
+
+lifecycle:
+  preStop:
+    exec:
+      command: ["/bin/sh", "-c", "sleep 15"]
+
+Adjust terminationGracePeriodSeconds: Ensure this is higher than your sleep value (e.g., 30s).
+
+Result: The pod receives the preStop signal, sleeps for 15 seconds (during which time the endpoints are updated across the cluster), and only then receives the SIGTERM to shut down.
+
+Q3: QoS Classes and Eviction Priority
+
+Which pod gets evicted first?
+Pod A (requests: 128Mi, no limit) will be evicted first.
+
+The Reasoning (QoS Classes):
+Kubernetes assigns a Quality of Service (QoS) class to every pod based on its requests and limits:
+
+Guaranteed: requests == limits for all containers. (Pod B)
+
+Burstable: requests are specified, but they are less than limits (or limits are not specified). (Pod A)
+
+BestEffort: No requests or limits specified.
+
+When a node runs out of memory (OOM), the kubelet must evict pods to save the node. It does this based on a strict priority hierarchy to protect the most "predictable" workloads:
+BestEffort
+→
+→
+ Burstable
+→
+→
+ Guaranteed.
+
+Since Pod B is Guaranteed, it is the last to be killed. Pod A is Burstable, making it a prime target for eviction as soon as the node feels pressure, especially if Pod A is using more memory than its requested 128Mi.
+
+Q4: The Static Nature of Environment Variables
+
+Why the pod still sees the old value:
+Environment variables are injected into a process at startup.
+
+When a ConfigMap is mounted as an environment variable (envFrom or valueFrom), the Kubelet reads the value of the ConfigMap only when the container is being created. Once the process (the app) starts, those variables are locked into the process's environment memory.
+
+Updating the ConfigMap in the Kubernetes API does not trigger an update to the environment variables of a running process. The "10-minute wait" is irrelevant because there is no mechanism in Linux to "hot-swap" the environment variables of a running PID.
+
+Two Options to pick up the new value:
+
+The "Hard Reset" (Restart):
+Perform a rollout restart of the deployment:
+kubectl rollout restart deployment <deployment-name>
+This kills the pods and starts new ones, forcing the Kubelet to inject the updated ConfigMap values during startup.
+
+The "Dynamic" Approach (Volume Mount):
+Instead of environment variables, mount the ConfigMap as a volume.
+
+How it works: When you mount a ConfigMap as a volume, the Kubelet creates a file in the pod. When the ConfigMap is updated in the API, the Kubelet eventually updates the file on the disk (usually within a minute).
+
+Requirement: The application must be written to "watch" the file for changes or re-read the file periodically. This allows the app to update its configuration without a restart.
+
+
+This is a classic "Orphaned Resource" scenario. To solve this, you have to understand that Finalizers are a safety lock.
+
+When a resource has a finalizer, Kubernetes will not remove the object from the database (etcd) until the controller responsible for that finalizer sees the deletionTimestamp and removes the string from the finalizers list. Because you deleted the operator, there is no "brain" left to perform the cleanup and unlock the lock.
+
+If you simply "force delete" the finalizers now, you will create cloud zombies: the Kubernetes objects will vanish, but the EBS volumes and Route53 records will persist in AWS forever, costing the company money and cluttering the infrastructure.
+
+Here is the professional, zero-leak cleanup process.
+
+Step 1: Discovery and Inventory
+
+Before touching the Kubernetes API, you must identify exactly what external resources are being leaked. You cannot rely on memory; you need a hard list.
+
+I would run a script to extract the external IDs from the stuck CRs:
+
+# Example: Extracting EBS Volume IDs and Route53 names from the CRs
+kubectl get database.mycompany.com -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.volumeId}{"\t"}{.spec.dnsRecord}{"\n"}{end}' > cleanup_list.txt
+
+This gives me a mapping of: K8s-Resource-Name
+→
+→
+ EBS-Volume-ID
+→
+→
+ Route53-Record.
+
+Step 2: External Infrastructure Cleanup (The "Manual" Controller)
+
+Since the operator is gone, you are now the operator. You must manually perform the cleanup that the operator was designed to do.
+
+Using the cleanup_list.txt, I would write a simple bash script using the AWS CLI to delete the orphaned resources:
+
+Route53: Delete the specific A/CNAME records.
+
+EBS: Delete the volumes (after verifying they aren't being used by other unexpected processes).
+
+Note: I do this BEFORE removing the finalizers. If I remove the finalizers first and my script crashes halfway through, I have lost the only record of which EBS volumes belonged to which deleted pod.
+
+Step 3: Removing the Finalizers (Unlocking the API)
+
+Now that the cloud resources are gone, it is safe to tell Kubernetes to stop waiting for the operator and just delete the objects.
+
+Doing this via kubectl edit for 50 resources is too slow. I would use a kubectl patch command with a JSON merge patch to set the finalizers array to null.
+
+The exact command:
+
+# Loop through all stuck resources and strip the finalizers
+for resource in $(kubectl get database.mycompany.com -o name); do
+    kubectl patch $resource --type=merge -p '{"metadata":{"finalizers":null}}'
+done
+Step 4: Verification
+
+Finally, I verify that the resources are gone and the "Terminating" state has cleared:
+
+kubectl get database.mycompany.com
+# Expected output: "No resources found"
+Summary of the "SRE Mindset" here:
+Action	Why?	Risk if skipped
+Inventory First	To create a source of truth.	Losing track of which EBS volumes to delete.
+Cloud Cleanup First	To prevent resource leaks.	"Zombie" costs and infrastructure clutter.
+Patch Finalizers Last	To unlock the K8s API.	Objects stay in Terminating forever.
+--type=merge	To ensure a clean overwrite of the list.	Partial updates that don't actually clear the lock.
+
+==========================================================================================================
+
+
+# 📝 GRADING — Q5
+
+## ✅ Textbook SRE answer.
+
+The ordering is what matters here, and you got it exactly right:
+
+**Inventory → External cleanup → Patch finalizers → Verify**
+
+Most engineers panic and jump straight to patching finalizers. Resources vanish from Kubernetes, everyone celebrates, and three months later someone finds $2,000/month in orphaned EBS volumes with no trail back to what created them.
+
+Your explicit callout — *"If I remove the finalizers first and my script crashes halfway through, I have lost the only record of which EBS volumes belonged to which deleted pod"* — that's the exact reasoning a senior engineer uses. The Kubernetes object IS your inventory. Once it's gone, your audit trail is gone.
+
+One addition to your process:
+
+```bash
+
+Step 0 (before everything): PREVENT FURTHER DAMAGE
+
+If the CRD still exists, developers might create NEW Database resources
+
+With no operator running, these will create K8s objects but NO actual databases
+
+Confusing and dangerous
+
+
+
+Option A: Delete the CRD (blocks all new resources of this type)
+
+BUT: deleting a CRD deletes ALL its custom resources → cascading deletion
+
+→ would bypass your careful cleanup process
+
+DO NOT delete the CRD yet
+
+
+
+Option B: Use a ValidatingWebhook or Kyverno policy to BLOCK creation
+
+of new Database resources until the operator is restored or fully cleaned up
+
+
+
+apiVersion: kyverno.io/v1
+
+kind: ClusterPolicy
+
+metadata:
+
+ name: block-database-creation
+
+spec:
+
+ validationFailureAction: Enforce
+
+ rules:
+
+ - name: block-new-databases
+
+   match:
+
+     any:
+
+     - resources:
+
+         kinds:
+
+         - Database
+
+   validate:
+
+     message: "Database operator is being decommissioned. Contact platform team."
+
+     deny: {}
+
+
+
+Step 5 (after cleanup): NOW delete the CRD safely
+
+kubectl delete crd databases.mycompany.io
+
+No custom resources left → clean deletion
+
+```
+
+Also: **document what happened.** Write a postmortem or at minimum a runbook: "How to safely decommission a CRD operator." The next time someone removes an operator, this process should be followed, not reinvented.
+
+---
+
+---
+
+Remaining for Phase 2: one more lesson on **Kubernetes operational patterns** — service mesh basics (Istio architecture, because NovaMart uses it), GitOps with ArgoCD (the deployment model), and advanced troubleshooting workflows. Then Phase 2 closes.
+
+# PHASE 2 — Lesson 4: Kubernetes Operational Patterns
+
+---
+
+### Istio Service Mesh — Architecture
+
+```
+
+NovaMart runs Istio. You need to understand the data plane 
+
+and control plane, not just "it does mTLS."
+
+
+
+CONTROL PLANE (istiod):
+
+┌──────────────────────────────────────────┐
+
+│                 istiod                    │
+
+│  ┌──────────┐ ┌─────────┐ ┌───────────┐ │
+
+│  │  Pilot    │ │ Citadel │ │  Galley   │ │
+
+│  │          │ │         │ │           │ │
+
+│  │ Service   │ │ Cert    │ │ Config    │ │
+
+│  │ discovery │ │ mgmt    │ │ validation│ │
+
+│  │ + config  │ │ + mTLS  │ │           │ │
+
+│  │ push to   │ │ rotation│ │           │ │
+
+│  │ Envoy     │ │         │ │           │ │
+
+│  └──────────┘ └─────────┘ └───────────┘ │
+
+└──────────────────┬───────────────────────┘
+
+                  │ xDS API (pushes config to every Envoy)
+
+                  │
+
+DATA PLANE (Envoy sidecars):
+
+┌──────────────────▼───────────────────────┐
+
+│  Pod                                      │
+
+│  ┌────────────┐    ┌──────────────────┐  │
+
+│  │    App     │◄──►│  Envoy Proxy     │  │
+
+│  │ Container  │    │  (sidecar)       │  │
+
+│  │            │    │                  │  │
+
+│  │ Thinks it's│    │ - mTLS           │  │
+
+│  │ talking    │    │ - Load balancing  │  │
+
+│  │ directly   │    │ - Retries         │  │
+
+│  │ to other   │    │ - Circuit breaking│  │
+
+│  │ services   │    │ - Observability   │  │
+
+│  │            │    │ - Rate limiting   │  │
+
+│  └────────────┘    └──────────────────┘  │
+
+└──────────────────────────────────────────┘
+
+
+
+HOW TRAFFIC FLOWS:
+
+App A sends request to App B (http://service-b:8080/api)
+
+1. iptables rules (injected by Istio init container) intercept ALL outbound traffic
+
+2. Traffic redirected to App A's Envoy sidecar (localhost:15001)
+
+3. Envoy A applies policies: retry, timeout, circuit breaker
+
+4. Envoy A establishes mTLS connection to Envoy B
+
+5. Envoy B receives, terminates mTLS, forwards to App B on localhost
+
+6. App B processes request, returns response
+
+7. Response flows back through both Envoys
+
+\#
+
+The apps never know Istio exists. Zero code changes.
+
+All security, observability, and traffic control is in the mesh.
+
+```
+
+### Istio Resources — What You'll Configure Daily
+
+```yaml
+
+VIRTUAL SERVICE — traffic routing rules:
+
+apiVersion: networking.istio.io/v1beta1
+
+kind: VirtualService
+
+metadata:
+
+ name: api-routing
+
+spec:
+
+ hosts:
+
+ - api-service
+
+ http:
+
+ # Canary: 10% to v2, 90% to v1
+
+ - route:
+
+   - destination:
+
+       host: api-service
+
+       subset: v2
+
+     weight: 10
+
+   - destination:
+
+       host: api-service
+
+       subset: v1
+
+     weight: 90
+
+   
+
+   # Timeout:
+
+   timeout: 5s
+
+   
+
+   # Retries:
+
+   retries:
+
+     attempts: 3
+
+     perTryTimeout: 2s
+
+     retryOn: 5xx,reset,connect-failure,retriable-4xx
+
+
+
+ # Header-based routing (testing in production):
+
+ - match:
+
+   - headers:
+
+       x-debug-user:
+
+         exact: "true"
+
+   route:
+
+   - destination:
+
+       host: api-service
+
+       subset: v2        # debug users always get v2
+
+
+
+\---
+
+DESTINATION RULE — defines subsets and connection policies:
+
+apiVersion: networking.istio.io/v1beta1
+
+kind: DestinationRule
+
+metadata:
+
+ name: api-destination
+
+spec:
+
+ host: api-service
+
+ trafficPolicy:
+
+   connectionPool:
+
+     tcp:
+
+       maxConnections: 100
+
+     http:
+
+       h2UpgradePolicy: UPGRADE        # use HTTP/2
+
+       maxRequestsPerConnection: 1000
+
+   
+
+   # Circuit breaker:
+
+   outlierDetection:
+
+     consecutive5xxErrors: 5            # 5 errors in a row
+
+     interval: 30s                      # check every 30s
+
+     baseEjectionTime: 30s             # eject for 30s
+
+     maxEjectionPercent: 50            # never eject more than 50% of hosts
+
+   
+
+   # mTLS:
+
+   tls:
+
+     mode: ISTIO\_MUTUAL                # enforce mTLS between services
+
+ 
+
+ subsets:
+
+ - name: v1
+
+   labels:
+
+     version: v1
+
+ - name: v2
+
+   labels:
+
+     version: v2
+
+
+
+\---
+
+GATEWAY — external traffic entry point (replaces Ingress):
+
+apiVersion: networking.istio.io/v1beta1
+
+kind: Gateway
+
+metadata:
+
+ name: main-gateway
+
+spec:
+
+ selector:
+
+   istio: ingressgateway            # runs on Istio ingress pods
+
+ servers:
+
+ - port:
+
+     number: 443
+
+     name: https
+
+     protocol: HTTPS
+
+   tls:
+
+     mode: SIMPLE
+
+     credentialName: api-tls-cert   # K8s Secret with TLS cert
+
+   hosts:
+
+   - "api.novamart.com"
+
+   - "admin.novamart.com"
+
+
+
+\---
+
+PEER AUTHENTICATION — mTLS policy:
+
+apiVersion: security.istio.io/v1beta1
+
+kind: PeerAuthentication
+
+metadata:
+
+ name: default
+
+ namespace: production
+
+spec:
+
+ mtls:
+
+   mode: STRICT                     # ALL traffic must be mTLS
+
+   # PERMISSIVE: accept both mTLS and plaintext (migration mode)
+
+   # STRICT: only mTLS (production)
+
+   # DISABLE: no mTLS
+
+
+
+\---
+
+AUTHORIZATION POLICY — L7 access control:
+
+apiVersion: security.istio.io/v1beta1
+
+kind: AuthorizationPolicy
+
+metadata:
+
+ name: payment-access
+
+ namespace: production
+
+spec:
+
+ selector:
+
+   matchLabels:
+
+     app: payment-service
+
+ action: ALLOW
+
+ rules:
+
+ - from:
+
+   - source:
+
+       principals: \["cluster.local/ns/production/sa/order-service"]
+
+       # Only order-service's service account can call payment-service
+
+   to:
+
+   - operation:
+
+       methods: \["POST"]
+
+       paths: \["/api/v1/charge"]
+
+       # Only POST to /api/v1/charge
+
+ # Everything else → DENIED
+
+ # L7-aware: can restrict by HTTP method, path, headers
+
+ # Way more powerful than NetworkPolicy (which is L3/L4 only)
+
+```
+
+### Istio Observability — The Real Value
+
+```bash
+
+Istio gives you THREE pillars for FREE (no app instrumentation):
+
+
+
+1. DISTRIBUTED TRACING:
+
+Every Envoy sidecar generates trace spans
+
+Request flow: Gateway → API → Order → Payment → Notification
+
+Each hop creates a span with timing
+
+Requires: app forwards trace headers (x-request-id, x-b3-traceid, etc.)
+
+Backends: Jaeger, Zipkin, Grafana Tempo
+
+
+
+2. METRICS:
+
+Every Envoy emits standard metrics:
+
+istio\_requests\_total{source, destination, response\_code}
+
+istio\_request\_duration\_milliseconds{source, destination}
+
+istio\_tcp\_connections\_opened\_total
+
+Scraped by Prometheus automatically
+
+Dashboards: Grafana with Istio dashboard
+
+
+
+3. ACCESS LOGS:
+
+Every request logged by Envoy with:
+
+source, destination, method, path, status, latency, bytes
+
+Configurable: JSON format, filter by status code
+
+
+
+KIALI — Istio dashboard:
+
+Visual service mesh topology
+
+Real-time traffic flow between services
+
+Health status, error rates, latency
+
+Configuration validation
+
+"Is my VirtualService actually routing correctly?"
+
+```
+
+---
+
+### ArgoCD — GitOps Deployment Model
+
+```
+
+GITOPS PRINCIPLE:
+
+ Git is the single source of truth for cluster state.
+
+ The desired state is declared in Git.
+
+ An automated process ensures the cluster matches Git.
+
+ No manual kubectl apply. Ever.
+
+
+
+┌──────────┐    push     ┌──────────┐
+
+│Developer │────────────►│   Git    │
+
+│          │             │  (Bitbucket)│
+
+└──────────┘             └─────┬────┘
+
+                              │ watch
+
+                        ┌─────▼─────┐
+
+                        │  ArgoCD   │
+
+                        │           │
+
+                        │ Compare:  │
+
+                        │ Git state │
+
+                        │ vs        │
+
+                        │ Cluster   │
+
+                        │ state     │
+
+                        └─────┬─────┘
+
+                              │ sync
+
+                        ┌─────▼─────┐
+
+                        │    EKS    │
+
+                        │  Cluster  │
+
+                        └───────────┘
+
+```
+
+```yaml
+
+ARGOCD APPLICATION:
+
+apiVersion: argoproj.io/v1alpha1
+
+kind: Application
+
+metadata:
+
+ name: api-service
+
+ namespace: argocd
+
+spec:
+
+ project: production
+
+ 
+
+ source:
+
+   repoURL: https://bitbucket.org/novamart/k8s-manifests.git
+
+   targetRevision: main
+
+   path: services/api/overlays/production
+
+   # Or Helm:
+
+   # path: charts/api
+
+   # helm:
+
+   #   valueFiles:
+
+   #   - values-production.yaml
+
+ 
+
+ destination:
+
+   server: https://kubernetes.default.svc
+
+   namespace: production
+
+ 
+
+ syncPolicy:
+
+   automated:
+
+     prune: true              # delete resources removed from Git
+
+     selfHeal: true           # revert manual changes to match Git
+
+     # Someone kubectl edits a deployment → ArgoCD reverts it
+
+     # This enforces: Git is the ONLY way to change production
+
+   
+
+   syncOptions:
+
+   - CreateNamespace=true
+
+   - PrunePropagationPolicy=foreground
+
+   - ApplyOutOfSyncOnly=true  # only sync changed resources (faster)
+
+   
+
+   retry:
+
+     limit: 5
+
+     backoff:
+
+       duration: 5s
+
+       maxDuration: 3m
+
+       factor: 2
+
+
+
+\---
+
+ARGOCD PROJECT — RBAC for applications:
+
+apiVersion: argoproj.io/v1alpha1
+
+kind: AppProject
+
+metadata:
+
+ name: production
+
+ namespace: argocd
+
+spec:
+
+ description: Production services
+
+ sourceRepos:
+
+ - 'https://bitbucket.org/novamart/\*'
+
+ 
+
+ destinations:
+
+ - namespace: production
+
+   server: https://kubernetes.default.svc
+
+ - namespace: production-jobs
+
+   server: https://kubernetes.default.svc
+
+ # Can only deploy to production and production-jobs namespaces
+
+ 
+
+ clusterResourceWhitelist:
+
+ - group: ''
+
+   kind: Namespace
+
+ # Can create namespaces but not ClusterRoles, etc.
+
+ 
+
+ namespaceResourceBlacklist:
+
+ - group: ''
+
+   kind: ResourceQuota
+
+ # Can't modify ResourceQuotas (platform team controls these)
+
+```
+
+### ArgoCD Patterns
+
+```bash
+
+REPO STRUCTURE (recommended):
+
+
+
+Option 1: App of Apps
+
+One "root" Application that deploys other Applications
+
+k8s-manifests/
+
+├── apps/                          # ArgoCD Application definitions
+
+│   ├── api-service.yaml
+
+│   ├── order-service.yaml
+
+│   ├── payment-service.yaml
+
+│   └── monitoring.yaml
+
+├── services/
+
+│   ├── api/
+
+│   │   ├── base/                  # Kustomize base
+
+│   │   │   ├── deployment.yaml
+
+│   │   │   ├── service.yaml
+
+│   │   │   └── kustomization.yaml
+
+│   │   └── overlays/
+
+│   │       ├── staging/
+
+│   │       │   └── kustomization.yaml
+
+│   │       └── production/
+
+│   │           └── kustomization.yaml
+
+│   ├── order/
+
+│   └── payment/
+
+└── platform/
+
+   ├── monitoring/
+
+   ├── istio/
+
+   └── cert-manager/
+
+
+
+Option 2: ApplicationSet (dynamic generation)
+
+apiVersion: argoproj.io/v1alpha1
+
+kind: ApplicationSet
+
+metadata:
+
+ name: all-services
+
+spec:
+
+ generators:
+
+ - git:
+
+     repoURL: https://bitbucket.org/novamart/k8s-manifests.git
+
+     revision: main
+
+     directories:
+
+     - path: services/\*           # one Application per directory
+
+ template:
+
+   metadata:
+
+     name: '{{path.basename}}'
+
+   spec:
+
+     project: production
+
+     source:
+
+       repoURL: https://bitbucket.org/novamart/k8s-manifests.git
+
+       targetRevision: main
+
+       path: '{{path}}/overlays/production'
+
+     destination:
+
+       server: https://kubernetes.default.svc
+
+       namespace: production
+
+Automatically creates an ArgoCD Application for every service directory
+
+Add a new service directory → ArgoCD app created automatically
+
+
+
+SYNC WAVES — ordered deployment:
+
+metadata:
+
+ annotations:
+
+   argocd.argoproj.io/sync-wave: "0"    # namespaces first
+
+\---
+
+metadata:
+
+ annotations:
+
+   argocd.argoproj.io/sync-wave: "1"    # configmaps/secrets second
+
+\---
+
+metadata:
+
+ annotations:
+
+   argocd.argoproj.io/sync-wave: "2"    # deployments last
+
+Lower number = deployed first
+
+Use for: namespace before resources, DB migration before app
+
+
+
+SYNC WINDOWS — maintenance windows:
+
+spec:
+
+ syncWindows:
+
+ - kind: deny
+
+   schedule: '0 22 \* \* 5'         # no deploys Friday 10pm
+
+   duration: 60h                   # until Monday 10am
+
+   clusters: \['production']
+
+ - kind: allow
+
+   schedule: '0 9 \* \* 1-5'        # allow deploys weekdays 9am
+
+   duration: 10h
+
+```
+
+### CI/CD Pipeline → ArgoCD Flow
+
+```
+
+TYPICAL FLOW (NovaMart):
+
+
+
+1\. Developer pushes code to Bitbucket (services/api)
+
+2\. Jenkins pipeline triggers:
+
+  a. Build → test → lint → security scan
+
+  b. Docker build → push to ECR (my-app:v1.2.3-abc1234)
+
+  c. Update the image tag in k8s-manifests repo:
+
+     sed -i 's|image:.\*|image: ecr/api:v1.2.3-abc1234|' \\
+
+       services/api/overlays/production/kustomization.yaml
+
+     git commit \&\& git push
+
+
+
+3\. ArgoCD detects Git change (3-minute poll or webhook)
+
+4\. ArgoCD compares Git state vs cluster state → OutOfSync
+
+5\. ArgoCD syncs: applies updated manifests to cluster
+
+6\. Deployment rolls out new pods
+
+7\. ArgoCD reports: Synced, Healthy
+
+
+
+WHY SEPARATE REPOS:
+
+App code repo (Bitbucket): services/api source code
+
+K8s manifests repo (Bitbucket): deployment configs
+
+\#
+
+Separation because:
+
+- Different change velocity (code changes hourly, infra changes weekly)
+
+- Different access control (devs change code, platform team owns manifests)
+
+- CI pipeline updates manifests repo → ArgoCD syncs
+
+- Clean audit trail: "who changed what in production" = Git log
+
+```
+
+---
+
+### Kustomize — Template-Free Configuration
+
+```yaml
+
+Kustomize overlays base manifests without templating
+
+Built into kubectl (kubectl apply -k)
+
+
+
+base/kustomization.yaml:
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+
+kind: Kustomization
+
+resources:
+
+\- deployment.yaml
+
+\- service.yaml
+
+\- configmap.yaml
+
+
+
+overlays/production/kustomization.yaml:
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+
+kind: Kustomization
+
+resources:
+
+\- ../../base
+
+
+
+namePrefix: prod-
+
+
+
+commonLabels:
+
+ environment: production
+
+
+
+patches:
+
+\- target:
+
+   kind: Deployment
+
+   name: api
+
+ patch: |-
+
+   - op: replace
+
+     path: /spec/replicas
+
+     value: 10
+
+   - op: replace
+
+     path: /spec/template/spec/containers/0/resources/limits/memory
+
+     value: 1Gi
+
+
+
+configMapGenerator:
+
+\- name: app-config
+
+ literals:
+
+ - LOG\_LEVEL=warn
+
+ - FEATURE\_NEW\_CHECKOUT=true
+
+ # Generates ConfigMap with content hash suffix
+
+ # app-config-h2d8f → changes trigger pod restart automatically
+
+
+
+images:
+
+\- name: my-app
+
+ newName: 123456.dkr.ecr.us-east-1.amazonaws.com/api
+
+ newTag: v1.2.3
+
+
+
+KUSTOMIZE vs HELM:
+
+Kustomize: patches over plain YAML, no templating language
+
+Helm: full Go template engine, charts, repos, hooks
+
+\#
+
+Use Kustomize when: your manifests are simple, overlays per environment
+
+Use Helm when: packaging for distribution, complex logic, conditionals
+
+Many teams: Helm for third-party (prometheus, cert-manager)
+
+            Kustomize for internal services
+
+ArgoCD supports both natively
+
+```
+
+---
+
+### Advanced Troubleshooting Workflows
+
+#### Workflow 1: Pod CrashLoopBackOff — Systematic Debug
+
+```bash
+
+Step 1: Get the error
+
+kubectl describe pod <pod>
+
+Look at: Events, State.Reason, State.ExitCode, LastState
+
+
+
+Step 2: Check logs
+
+kubectl logs <pod>                    # current attempt
+
+kubectl logs <pod> --previous         # last crash (critical!)
+
+--previous shows the logs from the LAST container instance
+
+Current logs might be empty if container crashes immediately
+
+
+
+Step 3: Exit code analysis
+
+0: clean exit (CMD completed — wrong for long-running services)
+
+1: application error (check logs)
+
+126: permission denied on entrypoint
+
+127: entrypoint not found (wrong CMD/ENTRYPOINT, wrong image)
+
+137: SIGKILL (OOM killed)
+
+139: segfault
+
+143: SIGTERM (graceful shutdown — shouldn't cause CrashLoop)
+
+
+
+Step 4: If OOMKilled (exit code 137):
+
+kubectl describe pod <pod> | grep -i oom
+
+State.OOMKilled: true
+
+Increase memory limits or fix memory leak
+
+
+
+Step 5: If "exec format error" or "not found":
+
+Wrong architecture (AMD64 image on ARM node)
+
+Or: shell form CMD with missing /bin/sh (scratch/distroless image)
+
+Check: docker manifest inspect <image> for platform
+
+
+
+Step 6: If container starts then crashes after seconds:
+
+Likely: failed health check → liveness probe kills it
+
+Check: liveness probe configuration
+
+Is initialDelaySeconds long enough for app startup?
+
+Does the health endpoint actually work?
+
+kubectl get events --field-selector involvedObject.name=<pod>
+
+Look for: "Liveness probe failed" events
+
+
+
+Step 7: If all else fails — debug container:
+
+kubectl debug -it <pod> --image=nicolaka/netshoot --target=<container>
+
+Inspect the filesystem, environment, network from inside the pod
+
+```
+
+#### Workflow 2: Service Not Reachable — End-to-End Debug
+
+```bash
+
+Service: my-service.production.svc.cluster.local:8080
+
+Client pod gets: "connection refused" or timeout
+
+
+
+Step 1: Does the service exist?
+
+kubectl get svc my-service -n production
+
+Check: ClusterIP assigned, ports correct, selector matches pods
+
+
+
+Step 2: Does the service have endpoints?
+
+kubectl get endpoints my-service -n production
+
+If EMPTY: no pods match the service selector
+
+kubectl get pods -n production -l <selector-from-service> --show-labels
+
+Labels mismatch? Pods not Ready?
+
+
+
+Step 3: Is the pod actually listening?
+
+kubectl exec <pod> -- ss -tlnp
+
+Is the app bound to 0.0.0.0:8080 or 127.0.0.1:8080?
+
+127.0.0.1 → only reachable from within the pod, not via Service
+
+
+
+Step 4: Can you reach the pod directly?
+
+kubectl exec <client-pod> -- curl http://<pod-ip>:8080
+
+If this works but Service doesn't → kube-proxy/iptables issue
+
+If this fails → app issue or NetworkPolicy blocking
+
+
+
+Step 5: DNS resolution working?
+
+kubectl exec <client-pod> -- nslookup my-service.production.svc.cluster.local
+
+If fails → CoreDNS issue
+
+kubectl get pods -n kube-system -l k8s-app=kube-dns
+
+CoreDNS pods running? Check CoreDNS logs
+
+
+
+Step 6: NetworkPolicy blocking?
+
+kubectl get networkpolicy -n production
+
+Any policy selecting the target pod?
+
+Does it allow ingress from the source pod's labels/namespace?
+
+
+
+Step 7: Istio/service mesh interference?
+
+If Istio is injected:
+
+kubectl exec <pod> -c istio-proxy -- curl localhost:15000/clusters
+
+Shows Envoy's view of endpoints
+
+Check: is the destination cluster showing healthy endpoints?
+
+istioctl analyze -n production
+
+Reports Istio misconfigurations
+
+```
+
+#### Workflow 3: Node Not Ready — Systematic Triage
+
+```bash
+
+kubectl get nodes
+
+NAME           STATUS     ROLES    AGE   VERSION
+
+ip-10-0-1-50   NotReady   <none>   45d   v1.28.2
+
+
+
+Step 1: Describe the node
+
+kubectl describe node ip-10-0-1-50
+
+Conditions:
+
+  Ready: False (reason: KubeletNotReady)
+
+  MemoryPressure: True/False
+
+  DiskPressure: True/False
+
+  PIDPressure: True/False
+
+
+
+Step 2: Check kubelet
+
+SSH to node (or use SSM Session Manager):
+
+systemctl status kubelet
+
+journalctl -u kubelet --since "30 minutes ago" | tail -100
+
+Common: certificate expired, API server unreachable,
+
+container runtime unresponsive
+
+
+
+Step 3: Check container runtime
+
+systemctl status containerd
+
+crictl ps                          # list running containers
+
+crictl pods                        # list pods
+
+If containerd is down → all containers dead → node NotReady
+
+
+
+Step 4: Check disk
+
+df -h                              # disk space
+
+df -i                              # inodes
+
+Disk full → kubelet can't function → DiskPressure → NotReady
+
+Common cause: container logs not rotated, image cache full
+
+
+
+Step 5: Check resources
+
+free -h                            # memory
+
+top                                # CPU/process count
+
+Memory exhaustion → OOM → kubelet process killed → NotReady
+
+
+
+Step 6: EKS-specific
+
+Check EC2 instance status:
+
+aws ec2 describe-instance-status --instance-ids <id>
+
+System status check failed → hardware issue → AWS should replace
+
+Instance status check failed → OS issue → may need reboot
+
+
+
+Step 7: Recovery
+
+If fixable (disk full, restart kubelet):
+
+sudo systemctl restart kubelet
+
+If not fixable:
+
+kubectl drain ip-10-0-1-50 --ignore-daemonsets --delete-emptydir-data
+
+kubectl delete node ip-10-0-1-50
+
+Cluster autoscaler/Karpenter replaces it
+
+```
+
+# 📋 QUICK REFERENCE — K8s Operational Patterns
+
+```
+
+ISTIO SERVICE MESH:
+
+ Control plane: istiod (Pilot + Citadel + Galley)
+
+ Data plane: Envoy sidecars (auto-injected)
+
+ Traffic flow: App → iptables → Envoy A → mTLS → Envoy B → App
+
+ VirtualService: routing, canary %, retries, timeouts, header matching
+
+ DestinationRule: subsets, circuit breaker, connection pools, mTLS
+
+ Gateway: external traffic entry (replaces Ingress)
+
+ PeerAuthentication: STRICT (mTLS only) or PERMISSIVE (migration)
+
+ AuthorizationPolicy: L7 access control (method, path, service account)
+
+ Observability: metrics + traces + access logs for FREE
+
+
+
+ARGOCD GITOPS:
+
+ Git = single source of truth
+
+ Application: source (Git) → destination (cluster)
+
+ syncPolicy.automated: prune + selfHeal
+
+ App of Apps: root Application deploys child Applications
+
+ ApplicationSet: dynamic Application generation
+
+ Sync waves: ordered deployment (namespace → config → app)
+
+ Sync windows: prevent deploys during risky periods
+
+ CI updates Git → ArgoCD syncs cluster
+
+
+
+KUSTOMIZE:
+
+ base/ + overlays/env/ pattern
+
+ Patches, namePrefix, commonLabels, images
+
+ configMapGenerator: auto-hash suffix → triggers pod restart
+
+ Built into kubectl (kubectl apply -k)
+
+
+
+TROUBLESHOOTING:
+
+ CrashLoopBackOff:
+
+   logs --previous → exit code → OOM? permission? architecture?
+
+   → liveness probe misconfigured? → debug container
+
+ Service unreachable:
+
+   svc exists? → endpoints? → pod listening on 0.0.0.0? 
+
+   → direct pod curl → DNS → NetworkPolicy → Istio
+
+ Node NotReady:
+
+   describe → kubelet status → containerd → disk → memory
+
+   → EC2 status → drain + replace
+
+```
+
+---
+
+# 📝 Retention Questions — Lesson 4
+
+**Q1:** NovaMart is rolling out a new version of the payment service. They want to send 5% of traffic to v2, monitor error rates for 30 minutes, then gradually increase to 100%. Write the Istio VirtualService and DestinationRule for the initial 5% canary, and explain what happens if v2's error rate spikes — how does Istio's circuit breaker protect the system?
+
+**Q2:** A developer manually runs `kubectl edit deployment api -n production` to increase replicas from 5 to 10. Two minutes later, the replicas are back to 5. They're confused. Explain what happened and why this is the correct behavior.
+
+**Q3:** Your CI pipeline (Jenkins) builds a new image and needs to trigger a deployment via ArgoCD. Describe the complete flow from code push to running pods, and explain why Jenkins should NOT directly `kubectl apply` to the cluster.
+
+**Q4:** It's 3 AM. PagerDuty alert: Node `ip-10-0-1-50` is `NotReady`. 15 pods were running on it including 3 critical API pods. Walk through your triage and recovery process step by step.
+
+**Go.** 🎯
+
+📝 GRADING — Q5
+Q5: ✅ Good, but still missing one critical step
+Your reasoning is right:
+
+finalizers are a safety lock
+deleting them first leaks cloud resources
+inventory first
+manual cleanup second
+strip finalizers last
+That's the correct backbone.
+
+But you skipped the proper first move:
+
+The first thing you should try is restoring the operator
+You went straight to becoming the operator manually. That's workable, but not the best answer.
+
+If the operator still exists in source control / Helm chart / image registry, the cleanest path is:
+
+Reinstall or restore the operator
+Let it reconcile the deletionTimestamp
+Let it clean up EBS + Route53
+Let it remove its own finalizers naturally
+That preserves intended cleanup logic, ordering, retries, idempotency, and any edge cases the operator encoded that your bash script will absolutely miss because bash scripts are where rigor goes to die.
+
+You should only do manual cleanup if:
+
+the operator image is gone
+the CRD/controller version is incompatible
+the operator is permanently retired
+the cleanup logic is known and simple enough to reproduce safely
+What a stronger answer looks like
+Proper sequence:
+text
+1. Freeze further deletes/changes
+2. Inventory stuck CRs and referenced external resources
+3. Try to restore the deleted operator/controller
+4. If restore succeeds:
+     - let it reconcile deletions
+     - monitor cleanup
+     - verify finalizers removed naturally
+5. If restore is impossible:
+     - manually clean up external dependencies
+     - verify cleanup
+     - remove finalizers
+6. Audit for stragglers and cost leaks
+7. Add prevention: uninstall procedure, admission guardrails, runbook
+What else you were missing
+1. Verification must happen in AWS, not just Kubernetes
+Your final verification was:
+
+bash
+kubectl get database.mycompany.com
+That's not enough. That's half a check.
+
+You also need to verify:
+
+EBS volumes deleted
+Route53 records removed
+any related snapshots, ENIs, security groups, tags, alarms, backups, IAM artifacts, or load balancer targets aren't left behind
+Because "resource disappeared from etcd" does not mean cleanup happened. It just means you've stopped seeing the corpse.
+
+2. You should protect against accidental deletion of in-use resources
+You said:
+
+delete the volumes (after verifying they aren't being used)
+
+Good instinct, but too vague.
+
+For EBS, you should explicitly check:
+
+bash
+aws ec2 describe-volumes --volume-ids vol-xxx
+Look for:
+
+State: in-use vs available
+current attachments
+tags identifying ownership
+snapshots/retention implications
+For Route53:
+
+verify hosted zone
+exact record set
+weighted/failover/alias implications
+whether other systems depend on the record
+Blind deletion is how people create the second outage while fixing the first.
+
+3. Your patch is fine, but target only stuck objects
+Don't patch every CR blindly if some are healthy and not terminating.
+
+Safer pattern:
+
+bash
+kubectl get database.mycompany.com -o json | \
+jq -r '.items[]
+| select(.metadata.deletionTimestamp != null)
+| .metadata.name'
+Then patch only those.
+
+4. Prevention matters
+A senior answer ends with prevention, not just cleanup.
+
+You should add:
+
+documented decommission procedure: delete CRs first, wait for cleanup, uninstall operator last
+Helm pre-delete hook / runbook checks
+admission policy blocking operator uninstall while managed CRs still exist
+monitoring for stuck finalizers / terminating resources
+periodic orphaned cloud resource audit by tag
+📊 SCORE: 4.5/5
+Why not full marks?
+
+You missed restore the operator first, which is the cleanest and most correct production answer.
+Verification was Kubernetes-only, not end-to-end.
+Prevention wasn't included.
+Still, the core judgment was good. You did not fall into the idiot trap of “just patch finalizers and move on.”
+
+PHASE 2 — Lesson 4: Kubernetes Day-2 Operations, Failures, and Production Realities
+This is the lesson that should have already existed. Kubernetes basics are nice. Production pain is nicer.
+
+1. CrashLoopBackOff — What It Actually Means
+bash
+kubectl get pods
+# api-abc   0/1   CrashLoopBackOff
+
+# This does NOT mean "Kubernetes crashed the pod."
+# It means:
+# 1. Container started
+# 2. Container exited quickly
+# 3. kubelet restarted it
+# 4. It exited again
+# 5. kubelet applies exponential backoff before next restart
+
+# Backoff sequence:
+# 10s → 20s → 40s → 80s → 160s → 300s cap
+
+# Debug:
+kubectl logs pod/api-abc --previous
+# --previous is critical. Current container may not have logs yet.
+
+kubectl describe pod/api-abc
+# Look at:
+# - Last State: Terminated
+# - Exit Code
+# - Reason
+# - Events
+
+# Common causes:
+# - Missing env var / secret
+# - Bad command/entrypoint
+# - Port already in use
+# - App exits immediately after finishing one-shot task
+# - Liveness probe killing a slow-start app
+# - OOMKilled
+# - Permission denied on mounted volume
+# - Wrong architecture image (arm64 on amd64 node)
+Exit Codes You Must Know
+text
+0   = clean exit (probably wrong workload type; should be Job, not Deployment)
+1   = generic app failure
+126 = command invoked cannot execute (permissions)
+127 = command not found
+137 = SIGKILL (OOM kill or forced stop)
+139 = segfault
+143 = SIGTERM (normal stop)
+2. ImagePullBackOff / ErrImagePull
+bash
+kubectl get pods
+# api-xyz   0/1   ImagePullBackOff
+
+kubectl describe pod api-xyz
+# Events:
+# Failed to pull image "myrepo/api:v1.2.3":
+# rpc error: code = Unknown desc = Error response from daemon:
+# pull access denied / manifest unknown / no basic auth credentials
+
+# Causes:
+# 1. Tag doesn't exist
+# 2. Wrong registry URL
+# 3. Private registry auth failure
+# 4. ECR permissions missing
+# 5. Rate limiting from Docker Hub
+# 6. Architecture mismatch in manifest
+# 7. Network path to registry blocked
+# 8. Node can't reach S3 for ECR layer download (private EKS gotcha)
+Private EKS + ECR Failure Chain
+text
+Pod scheduled
+→ kubelet asks containerd to pull image from ECR
+→ manifest request to ECR succeeds
+→ actual image layers live in S3
+→ node has no S3 Gateway Endpoint / NAT path
+→ layer download fails
+→ ImagePullBackOff
+
+This is the dependency almost everyone misses.
+3. Init Container Failures
+bash
+kubectl get pods
+# api-xyz   0/1   Init:CrashLoopBackOff
+
+# Main app container never starts because init containers run first.
+kubectl logs api-xyz -c wait-for-db
+kubectl describe pod api-xyz
+
+# Common mistakes:
+# - "wait-for-db" loops forever because service DNS wrong
+# - migration script fails due to missing secret
+# - init container image missing tooling (nc, curl, bash)
+# - permission fix init container runs as non-root and can't chown
+4. Pending But For Different Reasons Than Scheduling
+You already learned CPU, taints, affinity. Here are the rest.
+
+PVC Wait
+bash
+kubectl get pod
+# db-0   0/1   Pending
+
+kubectl describe pod db-0
+# Warning  FailedScheduling  pod has unbound immediate PersistentVolumeClaims
+
+# Translation:
+# scheduler refuses to bind pod because PVC isn't ready
+# This is storage, not compute
+Pod Security / Admission Rejection
+Sometimes the pod never exists.
+
+bash
+kubectl apply -f pod.yaml
+# Error from server: admission webhook denied the request:
+# container must set securityContext.runAsNonRoot=true
+
+# Or:
+# violates PodSecurity "restricted:latest"
+This is not a pod problem. It's an API admission problem.
+
+5. Node NotReady — What Usually Broke
+bash
+kubectl get nodes
+# ip-10-0-1-10   NotReady
+
+kubectl describe node ip-10-0-1-10
+# Conditions:
+#   Ready              False
+#   MemoryPressure     False
+#   DiskPressure       False
+#   PIDPressure        False
+# Events:
+#   NodeNotReady
+
+# Common causes:
+# 1. kubelet stopped / crashed
+# 2. container runtime (containerd) dead
+# 3. CNI plugin broken → kubelet can't report network ready
+# 4. Node lost API server connectivity
+# 5. Disk full → kubelet or runtime malfunction
+# 6. Expired node cert (self-managed clusters)
+# 7. EC2 instance impaired / underlying cloud issue
+Node debugging sequence
+bash
+# On the node:
+systemctl status kubelet
+systemctl status containerd
+journalctl -u kubelet -xe
+journalctl -u containerd -xe
+df -h
+df -i
+ip addr
+ip route
+crictl ps -a
+crictl logs <container-id>
+For EKS, you often use:
+
+SSM Session Manager
+EC2 serial console
+node debug pod via kubectl debug node/...
+6. DNS Failures in Production
+You learned CoreDNS and ndots:5. Here's production pain.
+
+Symptom patterns
+text
+- Some lookups slow, some instant
+- External APIs time out only from K8s
+- Pod can ping IP but not hostname
+- DNS works on one node, fails on another
+- Intermittent NXDOMAIN / SERVFAIL
+Real causes
+text
+1. CoreDNS overloaded
+2. NodeLocal DNSCache absent at scale
+3. Upstream VPC resolver throttling
+4. `ndots:5` causing search path amplification
+5. Broken NetworkPolicy blocking kube-dns
+6. CoreDNS pods not spread across nodes/AZs
+7. One node has conntrack exhaustion → DNS UDP drops
+8. MTU mismatch causing fragmented DNS over UDP issues
+NodeLocal DNSCache
+text
+Without NodeLocal DNSCache:
+Pod → CoreDNS service → kube-proxy → CoreDNS pod
+
+With NodeLocal DNSCache:
+Pod → 169.254.20.10 on same node → local cache → CoreDNS only on miss
+
+Benefits:
+- lower latency
+- less conntrack churn
+- less CoreDNS load
+- fewer UDP packet drops
+If you're running large EKS clusters and not using NodeLocal DNSCache, you're choosing pain for free.
+
+7. CoreDNS Failure Modes
+bash
+kubectl -n kube-system get pods -l k8s-app=kube-dns
+kubectl -n kube-system logs deployment/coredns
+kubectl -n kube-system top pods -l k8s-app=kube-dns
+Look for:
+
+OOMKilled
+throttling due to low CPU limits
+SERVFAIL spam
+upstream timeout errors
+plugin loop errors
+no endpoints for kube-dns service
+Production fixes
+scale replicas
+add HPA
+add PDB
+topology spread across AZs
+use NodeLocal DNSCache
+ensure egress to upstream resolver
+tune cache size
+8. CNI Failures and IP Exhaustion
+You learned ENI IP limits. Here's how it burns you operationally.
+
+Symptoms
+text
+- New pods stuck ContainerCreating
+- Existing pods fine
+- Error mentions failed to assign IP
+- aws-node DaemonSet logs show IP allocation failures
+bash
+kubectl logs -n kube-system ds/aws-node
+# failed to assign an IP address to container
+# insufficient IP addresses available in subnet
+Causes
+subnet CIDR exhausted
+instance ENI/IP slot limit reached
+prefix delegation disabled
+warm IP target misconfigured
+aws-node DaemonSet unhealthy
+Fixes
+enable prefix delegation
+use larger subnets / secondary CIDR
+scale node group across more subnets
+tune WARM_IP_TARGET / MINIMUM_IP_TARGET carefully
+move to custom networking if needed
+9. ContainerCreating — The Most Annoying Fake Status
+bash
+kubectl get pods
+# api-xyz   0/1   ContainerCreating
+
+# That's not a real diagnosis. That's a waiting room.
+kubectl describe pod api-xyz
+Common actual causes:
+
+image pull in progress / failing
+CNI IP allocation failure
+volume mount failure
+secret/configmap not found
+CSI attach/mount timeout
+sandbox creation failed
+runtime shim issue
+Read the events. Always.
+10. Probes — How Teams DDoS Themselves
+Bad probes kill healthy apps.
+
+Classic failures
+liveness hits DB and restarts app when DB blips
+startup too slow, liveness kills app forever
+readiness too permissive, traffic routed before warmup
+probe endpoint expensive, causes CPU spikes
+probe timeout too low under GC pauses
+Real rules
+text
+Liveness:
+  "Should kubelet restart me because I'm irrecoverably wedged?"
+  Keep cheap and internal.
+
+Readiness:
+  "Should traffic be sent to me right now?"
+  Can include downstream dependency health.
+
+Startup:
+  "Don't let liveness/readiness touch me until boot is complete."
+11. OOMKilled in Kubernetes — More Than "Increase Memory"
+bash
+kubectl describe pod api-xyz
+# Last State: Terminated
+# Reason: OOMKilled
+Questions to ask
+Did app actually leak?
+Is limit unrealistically low?
+Is non-heap/native memory the culprit?
+Is page cache involved?
+Is sidecar consuming most of the memory?
+Did VPA recommend something else?
+Is requests too low causing bad packing on nodes?
+Is node-level memory pressure causing eviction, not cgroup OOM?
+Important distinction
+text
+Container OOM:
+  cgroup limit hit
+  container killed
+  pod may restart
+  reason often OOMKilled
+
+Node memory pressure eviction:
+  kubelet evicts pod to save node
+  reason often Evicted
+  different root cause
+People mix these up constantly.
+
+12. CPU Throttling — The Silent Performance Killer
+bash
+# Pod has:
+limits.cpu: 500m
+requests.cpu: 500m
+
+# App under load wants 1 CPU
+# Linux CFS quota throttles it to 0.5 CPU
+# Latency spikes, no crash, no obvious logs
+Symptoms
+high latency
+low actual CPU usage on dashboards
+app appears "slow" not broken
+GC pauses worse
+request queueing
+What to monitor
+container_cpu_cfs_throttled_periods_total
+container_cpu_cfs_throttled_seconds_total
+Fix
+raise or remove CPU limits for latency-sensitive workloads
+keep requests accurate
+don't blindly set equal request=limit for CPU everywhere
+memory limits are safety; CPU limits are throttling
+A lot of teams should remove CPU limits on critical services and keep requests only.
+
+13. Pod Eviction vs Preemption vs Deletion
+These are different. Stop treating them as synonyms.
+
+text
+Eviction:
+  kubelet/API-driven removal due to pressure or drain
+  respects PDBs for voluntary disruptions
+
+Preemption:
+  scheduler evicts lower-priority pods to schedule higher-priority pod
+
+Deletion:
+  user/controller requested object removal
+
+OOM kill:
+  kernel kills process inside cgroup
+Different cause. Different evidence. Different fix.
+
+14. Services With No Endpoints
+bash
+kubectl get svc api
+kubectl get endpoints api
+# ENDPOINTS: <none>
+Why?
+
+selector labels don't match pod labels
+pods not Ready
+wrong namespace
+headless service confusion
+EndpointSlice controller issue
+Debug
+bash
+kubectl get pods -l app=api --show-labels
+kubectl describe svc api
+kubectl get endpointslices -l kubernetes.io/service-name=api
+If readiness fails, service has no endpoints even if pods are Running. Running is not Ready. Kubernetes does not care about your feelings.
+
+15. EndpointSlice vs Endpoints
+Large clusters use EndpointSlice. If you're only checking Endpoints, you're already behind.
+
+text
+Endpoints:
+  legacy single object listing all pod IPs
+
+EndpointSlice:
+  scalable split across multiple objects
+  default modern mechanism
+  supports dual stack, scaling improvements
+Use:
+
+bash
+kubectl get endpointslices
+16. Jobs and CronJobs in Production
+CronJob gotchas
+missed schedule after controller downtime
+overlapping runs
+job history explosion
+long-running jobs piling up
+timezone confusion
+yaml
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  suspend: false
+Rules
+backups: Forbid
+idempotent reconciler jobs: maybe Replace
+always set history limits
+always make jobs idempotent
+always define resource requests/limits
+always think about retry side effects
+17. Secrets Rotation Reality
+Kubernetes makes secrets storage easy, rotation hard.
+
+Truths
+env var injected secrets require restart
+mounted secret volumes update eventually
+app may not reload
+DB password rotation can break long-lived connections
+external secret refresh timing matters
+dual credential overlap window is often required
+Real production pattern
+create new credential
+allow old + new temporarily
+update secret store
+rotate pods / app reload
+confirm new credential in use
+revoke old credential
+If you rotate secrets without overlap, enjoy your outage.
+
+18. Config Drift and Manual Changes
+bash
+kubectl edit deployment api
+This is how drift starts.
+
+If you use GitOps:
+
+manual change works now
+ArgoCD/Flux reverts it later
+team gets confused
+outage postmortem says "unknown rollback"
+Rules
+prod changes through Git
+emergency hotfixes must be backported to Git immediately
+use kubectl diff
+audit drift regularly
+19. Resource Requests — Scheduling Lies
+If requests are too low:
+
+scheduler overpacks nodes
+node pressure later
+noisy neighbors
+autoscaler under-reacts
+If requests are too high:
+
+wasted money
+pods Pending unnecessarily
+poor binpacking
+autoscaler overreacts
+Senior rule
+Requests should reflect steady-state p50/p90, not max fantasy or idle minimum.
+
+Use VPA recommendations as input, not gospel.
+
+20. API Server and Control Plane Bottlenecks
+Not every outage is "the app."
+
+Symptoms
+kubectl slow everywhere
+controllers lagging
+deployments stuck
+endpoints stale
+HPA delayed
+webhook timeouts cluster-wide
+Causes
+bad webhook latency
+too many watches
+huge CRDs / object size abuse
+etcd latency
+controller storms after mass resync
+excessive churn from short-lived jobs
+In managed EKS you don't fix API server internals, but you must recognize the pattern quickly.
+
+21. Webhooks — The Cluster-Wide Footgun
+You learned admission controllers. Here's the operational truth:
+
+If a validating or mutating webhook is slow or down:
+
+pod creates fail
+deploys fail
+cert renewals may fail
+namespace deletes may hang
+CRDs may fail to create
+Always define
+timeoutSeconds
+failurePolicy
+HA replicas
+PDB
+readiness probes
+no dependency on fragile downstreams
+A broken webhook can make the cluster look haunted.
+
+22. Ingress / Load Balancer Realities
+Common real issues
+health check path wrong
+targets healthy in one AZ only
+readiness probe says ready but app fails LB health check
+NLB idle timeout mismatch
+ALB target registration lag
+wrong service type/annotations
+TLS cert attached to wrong listener
+source IP expectation broken
+Must check
+Ingress events
+LB controller logs
+target group health
+SG rules both ways
+subnet tags
+externalTrafficPolicy effects
+cross-zone balancing config
+23. Node Pressure From Disk, Not Memory
+Disk kills clusters quietly.
+
+Causes
+giant container logs
+image cache bloat
+emptyDir abuse
+core dumps
+temp files
+Prometheus WAL explosion
+overlay2 inode exhaustion
+Checks
+bash
+df -h
+df -i
+du -sh /var/lib/containerd
+du -sh /var/log/containers
+du -sh /var/lib/kubelet
+If you only look at memory, you're debugging blind.
+
+24. "It Works In Docker Compose" — Why It Dies In K8s
+Real reasons:
+
+localhost assumption broken
+root filesystem read-only
+non-root user enforced
+service DNS different
+probes kill slow startup
+missing resource requests/limits
+secret/config injection different
+no persistent storage semantics
+init ordering assumption wrong
+sidecars change startup/termination timing
+Compose teaches convenience. Kubernetes charges interest on that debt.
+
+25. Runbooks and Postmortem Thinking
+Being production-ready means more than knowing commands.
+
+For every recurring class of failure, you should be able to produce:
+
+Runbook
+symptoms
+dashboards
+logs/commands
+decision tree
+mitigation
+escalation path
+rollback criteria
+Postmortem
+impact
+timeline
+root cause
+contributing factors
+detection gaps
+action items
+owner + due date
+If knowledge lives only in your head, your team doesn't have a system. It has a dependency.
+
+
+📋 QUICK REFERENCE — K8s Day-2 Operations
+text
+CRASHLOOP:
+  logs --previous
+  describe pod
+  check exit code, probe config, env vars, permissions, OOM
+
+IMAGE PULL:
+  describe pod events
+  verify tag, registry auth, ECR perms, S3 endpoint/NAT path
+
+NODE NOTREADY:
+  kubelet, containerd, disk, CNI, API connectivity
+  journalctl, crictl, df -h, df -i
+
+DNS:
+  CoreDNS load, NodeLocal DNSCache, NetworkPolicy to kube-dns,
+  ndots amplification, conntrack drops
+
+PROBES:
+  Liveness = deadlock detector
+  Readiness = traffic gate
+  Startup = slow boot protection
+  Never put fragile dependencies in liveness
+
+MEMORY:
+  OOMKilled = cgroup kill
+  Evicted = kubelet/node pressure
+  Different problem, different fix
+
+CPU:
+  limits can throttle without obvious failure
+  monitor CFS throttling metrics
+
+SERVICE NO ENDPOINTS:
+  labels, readiness, namespace, EndpointSlice
+
+CRONJOBS:
+  set concurrencyPolicy, history limits, startingDeadlineSeconds
+  make jobs idempotent
+
+DRIFT:
+  prod via Git, not kubectl edit
+  emergency fix must be backported immediately
+
+---
+
+# Lesson 3C: Everything I Owe — Operational Failure Modes
+
+---
+
+### CPU Throttling — The Silent Performance Killer
+
+```bash
+
+CPU LIMITS USE CFS (Completely Fair Scheduler) BANDWIDTH CONTROL
+
+This is NOT "you get 1 CPU core worth of compute"
+
+It's: "you get X microseconds every 100ms window"
+
+
+
+Example:
+
+Container: limits.cpu = 1000m (1 core)
+
+CFS period: 100ms (100,000 µs)
+
+CFS quota: 100,000 µs per period
+
+Container can use 100ms of CPU time per 100ms window
+
+
+
+THE THROTTLING PROBLEM:
+
+Your app has 8 threads. All 8 burst simultaneously.
+
+In the first 12.5ms, all 8 threads consume 100ms of CPU time
+
+(8 threads × 12.5ms = 100ms quota used)
+
+For the remaining 87.5ms of the window → ALL THREADS FROZEN
+
+EVERY request arriving during those 87.5ms → queued → latency spike
+
+
+
+Monitoring shows: average CPU = 30%
+
+Reality: app is frozen 87.5% of each 100ms window during bursts
+
+p99 latency: through the roof
+
+Average latency: looks fine (because most requests hit unfrozen windows)
+
+
+
+HOW TO DETECT:
+
+On the node:
+
+cat /sys/fs/cgroup/cpu,cpuacct/kubepods/pod<uid>/<container-id>/cpu.stat
+
+nr\_periods: 125000        ← number of 100ms periods elapsed
+
+nr\_throttled: 45000       ← number of periods where throttling occurred
+
+throttled\_time: 28000000  ← total ns spent throttled
+
+
+
+Throttle ratio: 45000/125000 = 36% of periods had throttling
+
+That's BAD.
+
+
+
+Prometheus metrics (via cadvisor):
+
+container\_cpu\_cfs\_throttled\_periods\_total
+
+container\_cpu\_cfs\_periods\_total
+
+Throttle ratio = throttled\_periods / total\_periods
+
+Alert when: ratio > 25% sustained for 5 minutes
+
+
+
+FIXES:
+
+
+
+Option 1: Increase CPU limits
+
+resources:
+ requests:
+   cpu: 500m
+ limits:
+   cpu: 2000m    # 4x headroom for bursts
+
+
+
+Option 2: Remove CPU limits entirely
+
+resources:
+ requests:
+   cpu: 500m
+
+ # NO limits.cpu
+
+Container can burst to any available CPU on the node
+
+requests.cpu still guarantees scheduling and proportional sharing
+
+Under contention: CPU divided proportionally by requests
+
+No contention: container uses whatever is available
+
+Used by: Google (Borg doesn't enforce CPU limits), many SRE teams
+
+
+
+Option 3: Use GOMAXPROCS / thread tuning
+
+Reduce thread count to match CPU limit
+
+1 CPU limit → GOMAXPROCS=1 (Go)
+
+1 CPU limit → -XX:ActiveProcessorCount=1 (Java)
+
+Fewer threads = less simultaneous burst = less throttling
+
+
+
+THE DEBATE:
+
+Pro limits: prevents noisy neighbor, predictable performance
+
+Anti limits: CFS throttling causes more latency issues than it prevents
+
+Google's stance: use requests only, don't set limits
+
+Most companies: set limits conservatively high (2-4x requests)
+
+NovaMart approach: limits = 4x requests for API services,
+
+  no limits for batch jobs on dedicated node pools
+
+```
+
+---
+
+### ContainerCreating — The Umbrella Failure State
+
+```bash
+
+Pod status: ContainerCreating
+
+This can hide MANY different failures:
+
+
+
+1. Image pull in progress (slow registry, large image)
+
+kubectl describe pod <pod>
+
+Events: "Pulling image my-app:v1.2.3"
+
+Slow but not broken. Wait or check registry/network.
+
+
+
+2. Image pull failure (about to become ImagePullBackOff)
+
+Events: "Failed to pull image: rpc error: code = Unknown desc = 
+
+  Error response from daemon: manifest not found"
+
+Wrong tag, wrong registry, auth failure
+
+
+
+3. Volume mount failure
+
+Events: "Unable to attach or mount volumes: 
+
+  timed out waiting for the condition"
+
+EBS volume stuck attaching (previous node didn't detach cleanly)
+
+NFS server unreachable
+
+Secret/ConfigMap doesn't exist
+
+
+
+4. CNI failure — no IP available
+
+Events: "Failed to create pod sandbox: 
+
+  rpc error: add cmd: failed to assign an IP address to container"
+
+VPC CNI: ENI IP pool exhausted
+
+Fix: prefix delegation, larger instance, or wait for IP recycling
+
+
+
+5. Sandbox creation failure (container runtime issue)
+
+Events: "Failed to create pod sandbox: 
+
+  rpc error: context deadline exceeded"
+
+containerd/runc issue on the node
+
+Often fixed by: restarting containerd or replacing the node
+
+
+
+6. Init container still running
+
+If pod has init containers, main containers stay in ContainerCreating
+
+until ALL init containers complete successfully
+
+kubectl get pod <pod> -o jsonpath='{.status.initContainerStatuses}'
+
+Check if init container is stuck/failing
+
+
+
+KEY DEBUGGING COMMAND:
+
+kubectl describe pod <pod>
+
+The Events section tells you EXACTLY which sub-step failed
+
+Always check Events, not just Status
+
+```
+
+---
+
+### ImagePullBackOff — Full Debugging
+
+```bash
+
+kubectl describe pod <pod>
+
+Events:
+
+Failed to pull image "my-app:v1.2.3": 
+
+  rpc error: code = Unknown desc = Error response from daemon
+
+
+
+CAUSES:
+
+
+
+1. Image doesn't exist:
+
+Wrong tag, wrong repository name, typo
+
+Verify: aws ecr describe-images --repository-name my-app --image-ids imageTag=v1.2.3
+
+
+
+2. Authentication failure:
+
+ECR token expired (12-hour lifetime)
+
+imagePullSecrets not configured or wrong
+
+Cross-account ECR: repository policy missing
+
+Private registry: credentials wrong
+
+Verify:
+
+kubectl get pod <pod> -o jsonpath='{.spec.imagePullSecrets}'
+
+kubectl get secret <pull-secret> -o jsonpath='{.data.\\.dockerconfigjson}' | base64 -d
+
+
+
+3. Network unreachable (private cluster):
+
+No NAT Gateway and no VPC endpoints for ECR + S3
+
+Node can't reach ECR API or S3 (where layers live)
+
+Verify: SSH to node, curl https://api.ecr.us-east-1.amazonaws.com/
+
+
+
+4. Rate limiting:
+
+Docker Hub: 100 pulls/6hr (anonymous), 200 pulls/6hr (authenticated)
+
+Events: "toomanyrequests: You have reached your pull rate limit"
+
+Fix: use ECR pull-through cache, or mirror images to private registry
+
+
+
+5. Architecture mismatch:
+
+Image built for linux/amd64, node is ARM (Graviton)
+
+Events: "exec format error" after pull succeeds
+
+Verify: docker manifest inspect <image> | grep architecture
+
+
+
+6. Image too large + slow network:
+
+5GB image on a node with limited bandwidth
+
+Not technically an error, just slow
+
+Fix: smaller images, pre-pull DaemonSet for large images
+
+
+
+BACKOFF PROGRESSION:
+
+ImagePullBackOff follows exponential backoff:
+
+10s → 20s → 40s → 80s → 160s → 300s (5 min cap)
+
+After fixing the issue, pod retries on the next backoff cycle
+
+To force immediate retry: delete and recreate the pod
+
+```
+
+---
+
+### CoreDNS Operational Scaling
+
+```bash
+
+DEFAULT: 2 CoreDNS pods in EKS
+
+At scale, this is NOT enough
+
+
+
+SYMPTOMS OF CoreDNS OVERLOAD:
+
+- DNS resolution timeouts from pods
+
+- dmesg: "nf\_conntrack: table full" (DNS uses UDP → conntrack)
+
+- CoreDNS logs: "i/o timeout" when forwarding to upstream
+
+- Prometheus: coredns\_dns\_requests\_total increasing, 
+
+  coredns\_dns\_responses\_total not keeping up
+
+
+
+SCALING COREDNS:
+
+
+
+1. Horizontal — more replicas:
+
+kubectl -n kube-system edit deployment coredns
+
+Or better: use dns-autoscaler addon
+
+Scales CoreDNS pods based on node/core count in cluster
+
+Formula: replicas = max(ceil(cores / 256), ceil(nodes / 16))
+
+100 nodes → max(ceil(400/256), ceil(100/16)) = max(2, 7) = 7 replicas
+
+
+
+2. NodeLocal DNSCache (critical for production at scale):
+
+Runs a DNS cache daemon on EVERY node as a DaemonSet
+
+Pods resolve DNS against the LOCAL cache (avoid cross-node hops)
+
+Cache hit → instant response (no network)
+
+Cache miss → forwards to CoreDNS
+
+
+
+Benefits:
+
+- Reduces CoreDNS load by 80-90%
+
+- Eliminates conntrack entries for DNS (uses TCP to CoreDNS)
+
+- Eliminates "DNS 5-second timeout" race condition
+
+  (the infamous glibc parallel A + AAAA query bug)
+
+- Sub-millisecond DNS for cached entries
+
+
+
+Enable on EKS:
+
+Deploy node-local-dns DaemonSet
+
+Configure kubelet to use node-local-dns IP (169.254.20.10)
+
+Pods automatically resolve against local cache
+
+
+
+3. CoreDNS Corefile tuning:
+
+apiVersion: v1
+
+kind: ConfigMap
+
+metadata:
+
+ name: coredns
+
+ namespace: kube-system
+
+data:
+
+ Corefile: |
+
+   .:53 {
+
+       errors
+
+       health
+
+       kubernetes cluster.local in-addr.arpa ip6.arpa {
+
+           pods insecure
+
+           fallthrough in-addr.arpa ip6.arpa
+
+       }
+
+       forward . /etc/resolv.conf {
+
+           max\_concurrent 5000         # increase from default 1000
+
+       }
+
+       cache 30                        # cache TTL (default 30s)
+
+       loop
+
+       reload
+
+       loadbalance
+
+       # Add: autopath to reduce ndots:5 query amplification
+
+       autopath @kubernetes
+
+       # Without autopath: pod resolving "google.com" generates 5 queries
+
+       # With autopath: CoreDNS short-circuits the search path
+
+   }
+
+
+
+4. Reduce ndots-related query amplification:
+
+Default ndots:5 means any name with < 5 dots goes through search path
+
+"redis-master" generates:
+
+  redis-master.default.svc.cluster.local
+
+  redis-master.svc.cluster.local
+
+  redis-master.cluster.local
+
+  redis-master.ec2.internal
+
+  redis-master              ← finally, the actual query
+
+That's 5 DNS queries for one resolution!
+
+\#
+
+Fix per pod:
+
+spec:
+ dnsConfig:
+   options:
+   - name: ndots
+     value: "2"         # reduce from 5 to 2
+
+   # Names with < 2 dots go through search path
+
+   # "redis-master" (0 dots) → search path (correct, finds service)
+
+   # "google.com" (1 dot) → search path first, then absolute
+
+   # "api.google.com" (2 dots) → absolute query directly (no wasted queries)
+
+```
+
+---
+
+### EndpointSlice — The Scalable Endpoint
+
+```bash
+
+ENDPOINTS (legacy):
+
+One Endpoints object per Service containing ALL pod IPs
+
+Service with 5000 pods → one Endpoints object with 5000 IPs
+
+Every kube-proxy watches ALL Endpoints
+
+One pod changes → entire Endpoints object updated → pushed to ALL kube-proxies
+
+At scale: massive watch traffic, slow updates
+
+
+
+ENDPOINTSLICE (default since K8s 1.21):
+
+Service with 5000 pods → 50 EndpointSlice objects (100 IPs each)
+
+When one pod changes → only ONE EndpointSlice updated
+
+Pushed only to kube-proxies that need it
+
+100x reduction in API server and etcd load at scale
+
+
+
+kubectl get endpointslice -n production
+
+NAME                   ADDRESSTYPE   PORTS   ENDPOINTS               AGE
+
+api-service-abc12      IPv4          8080    10.0.1.5,10.0.1.6...   5d
+
+api-service-def34      IPv4          8080    10.0.2.7,10.0.2.8...   5d
+
+
+
+kubectl get endpointslice api-service-abc12 -o yaml
+
+Shows: individual endpoint conditions (ready, serving, terminating)
+
+More granular than legacy Endpoints
+
+
+
+WHY YOU SHOULD KNOW THIS:
+
+If you're debugging "Service has endpoints but traffic isn't reaching pods"
+
+Check EndpointSlices, not just Endpoints:
+
+kubectl get endpointslice -l kubernetes.io/service-name=my-service
+
+Look for: conditions.ready = false on specific endpoints
+
+A pod might be in the EndpointSlice but marked not-ready
+
+```
+
+---
+
+### Probe Anti-Patterns
+
+```yaml
+
+ANTI-PATTERN 1: Checking dependencies in liveness probe
+
+livenessProbe:
+ httpGet:
+   path: /health
+   port: 8080
+
+/health checks: DB connection + Redis + external API
+
+If Redis goes down:
+
+→ liveness fails → container restarted
+
+→ new container starts → Redis still down → liveness fails again
+
+→ CrashLoopBackOff for ALL pods
+
+→ TOTAL OUTAGE of your service because Redis had a blip
+
+
+
+FIX: liveness checks ONLY the process itself (is it responsive?)
+
+/healthz: return 200 if the HTTP server can respond. That's it.
+
+/ready: check dependencies. Readiness probe removes from traffic.
+
+
+
+ANTI-PATTERN 2: initialDelaySeconds too low
+
+livenessProbe:
+ httpGet:
+   path: /healthz
+   port: 8080
+ initialDelaySeconds: 5      # Java app takes 45s to start
+ failureThreshold: 3
+ periodSeconds: 10
+
+Sequence: pod starts → 5s delay → check → fail (app still booting)
+
+→ 10s → check → fail → 10s → check → fail → RESTART
+
+→ pod starts again → same thing → CrashLoopBackOff
+
+App never gets a chance to boot
+
+\#
+
+FIX: use startupProbe for slow starters
+
+startupProbe:
+ httpGet:
+   path: /healthz
+   port: 8080
+ failureThreshold: 30         # 30 × 10s = 300s = 5 min to start
+ periodSeconds: 10
+
+Liveness/readiness disabled until startup probe passes
+
+
+
+ANTI-PATTERN 3: Probe hitting expensive endpoint
+
+livenessProbe:
+ httpGet:
+   path: /api/v1/status       # runs DB query, aggregates metrics
+   port: 8080
+ periodSeconds: 5
+
+Every 5 seconds: full status check with DB query
+
+Under load: probe adds 20% overhead
+
+Probe timeout → liveness fails → restart → makes load worse
+
+\#
+
+FIX: dedicated lightweight health endpoint
+
+/healthz: return 200, no computation, < 1ms response
+
+
+
+ANTI-PATTERN 4: Same endpoint for liveness AND readiness
+
+They serve different purposes:
+
+Liveness: "restart me if I'm broken"
+
+Readiness: "stop sending traffic if I'm not ready"
+
+Same endpoint = same failure mode = wrong action
+
+Readiness failure on dependency → should remove from traffic
+
+If liveness uses same endpoint → restarts instead → wrong
+
+\#
+
+FIX: separate endpoints
+
+/healthz → liveness (process health only)
+
+/ready → readiness (process + dependencies)
+
+
+
+ANTI-PATTERN 5: Aggressive probe settings on high-latency apps
+
+livenessProbe:
+ timeoutSeconds: 1            # 1 second timeout
+ periodSeconds: 5
+ failureThreshold: 1          # ONE failure = restart
+
+Under GC pause or load spike, one slow response = restart
+
+Creates cascading restarts under load
+
+\#
+
+FIX: generous thresholds
+
+livenessProbe:
+
+ timeoutSeconds: 5
+
+ periodSeconds: 15
+
+ failureThreshold: 3          # 3 failures = 45s before restart
+
+```
+
+---
+
+### OOMKilled vs Evicted vs Preempted vs Deleted — The Comparison
+
+```bash
+
+Four ways a pod can die. Each has different cause, behavior, and response.
+
+
+
+1. OOMKilled (container-level):
+
+CAUSE: Container exceeded its memory LIMIT
+
+WHO: Linux kernel OOM killer (cgroup enforcement)
+
+SCOPE: single container (other containers in pod may survive)
+
+RESTART: yes (if restartPolicy allows)
+
+DETECT:
+
+kubectl describe pod <pod>
+
+State: Terminated
+
+Reason: OOMKilled
+
+Exit Code: 137
+
+FIX: increase memory limits, fix memory leak, tune JVM/runtime
+
+
+
+2. Evicted (pod-level, node pressure):
+
+CAUSE: Node is running low on resources (memory, disk, PIDs)
+
+WHO: kubelet eviction manager
+
+SCOPE: entire pod removed from node
+
+RESTART: pod is NOT restarted on same node
+
+  Controller (Deployment/RS) creates NEW pod, scheduler places elsewhere
+
+DETECT:
+
+kubectl describe pod <pod>
+
+Status: Failed
+
+Reason: Evicted
+
+Message: "The node was low on resource: memory"
+
+ORDER: BestEffort → Burstable (by overshoot) → Guaranteed
+
+FIX: right-size resource requests, use Guaranteed QoS for critical pods
+
+
+
+3. Preempted (pod-level, scheduling priority):
+
+CAUSE: Higher-priority pod needs resources, no room on any node
+
+WHO: kube-scheduler
+
+SCOPE: lower-priority pods evicted to make room
+
+RESTART: preempted pod goes back to Pending, may schedule elsewhere
+
+DETECT:
+
+kubectl get events --field-selector reason=Preempted
+
+FIX: assign appropriate PriorityClass to critical workloads
+
+
+
+4. Deleted (pod-level, intentional):
+
+CAUSE: kubectl delete, scale down, rolling update, node drain
+
+WHO: API server / controllers
+
+SCOPE: specific pod
+
+RESTART: depends on controller
+
+Normal lifecycle — not an incident
+
+
+
+THE COMPARISON TABLE:
+
+┌──────────────┬─────────────┬──────────┬─────────────────┐
+
+│ Type         │ Who decides  │ Why      │ Pod restarted?  │
+
+├──────────────┼─────────────┼──────────┼─────────────────┤
+
+│ OOMKilled    │ Kernel      │ Mem limit│ Container yes   │
+
+│ Evicted      │ kubelet     │ Node     │ New pod, new    │
+
+│              │             │ pressure │ node            │
+
+│ Preempted    │ Scheduler   │ Priority │ Back to Pending │
+
+│ Deleted      │ User/       │ Intent   │ If controller   │
+
+│              │ Controller  │          │ exists          │
+
+└──────────────┴─────────────┴──────────┴─────────────────┘
+
+```
+
+---
+
+### CronJob Production Safeguards
+
+```yaml
+
+apiVersion: batch/v1
+
+kind: CronJob
+
+metadata:
+
+ name: db-backup
+
+ namespace: production
+
+spec:
+
+ schedule: "0 \*/6 \* \* \*"              # every 6 hours
+
+ 
+ concurrencyPolicy: Forbid
+
+ # Forbid: skip if previous job still running
+
+ # Allow: start new job even if previous running (DEFAULT — dangerous)
+
+ # Replace: kill previous job, start new one
+
+ startingDeadlineSeconds: 300
+
+ # If CronJob controller was down and missed the schedule,
+
+ # only start the job if it's within 300s of scheduled time
+
+ # Without this: controller comes back up, fires ALL missed jobs at once
+
+ # 100 missed jobs × db-backup = hammers the database
+
+ successfulJobsHistoryLimit: 3        # keep 3 successful job pods
+ failedJobsHistoryLimit: 5            # keep 5 failed job pods for debugging
+
+ # Without limits: thousands of completed pods accumulate
+
+ # Fills up etcd, clutters kubectl get pods output
+
+ jobTemplate:
+   spec:
+     activeDeadlineSeconds: 3600      # kill job after 1 hour
+
+     # Prevents hung jobs from running forever
+
+     # DB backup usually takes 20 min → 1 hour is safe deadline
+
+     # Without this: deadlocked job runs forever, blocks next schedule
+
+     backoffLimit: 3                  # retry failed pods 3 times
+
+     # Default is 6 — too many for something that runs every 6 hours
+
+     ttlSecondsAfterFinished: 86400   # auto-delete job after 24 hours
+
+     # Cleaner than relying on history limits alone
+     template:
+       spec:
+         restartPolicy: OnFailure     # REQUIRED for Jobs (not Always)
+         containers:
+         - name: backup
+           image: backup-tool:v1.0
+           resources:
+             requests:
+               cpu: 500m
+               memory: 1Gi
+             limits:
+               memory: 2Gi            # prevent OOM from backup spike
+
+```
+
+---
+
+### Secret Rotation — The Reality
+
+```bash
+
+KUBERNETES SECRETS ARE NOT AUTOMATICALLY ROTATED
+
+If you put a DB password in a Secret, it stays there forever
+
+Until someone manually updates it
+
+
+
+THE ROTATION CHAIN:
+
+
+
+1. External secret store rotates the secret:
+
+   AWS Secrets Manager → automatic rotation via Lambda
+
+   HashiCorp Vault → dynamic secrets with TTL
+
+
+
+2. External Secrets Operator syncs to K8s:
+
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+ name: db-creds
+spec:
+ refreshInterval: 1h              # poll every hour
+ secretStoreRef:
+   name: aws-secrets-manager
+   kind: ClusterSecretStore
+ target:
+   name: db-credentials           # K8s Secret to create/update
+ data:
+ - secretKey: password
+   remoteRef:
+     key: production/db/password  # path in AWS Secrets Manager
+
+
+
+3. Pod picks up new secret:
+
+IF mounted as volume: kubelet updates file within \~60s
+
+IF mounted as env var: pod must be RESTARTED
+
+
+
+For env vars: use Reloader or rolling restart after rotation
+
+For volumes: app must re-read the file (not all apps do this)
+
+
+
+THE GOTCHA NOBODY MENTIONS:
+
+Rotating a secret means there's a window where:
+
+- New pods get the NEW secret
+
+- Old pods still have the OLD secret
+
+- If the old secret is revoked → old pods break
+
+\#
+
+Solution: dual-write
+
+1. Add new credential to the database (both old and new work)
+
+2. Update the secret in K8s
+
+3. Wait for all pods to pick up new secret
+
+4. Remove old credential from database
+
+This is why Vault dynamic secrets are preferred — they handle this
+
+```
+
+---
+
+### Resource Request Tuning — The Methodology
+
+```bash
+
+THE PROBLEM:
+
+Developers guess resource requests
+
+cpu: 500m, memory: 512Mi ← where did these numbers come from?
+
+Usually: copied from another service, or "seemed reasonable"
+
+Result: 40-60% of cluster resources WASTED (reserved but unused)
+
+
+
+THE METHODOLOGY:
+
+Step 1: Deploy with VPA in recommendation mode
+
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+ name: api-vpa
+spec:
+ targetRef:
+   apiVersion: apps/v1
+   kind: Deployment
+   name: api
+ updatePolicy:
+   updateMode: "Off"          # just recommend, don't touch pods
+
+
+
+Step 2: Wait 1-2 weeks (capture normal + peak traffic patterns)
+
+
+
+Step 3: Read recommendations
+
+kubectl describe vpa api-vpa
+
+Target:       cpu: 125m,  memory: 256Mi    ← what the app actually uses
+
+Upper Bound:  cpu: 500m,  memory: 1Gi      ← peak usage estimate
+
+
+
+Step 4: Set requests and limits:
+
+resources:
+ requests:
+   cpu: 150m          # slightly above VPA target (buffer)
+   memory: 300Mi      # slightly above VPA target
+ limits:
+   cpu: 600m          # 4x requests (burst headroom)
+   memory: 512Mi      # \~1.5-2x requests (memory spikes)
+
+
+
+Step 5: Monitor and iterate
+
+Prometheus queries:
+
+Actual CPU usage vs requests:
+
+container\_cpu\_usage\_seconds\_total / kube\_pod\_container\_resource\_requests{resource="cpu"}
+
+If consistently < 0.5 → over-provisioned, reduce requests
+
+If consistently > 0.9 → under-provisioned, increase requests
+
+
+
+Actual memory vs requests:
+
+container\_memory\_working\_set\_bytes / kube\_pod\_container\_resource\_requests{resource="memory"}
+
+
+
+TOOLS:
+
+Kubecost: shows cost per namespace/deployment, identifies waste
+
+Goldilocks: runs VPA in recommend mode for all deployments,
+
+  provides dashboard with suggested requests/limits
+
+kubectl-resource-recommender: CLI tool for recommendations
+
+
+
+THE RULE:
+
+Requests = what you actually need (based on data)
+
+Limits.memory = 1.5-2x requests (protect against leaks)
+
+Limits.cpu = 2-4x requests (allow bursts) or remove entirely
+
+Review quarterly as traffic patterns change
+
+```
+
+---
+
+### etcd as a Failure Mode
+
+```bash
+
+SYMPTOMS OF ETCD PROBLEMS:
+
+- kubectl commands hang or timeout
+
+- Pod scheduling delays (scheduler can't read/write etcd)
+
+- API server returning 500s or "etcdserver: request timed out"
+
+- Existing pods keep running (they don't need etcd)
+
+- But no NEW operations succeed
+
+
+
+ROOT CAUSES:
+
+
+
+1. Disk I/O latency:
+
+etcd uses fsync for WAL writes — MUST be < 10ms
+
+If disk latency spikes (noisy neighbor, EBS throttling):
+
+etcd: "W | wal: sync duration exceeds 1s"
+
+FIX: use gp3 with provisioned IOPS, or io2
+
+EKS managed: AWS handles this (but you can hit limits at scale)
+
+
+
+2. Database size / fragmentation:
+
+etcd has a default 2GB database size limit
+
+Lots of Events, Endpoints, ConfigMaps → DB grows
+
+Compaction removes old revisions but doesn't free disk space
+
+Defragmentation actually frees space but locks the member briefly
+
+\#
+
+Self-managed etcd:
+
+etcdctl endpoint status --cluster
+
+Shows: DB size, Raft index, leader
+
+etcdctl compact $(etcdctl endpoint status -w json | jq -r '.\[] | .Status.header.revision')
+
+etcdctl defrag --cluster
+
+EKS: AWS handles compaction/defrag automatically
+
+
+
+3. Too many objects:
+
+200 services × 50 endpoints each = 10,000 Endpoint objects
+
+Every change → etcd write → watch notification → all kube-proxies
+
+Fix: EndpointSlices (default now), reduce object churn
+
+Reduce CronJob history limits, Event TTL
+
+
+
+4. Slow watchers:
+
+Controllers/operators that watch too broadly
+
+A badly-written operator watching ALL pods across ALL namespaces
+
+Generates massive watch traffic through API server to etcd
+
+Fix: use label selectors, namespace scopes in watches
+
+
+
+MONITORING:
+
+etcd\_disk\_wal\_fsync\_duration\_seconds → must be < 10ms p99
+
+etcd\_server\_slow\_apply\_total → increasing = etcd can't keep up
+
+etcd\_mvcc\_db\_total\_size\_in\_bytes → approaching 2GB = danger
+
+apiserver\_storage\_objects → total objects in etcd
+
+apiserver\_request\_duration\_seconds → API server latency (etcd is usually the cause)
+
+
+
+EKS:
+
+etcd is managed — you can't SSH to it
+
+But you CAN see symptoms: API server latency, scheduling delays
+
+If you suspect etcd: open AWS support ticket
+
+Monitor via: CloudWatch metrics for EKS control plane
+
+```
+
+---
+
+### Runbook Structure — How to Write One
+
+```markdown
+
+RUNBOOK: Service X Returns 502 Errors
+
+\## Severity: SEV2
+
+\## Owner: Platform Engineering
+
+\## Last Updated: 2024-01-15
+
+\## Last Tested: 2024-01-01
+
+\## Symptoms
+
+\- Grafana dashboard "Service X" shows 502 error rate > 1%
+
+\- PagerDuty alert: "service-x-502-rate-high"
+
+\- Customer reports: checkout failures
+
+\## Impact
+
+\- Checkout flow degraded
+
+\- Revenue impact: \~$5K/min during peak hours
+
+\## Quick Diagnosis (< 2 minutes)
+
+1\. Check pod health:
+
+  ```
+
+  kubectl get pods -n production -l app=service-x
+
+  ```
+
+  - All pods Running and Ready (1/1)?
+
+  - Any CrashLoopBackOff or Pending?
+
+2\. Check endpoints exist:
+
+  ```
+
+  kubectl get endpoints service-x -n production
+
+  ```
+
+  - If empty → readiness probe failing
+
+3\. Check recent deployments:
+
+  ```
+
+  kubectl rollout history deployment/service-x -n production
+
+  ```
+
+  - Was there a deploy in the last 30 min?
+
+\## Resolution Steps
+
+\### If pods are crashing:
+
+1\. Check logs: `kubectl logs -l app=service-x --previous`
+
+2\. If OOMKilled: increase memory limits (runbook-link)
+
+3\. If config error: rollback: `kubectl rollout undo deployment/service-x`
+
+
+
+\### If pods are healthy but 502 persists:
+
+1\. Check upstream dependency:
+
+  ```
+
+  kubectl exec <pod> -- curl -v http://payment-service:8080/health
+
+  ```
+
+2\. If payment-service down → escalate to Payment team
+
+3\. Check Istio circuit breaker: 
+
+  ```
+
+  istioctl proxy-config cluster <pod> | grep payment
+
+  ```
+
+
+
+\### If recent deployment:
+
+1\. Rollback immediately: `kubectl rollout undo deployment/service-x`
+
+2\. Verify recovery
+
+3\. Investigate the failed deployment after service is stable
+
+
+
+\## Escalation
+
+\- If not resolved in 15 min → page on-call SRE lead
+
+\- If revenue impact > $50K → escalate to SEV1, page VP Engineering
+
+
+
+\## Post-Incident
+
+\- Write postmortem within 48 hours
+
+\- Link to template: \[postmortem-template]
+
+```
+
+```
+
+
+
+📝 Retention Questions — Lesson 4
+
+Q1: A pod is Running but the Service has no endpoints. Give the full list of realistic causes and the exact commands you'd run to isolate which one it is.
+
+Q2: Your API pods are not restarting, not OOMKilled, and not throwing obvious errors — but p99 latency doubled after a deploy. CPU usage looks "low." What silent Kubernetes-level bottleneck should you suspect first, how do you verify it, and what are the likely fixes?
+
+Q3: In a private EKS cluster, new pods are stuck in ImagePullBackOff. The ECR repository exists, IAM looks correct, and DNS resolution works. Explain the hidden dependency that often breaks image pulls and how to confirm it.
+
+Q4: A CronJob scheduled every 5 minutes accidentally starts overlapping runs and overwhelms the database. What fields should have been set to prevent this, and what other production safeguards should be standard for CronJobs?
+
+Q5: Your cluster suddenly shows widespread failures creating new pods, but existing pods are mostly fine. kubectl itself feels slow. What class of component should you suspect, what are the likely culprits, and why can one bad component create cluster-wide symptoms?
+
+Go. 🎯
+
+##### Q1: The Missing Endpoints Mystery
+
+When a pod is Running but the Service has no endpoints, the "link" between the Service's selector and the Pod's labels is broken, or the Pod is not considered "Ready."
+
+Realistic Causes \& Isolation Commands:
+
+Label Selector Mismatch: The most common cause. The Service is looking for app: api-v1, but the pod is labeled app: api-v2.
+
+Command: kubectl get pods --show-labels (Check pod labels) and kubectl describe svc <svc-name> (Check the Selector field).
+
+Readiness Probe Failure: A pod can be Running (the process started) but not Ready (the probe failed). K8s will not add a pod to the Service endpoints until the readiness probe passes.
+
+Command: kubectl get pods (Check if it says 1/1 or 0/1 in the READY column) and kubectl describe pod <pod-name> (Check the Events section for Readiness probe failed).
+
+Namespace Mismatch: The Service and Pod are in different namespaces. Services only target pods within their own namespace unless specifically configured otherwise (rare).
+
+Command: kubectl get pods -n <namespace> and kubectl get svc -n <namespace>.
+
+Port Mismatch: The targetPort in the Service definition does not match the containerPort the application is actually listening on.
+
+Command: kubectl describe svc <svc-name> (Check targetPort) and kubectl get pod <pod-name> -o yaml (Check containerPort).
+
+##### Q2: The Silent Killer: CPU Throttling
+
+The Bottleneck: CFS (Completely Fair Scheduler) Quota Throttling.
+
+Reasoning:
+
+You see "low" average CPU usage because you are likely looking at a 1-minute or 5-minute average. However, CPU limits are enforced in 100ms windows. If your application is multi-threaded and bursts, it can consume its entire 100ms quota in the first 20ms of the window. The kernel then throttles (freezes) the process for the remaining 80ms.
+
+This creates a "stutter" effect. The average CPU looks fine (30%), but the p99 latency spikes because requests arriving during that 80ms freeze are queued, adding massive latency.
+
+How to Verify:
+
+Check the cgroup stats on the worker node:
+
+Command: cat /sys/fs/cgroup/cpu/cpu.stat (Cgroup v1) or cat /sys/fs/cgroup/cpu.stat (Cgroup v2).
+
+What to look for: nr\_throttled and throttled\_time. If these numbers are increasing rapidly during the latency spikes, you are being throttled.
+
+Likely Fixes:
+
+Increase CPU Limits: Give the pod more headroom to handle bursts.
+
+Remove CPU Limits: In high-performance environments, many SREs remove limits.cpu entirely and rely only on requests.cpu to avoid the CFS "cliff," using HPA to manage node saturation.
+
+##### Q3: The Hidden ECR Dependency (S3 Gateway)
+
+The Hidden Dependency: S3 Gateway Endpoint.
+
+Explanation:
+
+ECR is not a single service; it is a split architecture. The ECR API (used for auth and manifests) is accessed via an Interface Endpoint (PrivateLink). However, the actual image layers (the blobs) are stored in Amazon S3.
+
+In a private EKS cluster, if you have an ECR Interface Endpoint but no S3 Gateway Endpoint, the following happens:
+
+The node calls ECR 
+
+→
+
+→
+
+"Here is the image manifest." (Succeeds).
+
+The node tries to pull the layer from S3 
+
+→
+
+→
+
+"I don't have a route to S3." (Fails).
+
+The result is ImagePullBackOff.
+
+How to Confirm:
+
+Route Table Check: Check the VPC Route Table for the private subnet. Look for a route to pl-xxxxxxxx (the S3 Prefix List). If it's missing, there's no S3 endpoint.
+
+Network Reachability Analyzer: Use the AWS VPC Reachability Analyzer to test a path from the Node's ENI to the S3 service.
+
+##### Q4: CronJob Overlap and Safeguards
+
+Field to prevent overlap: concurrencyPolicy: Forbid.
+
+By default, concurrencyPolicy is Allow, meaning if Job A takes 6 minutes to run but is scheduled every 5 minutes, Job B will start while Job A is still running. Setting this to Forbid tells Kubernetes: "If the previous job is still running, skip the next scheduled run."
+
+Standard Production Safeguards for CronJobs:
+
+startingDeadlineSeconds: Prevents a "thundering herd" of jobs from starting if the controller was down for an hour. If the job misses its window by more than 
+
+𝑋
+
+X
+
+seconds, it's skipped.
+
+activeDeadlineSeconds: A hard timeout. If a job hangs (e.g., DB deadlock), this kills the pod after 
+
+𝑋
+
+X
+
+seconds so it doesn't consume resources forever.
+
+successfulJobsHistoryLimit \& failedJobsHistoryLimit: Prevents the cluster from being cluttered with thousands of completed Pod objects.
+
+##### Q5: The Control Plane Heart Attack (etcd)
+
+Component to suspect: etcd.
+
+The Culprits:
+
+Disk I/O Latency: etcd is extremely sensitive to disk write latency (fdatasync). If the underlying disk is slow or saturated, etcd cannot commit entries fast enough.
+
+etcd Database Fragmentation: Over time, etcd's keyspace becomes fragmented, slowing down reads/writes.
+
+Resource Exhaustion: Memory pressure on the etcd nodes leading to swapping.
+
+Why one component creates cluster-wide symptoms:
+
+etcd is the single source of truth for the entire cluster. Every time you run kubectl, create a pod, or update a service, the API server must write to etcd.
+
+If etcd is slow, kubectl (which talks to the API server) feels sluggish.
+
+If etcd cannot commit the "Pod Created" event, the Scheduler and Kubelet never receive the instruction to start the pod, leading to failures in creating new pods.
+
+Existing pods are fine because they are already running and don't need to talk to etcd for their daily operations (unless they are updating status).
+
+##### Q6: Istio Canary and Circuit Breaking
+VirtualService (Traffic Split):
+apiVersion, networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+ name: payment-service
+spec:
+ hosts:
+ - payment.novamart.com
+ http:
+ - route:
+   - destination:
+       host: payment-service
+       subset: v1
+     weight: 95
+   - destination:
+       host: payment-service
+       subset: v2
+     weight: 5
+
+
+
+DestinationRule (Subsets):
+
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+ name: payment-service
+spec:
+ host: payment-service
+ subsets:
+ - name: v1
+   labels:
+     version: v1
+ - name: v2
+   labels:
+     version: v2
+
+
+
+Circuit Breaker Protection:
+
+If v2's error rate spikes, Istio's Outlier Detection (the circuit breaker) kicks in. You define a outlierDetection block in the DestinationRule. If a pod returns a 5xx error 
+
+𝑋
+
+X
+
+times in a row, Istio ejects that specific pod from the load balancing pool for a predetermined period.
+
+
+
+This protects the system by ensuring that the 5% of traffic sent to v2 doesn't just fail—it fails fast, and the faulty pods are removed entirely until they recover, preventing the "error storm" from affecting the overall system stability.
+
+
+
+##### Q7: The GitOps "Reconciliation Loop"
+
+What happened:
+
+The cluster is managed by a GitOps Controller (like ArgoCD or Flux).
+
+In a GitOps model, the Git repository is the Desired State, and the cluster is the Actual State.
+
+The developer changed the Actual State (Pod count = 10) via kubectl edit.
+
+The ArgoCD controller performed a "drift detection" scan and noticed: Git (5) != Cluster (10).
+
+The controller automatically performed a Sync/Reconciliation, overwriting the manual change to bring the cluster back into alignment with the source of truth (Git).
+
+Why this is correct:
+
+This prevents "Configuration Drift." If you allow manual changes, you lose the ability to audit who changed what and you cannot reliably recreate the environment from Git in case of a disaster.
+
+##### Q8: The Jenkins 
+
+→
+
+→
+
+ArgoCD GitOps Flow
+
+The Complete Flow:
+
+Code Push: Developer pushes code to Git.
+
+Build (Jenkins): Jenkins triggers a build, runs tests, and builds a Docker image.
+
+Push Image: Jenkins pushes the image to ECR with a unique tag (e.g., the Git SHA).
+
+Manifest Update: Instead of touching the cluster, Jenkins clones the GitOps Manifest Repo and updates the image tag in the YAML (e.g., image: payment:v1 
+
+→
+
+→
+
+image: payment:sha-abc123).
+
+Commit \& Push: Jenkins commits this change back to the Manifest Repo.
+
+Sync (ArgoCD): ArgoCD detects the commit in the Manifest Repo and applies the change to the EKS cluster.
+
+Why Jenkins should NOT kubectl apply:
+
+Security: Jenkins would need cluster-admin permissions, which is a huge security risk. If Jenkins is compromised, the whole cluster is gone.
+
+Audit Trail: kubectl apply is a "fire and forget" action. GitOps provides a permanent history of exactly when and why a version changed.
+
+Drift Detection: kubectl apply cannot detect if someone manually changed a setting. ArgoCD can.
+
+Safe Rollbacks: Rollbacks in GitOps are just git revert on the manifest repo, which is safer and faster than trying to remember which image tag was stable.
+
+##### Q9: 3 AM Node Failure Triage
+
+Step 1: Blast Radius Assessment (The "Panic" Phase)
+
+I immediately check if the 3 critical API pods are still healthy via the Load Balancer. If the pods were spread across nodes, the service might still be up. If they were all on ip-10-0-1-50, I have a P1 outage.
+
+Step 2: Node Health Diagnostics
+
+I attempt to determine if the node is "dead" or "unreachable":
+
+AWS Console: Check if the instance is Running or if it has failed a Status Check (System/Instance).
+
+SSH Attempt: Try to SSH in. If it times out, the network/kernel is dead.
+
+Dmesg/Logs: If I can get in, I check dmesg for "Kernel Panic" or "Out of Memory" (OOM) kills of the kubelet.
+
+Step 3: Recovery (Forcing Reschedule)
+
+Since the node is NotReady, Kubernetes will eventually evict the pods, but the default timeout is 5 minutes (too long for critical APIs).
+
+Taint the Node: If the node is unresponsive, I manually taint it to ensure no new pods land on it:
+
+kubectl taint nodes ip-10-0-1-50 key=value:NoExecute
+
+This forces the 15 pods to evacuate immediately and reschedule on healthy nodes.
+
+Verify Pod Recovery: I monitor kubectl get pods -w to ensure the 3 critical API pods are Running and Ready on other nodes.
+
+Step 4: Root Cause Analysis (Post-Recovery)
+
+Once the service is restored, I investigate the failed node:
+
+Check CloudWatch metrics for CPU/Memory spikes.
+
+Analyze the kubelet logs from the node's disk.
+
+Check if there was a "noisy neighbor" pod that crashed the kernel.
+
+
+
+================================================================================================
+# Phase 3: CI/CD Pipelines
+## Lesson 1: Jenkins Architecture & Pipeline Fundamentals
+
+---
+
+## Why This Matters at NovaMart
+
+You have 200+ microservices. Each one needs to build, test, scan, package, and deploy — reliably, securely, and fast. Jenkins is your CI engine. ArgoCD handles CD (you've seen the basics). If Jenkins is slow, flaky, or insecure, **every team in the company is blocked**. A misconfigured Jenkins is one of the most common vectors for supply chain attacks. A poorly architected Jenkins is a bottleneck that makes 50 engineers hate you personally.
+
+Let's make sure that doesn't happen.
+
+---
+
+## 1. Jenkins Architecture — How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     JENKINS CONTROLLER                          │
+│                                                                 │
+│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌──────────────┐  │
+│  │ Web UI   │  │ REST API │  │ Job Queue  │  │ Config Store │  │
+│  │ (Stapler)│  │          │  │ (Build Q)  │  │ ($JENKINS_   │  │
+│  └──────────┘  └──────────┘  └─────┬─────┘  │  HOME/jobs/) │  │
+│                                    │         └──────────────┘  │
+│  ┌──────────────┐  ┌──────────┐    │    ┌───────────────────┐  │
+│  │ Credentials  │  │ Plugin   │    │    │ Executor Pool     │  │
+│  │ Store        │  │ Manager  │    │    │ (0 on controller  │  │
+│  │ (encrypted)  │  │ (200+)   │    │    │  in production!)  │  │
+│  └──────────────┘  └──────────┘    │    └───────────────────┘  │
+│                                    │                            │
+└────────────────────────────────────┼────────────────────────────┘
+                                     │ JNLP (WebSocket/TCP)
+                                     │ or SSH
+                    ┌────────────────┼────────────────┐
+                    │                │                 │
+            ┌───────▼──────┐ ┌──────▼───────┐ ┌──────▼───────┐
+            │  Agent (Node) │ │  Agent (Node) │ │  Agent (Node) │
+            │  Label: java  │ │  Label: docker│ │  Label: gpu   │
+            │               │ │               │ │               │
+            │ Executors: 2  │ │ Executors: 4  │ │ Executors: 1  │
+            │ Workspace:    │ │ Workspace:    │ │ Workspace:    │
+            │ /var/jenkins  │ │ /var/jenkins  │ │ /var/jenkins  │
+            └───────────────┘ └───────────────┘ └───────────────┘
+```
+
+### The Controller (formerly "Master")
+
+The controller is the **brain** — it does NOT build things in production. It:
+
+- **Schedules builds** — matches jobs to agents based on labels
+- **Stores configuration** — all job definitions live under `$JENKINS_HOME/jobs/`
+- **Manages plugins** — the plugin ecosystem is Jenkins's greatest strength and greatest liability
+- **Serves the UI and API** — Stapler framework (Java, old, memory-hungry)
+- **Holds credentials** — encrypted with a master key stored on disk
+- **Manages the build queue** — FIFO by default, with priority plugins available
+
+**Critical production setting:**
+```groovy
+// Set controller executors to ZERO
+// Jenkins → Manage → Nodes → Built-In Node → # of executors = 0
+// WHY: Builds on controller = security risk + stability risk
+// A rogue build can OOM/crash the controller, killing ALL pipelines
+```
+
+`$JENKINS_HOME` structure:
+```
+$JENKINS_HOME/
+├── config.xml                 # Global config (security, cloud config)
+├── credentials.xml            # Encrypted credentials
+├── secrets/                   # Master encryption key, agent secrets
+│   ├── master.key             # THIS FILE = keys to the kingdom
+│   ├── hudson.util.Secret     # Encryption key for credentials
+│   └── initialAdminPassword   # First-time setup
+├── jobs/
+│   └── my-pipeline/
+│       ├── config.xml         # Job definition
+│       └── builds/
+│           ├── 1/             # Build #1
+│           │   ├── log        # Console output
+│           │   ├── build.xml  # Build metadata
+│           │   └── changelog.xml
+│           └── lastSuccessfulBuild → 1  # Symlink
+├── nodes/                     # Agent definitions
+├── plugins/                   # Installed plugins (.jpi/.hpi)
+├── users/                     # User configs
+├── workspace/                 # Controller workspaces (should be EMPTY)
+└── war/                       # Exploded WAR file
+```
+
+### Agents (formerly "Slaves")
+
+Agents are **disposable compute** that run actual builds. Connection methods:
+
+| Method | How | Use Case | Pros | Cons |
+|--------|-----|----------|------|------|
+| **JNLP/WebSocket** | Agent connects TO controller | Cloud agents, NAT'd agents | Outbound only, firewall-friendly | Agent needs controller URL |
+| **SSH** | Controller connects TO agent | Static agents, VMs | Standard, well-understood | Controller needs SSH access |
+| **Kubernetes Plugin** | Dynamic pod per build | EKS/GKE/AKS | Elastic, isolated, clean | Pod startup latency (~15-30s) |
+| **EC2 Plugin** | Dynamic EC2 per build | AWS heavy shops | Full VM isolation | Longer startup (~2-5min) |
+| **Docker Plugin** | Container per build | Single-host dev | Quick, lightweight | Single host limitation |
+
+### Jenkins on Kubernetes (NovaMart Pattern)
+
+```
+┌─────────────────── EKS Cluster ───────────────────────┐
+│                                                        │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │           jenkins namespace                       │  │
+│  │                                                   │  │
+│  │  ┌─────────────────────┐   ┌──────────────────┐  │  │
+│  │  │  Jenkins Controller │   │  EBS Volume (gp3) │  │  │
+│  │  │  (StatefulSet,      │───│  $JENKINS_HOME    │  │  │
+│  │  │   1 replica)        │   │  100Gi            │  │  │
+│  │  │  CPU: 2, Mem: 4Gi   │   └──────────────────┘  │  │
+│  │  └────────┬────────────┘                          │  │
+│  │           │ K8s API (creates pods)                │  │
+│  └───────────┼──────────────────────────────────────┘  │
+│              │                                         │
+│  ┌───────────▼──────────────────────────────────────┐  │
+│  │       jenkins-agents namespace                    │  │
+│  │                                                   │  │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐         │  │
+│  │  │ Build Pod│ │ Build Pod│ │ Build Pod│  (dynamic│  │
+│  │  │ maven +  │ │ go +     │ │ node +   │  on-     │  │
+│  │  │ docker   │ │ trivy    │ │ chrome   │  demand) │  │
+│  │  └──────────┘ └──────────┘ └──────────┘         │  │
+│  └──────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────┘
+```
+
+**Kubernetes plugin pod template:**
+```groovy
+// This defines WHAT the build agent pod looks like
+podTemplate(
+    label: 'java-builder',
+    serviceAccount: 'jenkins-agent',     // IRSA for AWS access
+    namespace: 'jenkins-agents',
+    containers: [
+        containerTemplate(
+            name: 'maven',
+            image: 'maven:3.9.6-eclipse-temurin-17',
+            command: 'cat',              // Keep alive, don't run maven immediately
+            ttyEnabled: true,
+            resourceRequestCpu: '1',
+            resourceRequestMemory: '2Gi',
+            resourceLimitCpu: '2',
+            resourceLimitMemory: '4Gi'
+        ),
+        containerTemplate(
+            name: 'docker',
+            image: 'docker:24-dind',     // Docker-in-Docker
+            privileged: true,            // REQUIRED for DinD (security concern)
+            resourceRequestCpu: '500m',
+            resourceRequestMemory: '1Gi'
+        ),
+        containerTemplate(
+            name: 'trivy',
+            image: 'aquasec/trivy:0.50.0',
+            command: 'cat',
+            ttyEnabled: true
+        )
+    ],
+    volumes: [
+        // Maven cache — speeds up builds dramatically
+        persistentVolumeClaim(
+            mountPath: '/root/.m2/repository',
+            claimName: 'maven-cache',
+            readOnly: false
+        ),
+        // DinD needs this
+        emptyDirVolume(mountPath: '/var/lib/docker', memory: false)
+    ]
+) {
+    node('java-builder') {
+        stage('Build') {
+            container('maven') {
+                sh 'mvn clean package -DskipTests'
+            }
+        }
+        stage('Scan') {
+            container('trivy') {
+                sh 'trivy image --severity HIGH,CRITICAL myimage:latest'
+            }
+        }
+    }
+}
+```
+
+### How It Breaks: Controller Failures
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| **OOM crash** | Controller restarts, builds lost mid-flight | Too many plugins, builds on controller, big pipelines in memory | Set executors=0, increase JVM heap `-Xmx4g`, audit plugins |
+| **Disk full** | UI unresponsive, builds fail to write logs | Build logs + artifacts + workspace accumulation | Discard old builds policy, `logRotator(daysToKeep:30, numToKeep:50)`, workspace cleanup |
+| **Plugin hell** | Startup failures, ClassNotFound, UI 500s | Plugin version incompatibility, untested upgrade | Plugin compatibility checker, staging Jenkins, pin plugin versions |
+| **Credential leak** | Secrets in console output, logs shipped to ELK | Pipeline `echo`s secrets, bad masking | `MaskPasswordsBuildWrapper`, never use `sh "echo $SECRET"`, credential binding plugin |
+| **Split brain** | Two controllers think they're active | Someone ran two instances on same `$JENKINS_HOME` | NEVER share `$JENKINS_HOME`, use HA plugin properly |
+| **Slow UI** | Pages take 30+ seconds | Too many jobs (>1000 in one view), too many builds retained | Folders, views, aggressive build discard, Performance plugin |
+| **master.key lost** | All credentials unrecoverable | EBS snapshot missed `secrets/` dir, migration error | Backup `secrets/` dir separately, test restore regularly |
+| **Agent disconnects** | Builds stuck "waiting for agent" | Network issues, JNLP port blocked, pod evicted | WebSocket (no extra port), agent health monitoring, pod priority class |
+
+### How It Breaks: Agent/Build Failures
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| **Workspace collision** | Flaky builds, wrong files | Concurrent builds sharing workspace | `ws()` step for custom workspace, or K8s plugin (unique pod per build) |
+| **Docker socket sharing** | Container escape, cross-build contamination | DooD (Docker outside of Docker) | Kaniko for image builds, or DinD with `--userns-remap` |
+| **DNS resolution fails** | `mvn` can't pull deps, npm install fails | K8s DNS issue, CoreDNS overwhelmed | NodeLocal DNSCache, check pod DNS config |
+| **Pod pending** | Build queued forever | No capacity, resource requests too high, node taint | Karpenter, right-size agent pods, spot instances |
+| **Maven/Gradle OOM** | Build killed mid-compilation | Default JVM heap too small in container | `MAVEN_OPTS=-Xmx1g`, match to container memory limit |
+| **Stale cache** | Build uses old dependency version | PVC cache has stale artifacts | Cache TTL, periodic cache wipe CronJob |
+
+---
+
+## 2. Jenkinsfile — Declarative vs Scripted
+
+### Declarative Pipeline (Use This)
+
+```groovy
+// Jenkinsfile (Declarative)
+pipeline {
+    agent none  // Don't allocate globally — each stage picks its own
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')      // Kill runaway builds
+        timestamps()                              // Timestamp every log line
+        disableConcurrentBuilds()                 // One build at a time (per branch)
+        buildDiscarder(logRotator(                // Disk management
+            numToKeepStr: '20',
+            daysToKeepStr: '30',
+            artifactNumToKeepStr: '5'
+        ))
+        retry(0)                                  // Don't retry the whole pipeline
+    }
+
+    environment {
+        // Available to all stages
+        REGISTRY = '123456789.dkr.ecr.us-east-1.amazonaws.com'
+        APP_NAME = 'order-service'
+        // credentials() helper — binds from Jenkins credential store
+        SONAR_TOKEN = credentials('sonarqube-token')     // Secret text
+        DOCKER_CREDS = credentials('ecr-creds')          // Username/password
+    }
+
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'prod'], description: 'Target env')
+        booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip test stage')
+        string(name: 'IMAGE_TAG', defaultValue: '', description: 'Override image tag')
+    }
+
+    stages {
+        stage('Checkout') {
+            agent { label 'lightweight' }
+            steps {
+                checkout scm
+                script {
+                    // Determine image tag
+                    env.GIT_SHORT = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.IMAGE_TAG = params.IMAGE_TAG ?: "${env.BRANCH_NAME}-${env.GIT_SHORT}-${env.BUILD_NUMBER}"
+                }
+            }
+        }
+
+        stage('Build & Unit Test') {
+            agent {
+                kubernetes {
+                    yaml '''
+                    apiVersion: v1
+                    kind: Pod
+                    spec:
+                      containers:
+                      - name: maven
+                        image: maven:3.9.6-eclipse-temurin-17
+                        command: ["cat"]
+                        tty: true
+                        resources:
+                          requests:
+                            cpu: "1"
+                            memory: "2Gi"
+                          limits:
+                            cpu: "2"
+                            memory: "4Gi"
+                        volumeMounts:
+                        - name: maven-cache
+                          mountPath: /root/.m2/repository
+                      volumes:
+                      - name: maven-cache
+                        persistentVolumeClaim:
+                          claimName: maven-cache-pvc
+                    '''
+                }
+            }
+            steps {
+                container('maven') {
+                    sh '''
+                        mvn clean verify \
+                            -Dmaven.test.failure.ignore=false \
+                            -T 1C \
+                            -B \
+                            --no-transfer-progress
+                    '''
+                    // -T 1C = 1 thread per CPU core (parallel build)
+                    // -B = batch mode (no interactive)
+                    // --no-transfer-progress = clean logs
+                }
+            }
+            post {
+                always {
+                    junit '**/target/surefire-reports/*.xml'    // Test results
+                    jacoco(execPattern: '**/target/jacoco.exec') // Coverage
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            agent { label 'lightweight' }
+            steps {
+                withSonarQubeEnv('sonarqube-server') {  // Configured in Jenkins global
+                    sh '''
+                        mvn sonar:sonar \
+                            -Dsonar.projectKey=${APP_NAME} \
+                            -Dsonar.branch.name=${BRANCH_NAME}
+                    '''
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                    // Blocks until SonarQube webhook fires back
+                    // REQUIRES: SonarQube → Administration → Webhooks → Jenkins URL
+                }
+            }
+        }
+
+        stage('Build & Push Image') {
+            agent {
+                kubernetes {
+                    yaml '''
+                    apiVersion: v1
+                    kind: Pod
+                    spec:
+                      containers:
+                      - name: kaniko
+                        image: gcr.io/kaniko-project/executor:debug
+                        command: ["cat"]
+                        tty: true
+                        volumeMounts:
+                        - name: docker-config
+                          mountPath: /kaniko/.docker
+                      volumes:
+                      - name: docker-config
+                        secret:
+                          secretName: ecr-docker-config
+                    '''
+                }
+            }
+            steps {
+                container('kaniko') {
+                    sh """
+                        /kaniko/executor \
+                            --context=dir://\${WORKSPACE} \
+                            --dockerfile=Dockerfile \
+                            --destination=${REGISTRY}/${APP_NAME}:${IMAGE_TAG} \
+                            --destination=${REGISTRY}/${APP_NAME}:latest-${BRANCH_NAME} \
+                            --cache=true \
+                            --cache-repo=${REGISTRY}/${APP_NAME}/cache \
+                            --snapshot-mode=redo \
+                            --compressed-caching=false
+                    """
+                    // --cache=true: Layer caching in registry (HUGE speed boost)
+                    // No Docker daemon needed. No privileged mode.
+                }
+            }
+        }
+
+        stage('Security Scan') {
+            parallel {    // Run scans in parallel — saves 3-5 minutes
+                stage('Trivy') {
+                    agent { label 'scanner' }
+                    steps {
+                        sh """
+                            trivy image \
+                                --severity HIGH,CRITICAL \
+                                --exit-code 1 \
+                                --ignore-unfixed \
+                                --format json \
+                                --output trivy-report.json \
+                                ${REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+                        """
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'trivy-report.json'
+                        }
+                    }
+                }
+                stage('BlackDuck') {
+                    agent { label 'scanner' }
+                    steps {
+                        sh """
+                            bash <(curl -s https://detect.synopsys.com/detect.sh) \
+                                --blackduck.url=\${BLACKDUCK_URL} \
+                                --blackduck.api.token=\${BLACKDUCK_TOKEN} \
+                                --detect.project.name=${APP_NAME} \
+                                --detect.policy.check.fail.on.severities=CRITICAL
+                        """
+                        // BlackDuck: license compliance + vulnerability (SCA)
+                        // Trivy: container image scanning (CVE)
+                        // Different tools, different purposes, both required
+                    }
+                }
+            }
+        }
+
+        stage('Update Manifests') {
+            when {
+                branch 'main'    // Only update manifests for main branch
+            }
+            agent { label 'lightweight' }
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'bitbucket-pat',
+                    usernameVariable: 'GIT_USER',
+                    passwordVariable: 'GIT_PAT'
+                )]) {
+                    sh """
+                        git clone https://\${GIT_USER}:\${GIT_PAT}@bitbucket.org/novamart/k8s-manifests.git
+                        cd k8s-manifests/apps/${APP_NAME}/overlays/dev
+                        kustomize edit set image ${REGISTRY}/${APP_NAME}=${REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+                        git add .
+                        git commit -m "chore: update ${APP_NAME} to ${IMAGE_TAG}"
+                        git push origin main
+                    """
+                    // ArgoCD watches this repo → detects diff → syncs to cluster
+                    // This is the GitOps bridge: CI (Jenkins) → CD (ArgoCD)
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            slackSend(
+                channel: '#deployments',
+                color: 'good',
+                message: "✅ ${APP_NAME} ${IMAGE_TAG} pipeline succeeded"
+            )
+        }
+        failure {
+            slackSend(
+                channel: '#deployments',
+                color: 'danger',
+                message: "❌ ${APP_NAME} pipeline FAILED: ${BUILD_URL}"
+            )
+        }
+        always {
+            // Clean up workspace on the agent
+            cleanWs()
+        }
+    }
+}
+```
+
+### Declarative vs Scripted — The Real Comparison
+
+```groovy
+// SCRIPTED (old style — full Groovy power, no guardrails)
+node('java-builder') {
+    try {
+        stage('Build') {
+            checkout scm
+            sh 'mvn clean package'
+        }
+        stage('Test') {
+            sh 'mvn test'
+        }
+    } catch (e) {
+        currentBuild.result = 'FAILURE'
+        throw e
+    } finally {
+        cleanWs()
+    }
+}
+
+// DECLARATIVE (modern — structured, validated before execution)
+pipeline {
+    agent { label 'java-builder' }
+    stages {
+        stage('Build') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+        stage('Test') {
+            steps {
+                sh 'mvn test'
+            }
+        }
+    }
+    post {
+        always { cleanWs() }
+    }
+}
+```
+
+| Aspect | Declarative | Scripted |
+|--------|-------------|----------|
+| Syntax validation | Before execution | At runtime (fails mid-pipeline) |
+| `post` blocks | Built-in (`always`, `success`, `failure`, `unstable`, `changed`) | Manual `try/catch/finally` |
+| `when` conditions | Built-in | Manual `if` statements |
+| `options` | Structured block | Manual calls scattered |
+| Parallel | `parallel` block inside stage | `parallel` as a step |
+| Flexibility | Limited — `script {}` block for escape hatch | Full Groovy |
+| Recommended | ✅ Yes | Only when declarative can't express what you need |
+
+**Rule:** Start with declarative. Use `script {}` escape hatch when needed. If you find yourself using `script {}` in every stage, refactor — don't switch to scripted.
+
+---
+
+## 3. Shared Libraries — The Golden Path
+
+At NovaMart, you do NOT want 200 teams writing 200 different Jenkinsfiles. You want **one standard pipeline** with escape hatches.
+
+```
+shared-library repo structure:
+├── vars/                          # Global functions (the API)
+│   ├── standardPipeline.groovy    # The golden path
+│   ├── dockerBuild.groovy         # Reusable: build + push image
+│   ├── trivyScan.groovy           # Reusable: security scan
+│   ├── notifySlack.groovy         # Reusable: notification
+│   └── updateManifests.groovy     # Reusable: GitOps manifest update
+├── src/                           # Classes (complex logic)
+│   └── com/novamart/pipeline/
+│       ├── Config.groovy
+│       └── Utils.groovy
+├── resources/                     # Static files (templates, configs)
+│   └── pod-templates/
+│       ├── java-builder.yaml
+│       └── node-builder.yaml
+└── test/                          # Unit tests (yes, test your pipelines)
+```
+
+**The golden path template:**
+```groovy
+// vars/standardPipeline.groovy
+def call(Map config) {
+    // Validate required config
+    assert config.appName : "appName is required"
+    assert config.language : "language is required (java, go, node)"
+
+    pipeline {
+        agent none
+        options {
+            timeout(time: config.timeout ?: 30, unit: 'MINUTES')
+            timestamps()
+            buildDiscarder(logRotator(numToKeepStr: '20'))
+        }
+
+        stages {
+            stage('Build') {
+                agent {
+                    kubernetes {
+                        yaml libraryResource("pod-templates/${config.language}-builder.yaml")
+                    }
+                }
+                steps {
+                    script {
+                        switch(config.language) {
+                            case 'java':
+                                container('maven') {
+                                    sh "mvn clean verify -T 1C -B --no-transfer-progress"
+                                }
+                                break
+                            case 'go':
+                                container('golang') {
+                                    sh "go build -o app ./cmd/..."
+                                    sh "go test -race -coverprofile=coverage.out ./..."
+                                }
+                                break
+                            case 'node':
+                                container('node') {
+                                    sh "npm ci --prefer-offline"
+                                    sh "npm test -- --ci --coverage"
+                                }
+                                break
+                        }
+                    }
+                }
+            }
+
+            stage('SonarQube') {
+                when { expression { config.sonar != false } }
+                steps { sonarAnalysis(config.appName) }
+            }
+
+            stage('Build Image') {
+                steps { dockerBuild(config.appName) }
+            }
+
+            stage('Security Scan') {
+                parallel {
+                    stage('Trivy')    { steps { trivyScan(config.appName) } }
+                    stage('BlackDuck') {
+                        when { expression { config.blackduck != false } }
+                        steps { blackduckScan(config.appName) }
+                    }
+                }
+            }
+
+            stage('Update Manifests') {
+                when { branch 'main' }
+                steps { updateManifests(config.appName) }
+            }
+        }
+
+        post {
+            success { notifySlack(config.appName, 'SUCCESS') }
+            failure { notifySlack(config.appName, 'FAILURE') }
+        }
+    }
+}
+```
+
+**Consuming team's Jenkinsfile — 5 lines:**
+```groovy
+// Jenkinsfile in the order-service repo
+@Library('novamart-pipeline-library@v2.3.0') _    // Pin version!
+
+standardPipeline(
+    appName: 'order-service',
+    language: 'java',
+    timeout: 45
+)
+```
+
+**How shared libraries break:**
+
+| Failure | Impact | Fix |
+|---------|--------|-----|
+| Library `@main` (unpinned) | Breaking change affects ALL 200 services at once | Always pin: `@Library('lib@v2.3.0')` |
+| No tests | Broken template discovered by team A at 2 AM | Unit test with `JenkinsPipelineUnit`, integration test with test Jenkins |
+| Over-abstraction | Teams can't debug, can't customize, hate platform team | Provide escape hatches, good docs, `config.customStages` hook |
+| CPS serialization | `java.io.NotSerializableException` at random | Mark non-serializable code with `@NonCPS`, avoid storing non-serializable objects |
+
+**CPS (Continuation Passing Style) — Jenkins's Cursed Execution Model:**
+```groovy
+// Jenkins pipelines can pause/resume (survive controller restart)
+// This means ALL variables must be serializable
+// This WILL bite you:
+
+// BROKEN — JsonSlurper returns non-serializable LazyMap
+def data = new groovy.json.JsonSlurper().parseText(response)
+
+// FIXED — Use @NonCPS helper or readJSON step
+@NonCPS
+def parseJson(String text) {
+    return new groovy.json.JsonSlurper().parseText(text)
+}
+// OR just use the pipeline step:
+def data = readJSON(text: response)
+```
+
+---
+
+## 4. Pipeline Security — This Is Where People Get Owned
+
+### Credential Management
+
+```groovy
+// GOOD — credentials() binding, auto-masked in logs
+withCredentials([
+    string(credentialsId: 'api-key', variable: 'API_KEY'),
+    usernamePassword(credentialsId: 'db-creds', 
+                     usernameVariable: 'DB_USER', 
+                     passwordVariable: 'DB_PASS'),
+    file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG'),
+    sshUserPrivateKey(credentialsId: 'deploy-key', 
+                      keyFileVariable: 'SSH_KEY',
+                      usernameVariable: 'SSH_USER')
+]) {
+    sh 'deploy.sh'  // Variables available as env vars in this block only
+}
+
+// BAD — secret leaks into console log
+sh "echo ${API_KEY}"                    // Printed in plaintext
+sh "curl -u ${DB_USER}:${DB_PASS} ..."  // If curl errors, full URL with creds in logs
+
+// WORSE — secret baked into image layer
+sh "docker build --build-arg SECRET=${API_KEY} ."  // Visible in docker history
+
+// RIGHT WAY for Docker secrets during build
+sh """
+    echo '${API_KEY}' > /tmp/secret.txt
+    docker build --secret id=mysecret,src=/tmp/secret.txt .
+    rm /tmp/secret.txt
+"""
+// In Dockerfile: RUN --mount=type=secret,id=mysecret cat /run/secrets/mysecret
+```
+
+### Script Security & Sandbox
+
+Jenkins runs Groovy in a **sandbox**. Unapproved method calls are blocked.
+
+```
+Pipeline: Script Security Plugin
+├── Sandbox enabled by default for all Jenkinsfiles
+├── Approved signatures in: Manage Jenkins → In-process Script Approval
+├── Each new method call needs admin approval
+└── Admins see queue of pending approvals
+```
+
+**The danger:**
+```groovy
+// If someone gets "script approval" access, they can approve:
+new File('/etc/passwd').text           // Read any file on controller
+"rm -rf /".execute()                    // Execute arbitrary commands
+System.getenv()                         // Dump all environment variables
+
+// MITIGATION:
+// 1. Restrict Script Approval to senior admins only
+// 2. Use Role-Based Access (Role Strategy plugin)
+// 3. Move complex logic to shared libraries (trusted, no sandbox)
+// 4. Audit approved scripts regularly
+```
+
+### Folder-Level RBAC (NovaMart Pattern)
+
+```
+Jenkins
+├── Platform/                    (Platform team — full access)
+│   ├── infra-pipelines/
+│   └── shared-library-tests/
+├── Order-Team/                  (Order team — their folder only)
+│   ├── order-service/
+│   └── order-worker/
+├── Payment-Team/                (Payment team — their folder only)
+│   ├── payment-service/
+│   └── payment-gateway/
+└── Security-Scans/              (Security team — read only for others)
+```
+
+Key plugins: **Folder-level credentials** (credentials scoped to folder, not global), **Role-Based Authorization Strategy** (matrix-based RBAC), **Audit Trail** (who did what).
+
+---
+
+## 5. Pipeline Optimization
+
+### The Build Time Budget
+
+```
+Typical unoptimized Java pipeline:    Optimized:
+─────────────────────────────         ────────────────────────
+Checkout:        30s                  Checkout:       10s (shallow clone)
+Dependency DL:   3min                 Dependency DL:  15s (PVC cache)
+Compile:         2min                 Compile:        1min (parallel -T 1C)
+Unit Tests:      5min                 Unit Tests:     2min (parallel surefire)
+SonarQube:       3min                 SonarQube:      2min (incremental)
+Docker Build:    4min                 Docker Build:   45s (layer cache, Kaniko)
+Docker Push:     2min                 Docker Push:    20s (only changed layers)
+Trivy Scan:      2min ─┐             Trivy+BD:       2min (parallel!)
+BlackDuck:       3min ─┘             Update Manifest: 10s
+Update Manifest: 30s                  ────────────────────────
+─────────────────────────────         Total:          ~8min
+Total:           ~25min
+```
+
+### Optimization Techniques
+
+**1. Shallow Clone**
+```groovy
+checkout([
+    $class: 'GitSCM',
+    branches: [[name: env.BRANCH_NAME]],
+    extensions: [
+        [$class: 'CloneOption', depth: 1, shallow: true, noTags: true],
+        [$class: 'SparseCheckoutPaths', sparseCheckoutPaths: [
+            [$class: 'SparseCheckoutPath', path: 'services/order-service/']
+        ]]
+    ],
+    userRemoteConfigs: [[url: env.REPO_URL, credentialsId: 'bitbucket-pat']]
+])
+```
+
+**2. Dependency Caching (PVC in K8s)**
+```yaml
+# maven-cache-pvc.yaml — shared across builds
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: maven-cache-pvc
+  namespace: jenkins-agents
+spec:
+  accessModes: [ReadWriteMany]    # EFS for multi-node access
+  storageClassName: efs-sc
+  resources:
+    requests:
+      storage: 50Gi
+```
+
+**3. Parallel Stages**
+```groovy
+stage('Quality & Security') {
+    parallel {
+        stage('SonarQube')  { steps { /* ... */ } }
+        stage('Trivy')      { steps { /* ... */ } }
+        stage('BlackDuck')  { steps { /* ... */ } }
+        stage('Lint')       { steps { /* ... */ } }
+    }
+}
+```
+
+**4. Conditional Execution — Don't Run What You Don't Need**
+```groovy
+stage('Integration Tests') {
+    when {
+        anyOf {
+            branch 'main'
+            branch 'release/*'
+            changeRequest target: 'main'    // PRs to main
+        }
+    }
+    steps { /* expensive integration tests */ }
+}
+
+stage('Deploy to Prod') {
+    when {
+        allOf {
+            branch 'main'
+            not { changeRequest() }     // Not a PR
+        }
+    }
+    steps { /* ... */ }
+}
+```
+
+**5. Abort on Stale Builds**
+```groovy
+// If a new commit comes in, kill the running build for the same branch
+options {
+    disableConcurrentBuilds(abortPrevious: true)
+}
+```
+
+---
+
+## 6. Webhook Flow — End to End
+
+```
+Developer pushes to Bitbucket
+         │
+         ▼
+Bitbucket Webhook fires ─────────► Jenkins /github-webhook/ endpoint
+  (POST with payload:                        │
+   repo, branch, commit,                     ▼
+   changed files)              Jenkins Multibranch Pipeline
+                               scans for Jenkinsfile in branch
+                                             │
+                                             ▼
+                               Pipeline executes ──► Build, Test, Scan
+                                             │
+                                             ▼
+                               Jenkins fires Bitbucket Build Status API
+                               (INPROGRESS → SUCCESSFUL/FAILED)
+                                             │
+                                             ▼
+                               PR in Bitbucket shows ✅ or ❌
+                               (branch protection: must pass to merge)
+```
+
+**Webhook configuration gotchas:**
+
+| Issue | Symptom | Fix |
+|-------|---------|-----|
+| Webhook URL wrong | Pushes don't trigger builds | Verify: `https://jenkins.novamart.com/bitbucket-hook/` |
+| Jenkins behind VPN | Bitbucket cloud can't reach webhook | Webhook relay (smee.io) or allow Bitbucket IPs |
+| Multibranch not scanning | New branch not discovered | Branch source: periodic scan as backup (every 5min) |
+| Too many triggers | Every push triggers, even docs | Path-based filtering: `when { changeset "services/order-service/**" }` |
+| Webhook secret missing | Anyone can trigger builds | Always configure webhook secret/token |
+
+---
+
+
+---
+
+## Quick Reference Card
+
+```
+JENKINS ARCHITECTURE:
+  Controller = brain (UI, queue, config, credentials) — NEVER build here
+  Agent = muscle (runs builds) — disposable, labeled, dynamic on K8s
+  $JENKINS_HOME/secrets/master.key = encrypt key for ALL credentials
+  
+PIPELINE:
+  Declarative > Scripted (always start declarative)
+  agent none → per-stage agents (K8s pods)
+  options { timeout, timestamps, buildDiscarder, disableConcurrentBuilds }
+  environment { REGISTRY = '...'; CREDS = credentials('id') }
+  when { branch 'main'; changeset 'path/**' }
+  parallel { stage('A') {...}; stage('B') {...} }
+  post { always/success/failure/unstable/changed }
+
+SHARED LIBRARIES:
+  vars/ = global functions (the API surface)
+  Pin version: @Library('lib@v2.3.0') _
+  Golden path: standardPipeline(appName: 'x', language: 'java')
+
+SECURITY:
+  withCredentials([...]) { } — scoped, masked
+  Never: echo $SECRET, --build-arg SECRET=, sh "curl -u $user:$pass"
+  Script approval = privilege escalation vector — lock it down
+  Folder-level credentials > global credentials
+
+OPTIMIZATION:
+  Shallow clone (--depth 1)
+  PVC cache (maven, npm, go modules)
+  Parallel stages (scans, tests)
+  Conditional stages (when {})
+  Kill stale builds (abortPrevious: true)
+  Kaniko (no Docker daemon, cached layers in registry)
+
+CPS GOTCHA:
+  JsonSlurper → @NonCPS or readJSON step
+  All pipeline variables must be Serializable
+
+GITOPS BRIDGE:
+  Jenkins (CI) → builds image → updates manifest repo → ArgoCD (CD) syncs
+```
+
+---
+
+## Retention Questions
+
+**Q1.** You're onboarding at NovaMart. The current Jenkins setup has the controller running builds (executors = 4), all 200 services use `@Library('pipeline-lib') _` without version pinning, and credentials are stored globally. The security team is flagging risk. You're asked to write a remediation plan. What are your top 5 changes, ordered by risk severity, and what's the blast radius of each if left unfixed?
+
+**Q2.** A developer reports their pipeline takes 22 minutes. You look at the Jenkinsfile and see: sequential stages (build → test → sonar → trivy → blackduck → docker build → push → deploy), `checkout scm` doing a full clone of a 4GB monorepo, Maven downloading dependencies fresh every build, and Docker building from scratch each time (no layer cache). Walk me through your optimization plan — what changes would you make, what's the expected time savings for each, and what's the total target build time?
+
+**Q3.** At 3 AM, PagerDuty alerts: "Jenkins controller is down." When it comes back up after restart, you discover 15 in-flight builds were lost, 3 teams can't deploy because their builds are stuck in "pending" (no agents available), and the SonarQube quality gate webhook is returning 404. Triage this incident: what do you investigate first, what's your recovery sequence, and what changes do you implement to prevent recurrence?
+
+**Q4.** Explain the CPS (Continuation Passing Style) execution model in Jenkins pipelines. Why does it exist? What specific problems does it cause? Give a code example that would break due to CPS and show the fix. Then explain why shared library code in `src/` is trusted (no sandbox) while Jenkinsfile code is sandboxed — and what security implication this creates.
+
+
+These are not "homework" questions; these are **architectural audits**. If you answer these like a student, you fail. I need you to answer them as the Senior Engineer who is responsible for the uptime of NovaMart's deployment engine.
+
+---
+
+### Q1: The NovaMart Remediation Plan
+
+The current setup is a "ticking time bomb." The combination of a controller-as-worker and unpinned shared libraries means a single bad commit in the library could crash the controller and block 200 services simultaneously.
+
+**Remediation Plan (Ordered by Risk Severity):**
+
+| Priority | Change | Risk if Left Unfixed | Blast Radius |
+| :--- | :--- | :--- | :--- |
+| **1. CRITICAL** | **Move Builds to Agents** (K8s Pods) | **Systemic Outage.** A single heavy build (e.g., a massive Java compile) consumes all Controller CPU/RAM, killing the UI and API. | **100%** of all pipelines. |
+| **2. HIGH** | **Credential Scoping/Vault Integration** | **Lateral Movement.** Global creds mean any developer with "Job Configure" access can steal the production DB password or AWS keys. | All production secrets across all 200 services. |
+| **3. HIGH** | **Version Pinning for Shared Libs** | **Mass-Failure.** A change to `pipeline-lib` is instantly applied to all 200 services. One syntax error = 200 broken pipelines. | All active deployments. |
+| **4. MEDIUM** | **Implement JCasC (Config-as-Code)** | **Configuration Drift.** Manual UI changes are untracked. If the controller dies, you cannot reliably recreate the setup. | Recovery Time Objective (RTO) increases from mins to days. |
+| **5. LOW** | **Set Global Timeouts & Concurrency Limits** | **Resource Starvation.** A "zombie" build or a loop in a pipeline occupies an executor forever, blocking other teams. | Specific teams/services (Queue congestion). |
+
+---
+
+### Q2: The Pipeline Optimization Audit
+
+The current pipeline is a "sequential disaster." It treats a modern CI process like a 1990s batch job.
+
+**Optimization Plan:**
+
+1.  **Shallow Clone (`--depth 1`):**
+    *   **Change:** Replace `checkout scm` with a shallow clone. We don't need 10 years of history to build a JAR.
+    *   **Saving:** ~5–8 minutes (depending on network/repo size).
+2.  **Parallelize "Quality" Stages:**
+    *   **Change:** Run `Sonar`, `Trivy`, and `Blackduck` in a `parallel` block. They don't depend on each other.
+    *   **Saving:** $\sum(\text{times}) \rightarrow \max(\text{times})$. Saving ~5–10 minutes.
+3.  **Dependency Caching (Maven/Gradle):**
+    *   **Change:** Mount a persistent volume (PV) to the agent at `/root/.m2` or use a local Nexus/Artifactory proxy. Stop downloading the internet on every build.
+    *   **Saving:** ~5–10 minutes.
+4.  **Docker Layer Caching & BuildKit:**
+    *   **Change:** Use `--cache-from` pointing to the latest image in ECR and enable BuildKit (`DOCKER_BUILDKIT=1`). Order Dockerfile to put `COPY pom.xml` before `COPY src`.
+    *   **Saving:** ~5 minutes (for incremental builds).
+
+**Expected Total Build Time:**
+$22\text{m} \rightarrow \mathbf{5\text{--}8\text{m}}$.
+
+---
+
+### Q3: 3 AM Triage: Jenkins Controller Outage
+
+**Investigation Order:**
+1.  **Host Health:** Check CPU/RAM/Disk of the controller node. If disk is 100%, the JVM likely crashed due to an inability to write logs or the `JENKINS_HOME` directory.
+2.  **K8s Agent State:** Since builds are pending, check if the Agent pods are stuck in `Pending` or `ImagePullBackOff`. The controller might be up, but the "muscle" is missing.
+3.  **Webhook Connectivity:** The 404 on the SonarQube webhook suggests a **Networking/DNS change** or a **misconfigured Ingress**. If the controller IP changed during the restart, the webhook is hitting a dead end.
+
+**Recovery Sequence:**
+`Controller Health` $\rightarrow$ `Agent Provisioning` $\rightarrow$ `External Webhook Verification` $\rightarrow$ `Priority-based Build Re-triggering`.
+
+**Prevention:**
+1.  **High Availability (HA):** Move to a multi-node Jenkins setup or a managed service.
+2.  **Externalized State:** Store `JENKINS_HOME` on a high-performance EFS/SSD volume to prevent disk-related crashes.
+3.  **Health Checks:** Implement a `/health` check in the controller that alerts PagerDuty *before* the crash (e.g., when heap usage hits 90%).
+
+---
+
+### Q4: The CPS Execution Model & Security
+
+**What is CPS?**
+Jenkins pipelines are not standard Groovy scripts; they are executed in **Continuation Passing Style (CPS)**. 
+
+**Why it exists:**
+Jenkins pipelines can take hours. If the Jenkins controller restarts, you can't lose the progress of a 3-hour build. CPS allows Jenkins to "pause" a method, save its entire state (the stack, variables, and program counter) to disk as a serialized object, and "resume" it after a restart.
+
+**The Problem: `NotSerializableException`**
+Since every variable must be serializable to be saved to disk, you cannot use non-serializable Java objects (like `Socket`, `InputStream`, or certain Third-Party Library objects) across a "pause point" (any step like `sh`, `sleep`, or `echo`).
+
+**Example of a Break:**
+```groovy
+node {
+    def scanner = new java.util.Scanner(System.in) // Non-serializable object
+    sh 'echo Hello' // PAUSE POINT: Jenkins tries to save 'scanner' to disk
+    println scanner.nextLine() // CRASH: NotSerializableException
+}
+```
+**The Fix:** Use the `@NonCPS` annotation. This tells Jenkins: *"Run this method as a standard Java method; do not try to pause it or save its state."*
+
+**The Sandbox vs. `src/` Security Implication:**
+*   **Jenkinsfile (Sandboxed):** Runs in a restricted environment. It cannot call arbitrary Java methods because a developer could write `System.exit(0)` and kill the controller. It requires an admin to "approve" specific signatures.
+*   **Shared Library `src/` (Trusted):** Code in `src/` is executed **outside the sandbox**. It has full access to the JVM and Jenkins internal API.
+
+**Security Implication:** A Shared Library is a **super-user**. If an attacker can commit code to the `pipeline-lib` repository, they can execute arbitrary code on the Jenkins Controller, steal all global credentials, and potentially gain root access to the underlying node. **Access to the Shared Library repo must be as strictly guarded as the production environment itself.**
+
+
+Q1: Remediation Plan — 4.2/5
+What you nailed:
+
+Correct priority ordering. Controller-as-worker is the highest risk — systemic, not targeted.
+Credential scoping and blast radius analysis is solid.
+JCasC mention is excellent — most people forget configuration drift as a risk.
+Blast radius descriptions are precise and business-aware.
+What you missed:
+
+No mention of Script Approval lockdown. You flagged credentials but ignored the fact that with builds running on the controller + global credentials + no script approval restrictions, any developer can write a Jenkinsfile that calls System.getenv() or reads master.key directly. This is worse than credential scoping — it's arbitrary code execution on the brain of your CI system. Should be Priority 2 or merged into your credential item.
+
+No audit trail. You can't scope credentials retroactively without knowing who's using what. Step 0 of the credential remediation is: enable Audit Trail plugin, log all credential access for 2 weeks, THEN scope. Otherwise you'll break pipelines blindly.
+
+Missing: RBAC / folder isolation. You mentioned JCasC but not folder-level RBAC. Without it, Team A can modify Team B's pipelines. Combined with global credentials, that's cross-team lateral movement.
+
+Concurrency limits as "LOW" is debatable. A zombie build occupying the controller's 4 executors IS a systemic outage since builds run on the controller. With your Priority 1 fix in place (agents), then yes it drops to LOW. But in the current broken state, it's higher.
+
+Production consequence of the gap: You'd implement credential scoping but leave script approval wide open — an attacker writes a Jenkinsfile that bypasses credential binding entirely by reading /var/jenkins_home/secrets/master.key directly. Game over.
+
+Q2: Pipeline Optimization — 3.8/5
+What you nailed:
+
+Correct identification of all 4 major bottlenecks (clone, sequential, deps, docker cache).
+Parallel block reasoning is correct (sum → max).
+Target time range is realistic (5-8min).
+Dockerfile layer ordering mention is good.
+What you missed:
+
+No mention of Kaniko. You said "BuildKit + --cache-from" which requires a Docker daemon (DinD, privileged mode). The lesson explicitly covered Kaniko as the production pattern — no daemon, no privileged, registry-based caching. This is the NovaMart standard.
+
+Sparse checkout not mentioned. Shallow clone helps with history depth but this is a 4GB monorepo. You still download all 200 services' source code. Sparse checkout (sparseCheckoutPaths) limits to just the service directory — that's where the bulk of the clone savings come from.
+
+No abortPrevious: true. If a developer pushes 3 commits in 5 minutes, you're running 3 full pipelines. The first two are waste. This is free optimization.
+
+No conditional stage execution. Why run BlackDuck on a feature branch? Why run integration tests on a docs change? when { changeset } and when { branch } eliminate entire stages.
+
+Savings math is hand-wavy. "5-10 minutes" for dependency caching is a range so wide it's not useful. Be specific: fresh Maven download of Spring Boot dependencies = ~3-4min. PVC cache hit = ~15s. Saving: ~3.5min. That's how you justify infra spend to management.
+
+Production consequence: You optimize but still run privileged DinD containers and waste CI minutes on redundant builds.
+
+Q3: 3 AM Triage — 3.5/5
+What you nailed:
+
+Correct instinct to check host health (disk/CPU/RAM) first.
+Identifying the webhook 404 as a networking/DNS/ingress issue is correct.
+Recovery sequence order is logical.
+HA and externalized state for prevention are appropriate.
+What you missed:
+
+You skipped the 15 lost in-flight builds. This is the most urgent user-facing issue. Which 15 builds? Were any deploying to production mid-flight? A build that was pushing a Docker image and got killed might have pushed a partial/corrupt image tag. A build that was updating the manifest repo might have left a half-committed state. You need to audit the state of each lost build, not just "re-trigger" them.
+
+"Pending" builds — wrong diagnosis direction. You jumped to "Agent pods stuck in Pending/ImagePullBackOff." More likely: the controller just restarted, the Kubernetes plugin hasn't re-registered, or the pod templates are misconfigured after the restart. First check: kubectl get pods -n jenkins-agents — are there ANY agent pods? If zero, the issue is controller → K8s API connectivity, not agent health.
+
+Prevention is incomplete:
+
+No mention of $JENKINS_HOME backup strategy (EBS snapshots, scheduled)
+No mention of build distributed persistence (Durable Task plugin, which allows builds to survive controller restart — this is why CPS exists)
+No mention of PDBs for the Jenkins controller StatefulSet
+"/health check that alerts at 90% heap" — Jenkins has a built-in health check endpoint (/login returns 200) but for JVM heap, you'd use Prometheus JMX exporter + alerting, not a custom health check
+"Multi-node Jenkins" for HA is vague. Jenkins doesn't natively support multi-controller. You either mean CloudBees CI (commercial, controller-per-team), or you mean active-passive with shared storage. Saying "multi-node" without specifics suggests you're guessing.
+
+Production consequence: You restart Jenkins, re-trigger builds, but miss that build #4532 of payment-service pushed a corrupt image tag that ArgoCD is now trying to deploy to production.
+
+Q4: CPS Explanation — 4/5
+What you nailed:
+
+Correct explanation of WHY CPS exists (survive controller restarts during long builds).
+"Pause point" concept is accurate — any pipeline step is a potential serialization boundary.
+The security implication of shared library src/ is perfectly stated: "A Shared Library is a super-user."
+The fix (@NonCPS) is correct.
+What you missed:
+
+Your code example is wrong. new java.util.Scanner(System.in) isn't what causes CPS issues in practice — nobody reads stdin in a Jenkins pipeline. The classic real-world break is JsonSlurper (returns LazyMap, which is non-serializable) or HttpURLConnection. The lesson explicitly covered this. Use the real-world example.
+
+You didn't mention readJSON/readYaml pipeline steps as the preferred alternative to @NonCPS. The @NonCPS annotation has a limitation: it cannot call CPS-transformed methods (pipeline steps like sh, echo) inside it. The better fix for JSON parsing is readJSON(text: response) — a proper pipeline step that's CPS-safe.
+
+Missing: CPS performance impact. CPS transformation makes Groovy pipelines significantly slower than native Groovy. Tight loops, heavy string manipulation, large data structures — all suffer. This is why you push logic into shell scripts (sh) or external tools rather than doing it in Groovy.
+
+Sandbox bypass via shared library — incomplete threat model. You correctly said an attacker with commit access to the library repo can execute arbitrary code. But you didn't mention: even without direct commit access, if the library is loaded from @Library('lib') _ without version pinning, a developer who can push to the library's default branch gets the same power. This connects directly to Q1 (version pinning).
+
+===========================================================================================
 
 
