@@ -79,28 +79,28 @@ At NovaMart:
 │     ┌──────────────────────────────┐                                │
 │     │ Resource-based policy        │                                │
 │     │ grants cross-account access? │──YES──→ ✅ ALLOWED             │
-│     └──────────────┬───────────────┘  (if same account, continue)  │
+│     └──────────────┬───────────────┘  (if same account, continue)   │
 │                    │                                                │
-│                    ▼                                                 │
+│                    ▼                                                │
 │     ┌──────────────────────────────┐                                │
 │     │ Identity-based policy        │                                │
 │     │ (user/role policy) allows?   │──NO───→ ❌ DENIED              │
 │     └──────────────┬───────────────┘                                │
 │                    YES                                              │
-│                    ▼                                                 │
+│                    ▼                                                │
 │     ┌──────────────────────────────┐                                │
 │     │ Permissions boundary         │                                │
 │     │ allows it?                  │──NO───→ ❌ DENIED               │
 │     └──────────────┬───────────────┘                                │
 │                    YES                                              │
-│                    ▼                                                 │
+│                    ▼                                                │
 │     ┌──────────────────────────────┐                                │
 │     │ Session policy allows?       │──NO───→ ❌ DENIED              │
 │     │ (if using STS)              │                                 │
 │     └──────────────┬───────────────┘                                │
 │                    YES                                              │
-│                    ▼                                                 │
-│                 ✅ ALLOWED                                           │
+│                    ▼                                                │
+│                 ✅ ALLOWED                                          │
 │                                                                     │
 │  KEY INSIGHT: Default is DENY. Every gate must say YES.             │
 │  Any single DENY anywhere = denied. Period.                        │
