@@ -8377,7 +8377,6 @@ resource "aws_secretsmanager_secret_policy" "payment_db" {
 
 **Prevention layers summary:**
 
-```
 ┌──────────────────────────────────────────────────────────────────────┐
 │                    DEFENSE IN DEPTH — SECRET LEAK PREVENTION         │
 │                                                                      │
@@ -8404,13 +8403,11 @@ resource "aws_secretsmanager_secret_policy" "payment_db" {
 
 Layer 1 prevents 95% of incidents. Layers 2-5 are for the remaining 5%.
 Layers 6-7 limit blast radius when all prevention fails.
-```
 
 ---
 
 ## Summary: Key Principles From This Lesson
 
-```
 ┌──────────────────────────────────────────────────────────────────┐
 │  1. SECRET DELIVERY IS A CHAIN — every link must be monitored    │
 │     Secrets Manager → ESO → K8s Secret → Pod Volume → App Pool  │
@@ -8436,5 +8433,5 @@ Layers 6-7 limit blast radius when all prevention fails.
 │     leak them. Account isolation + resource policies + IRSA      │
 │     eliminate the class of incident, not just detect it.          │
 └──────────────────────────────────────────────────────────────────┘
-```
+
 
