@@ -1,1 +1,3676 @@
+# Phase 5: Observability & SRE
+## Lesson 1: Observability Foundations — The Three Pillars + Prometheus Deep Dive
+
+---
+
+## Why This Phase Changes Everything
+
+```
+Phases 0-4 taught you to BUILD infrastructure.
+Phase 5 teaches you to KNOW if it's working.
+
+Without observability:
+  "Is the system healthy?" → "I think so? Nobody's complained yet."
+  "What caused the outage?" → "We're not sure. Let's check the logs... 
+                                which logs? There are 200 services."
+  "Are we meeting our reliability targets?" → "What targets?"
+
+With observability:
+  "Is the system healthy?" → "SLO compliance is 99.97%, error budget 
+                               has 4.2 hours remaining this month."
+  "What caused the outage?" → "Trace ID abc123 shows 2.3s latency at 
+                                payment-service → db query, correlating 
+                                with CPU throttling on pod payment-7f8b."
+  "Are we meeting our reliability targets?" → Dashboard. One glance. Done.
+
+At NovaMart:
+  $50K/minute outage cost × average 15 minutes to detect without monitoring
+  = $750K per incident in DETECTION DELAY ALONE
+  
+  With proper observability: detection in <2 minutes
+  Savings: $650K per incident
+```
+
+---
+
+## 1. The Three Pillars of Observability
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    OBSERVABILITY                                  │
+│                                                                   │
+│  "The ability to understand the internal state of a system        │
+│   by examining its external outputs"                              │
+│                                                                   │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────────────┐    │
+│  │   METRICS   │   │    LOGS     │   │      TRACES         │    │
+│  │             │   │             │   │                      │    │
+│  │ "What is    │   │ "What       │   │ "What is the path   │    │
+│  │  happening?"│   │  happened?" │   │  of a request?"     │    │
+│  │             │   │             │   │                      │    │
+│  │ Numeric     │   │ Text events │   │ Distributed call    │    │
+│  │ time-series │   │ with        │   │ graphs across       │    │
+│  │ data        │   │ context     │   │ services            │    │
+│  │             │   │             │   │                      │    │
+│  │ Examples:   │   │ Examples:   │   │ Examples:           │    │
+│  │ CPU 78%     │   │ "User 123  │   │ API GW → Cart Svc   │    │
+│  │ Req/s: 5200 │   │  failed    │   │ → Order Svc         │    │
+│  │ Latency p99:│   │  login:    │   │ → Payment Svc       │    │
+│  │  450ms      │   │  invalid   │   │ → DB (slow: 2.3s)   │    │
+│  │ Errors: 12  │   │  password" │   │ → Notification Svc  │    │
+│  │             │   │             │   │                      │    │
+│  │ Tool:       │   │ Tool:      │   │ Tool:               │    │
+│  │ Prometheus  │   │ Loki / ELK │   │ Jaeger / Tempo      │    │
+│  └──────┬──────┘   └──────┬──────┘   └──────────┬──────────┘    │
+│         │                 │                      │               │
+│         └─────────────────┼──────────────────────┘               │
+│                           │                                      │
+│                    ┌──────▼──────┐                                │
+│                    │  GRAFANA    │   Unified visualization        │
+│                    │  Dashboard  │   Metrics + Logs + Traces      │
+│                    │             │   correlated by time and       │
+│                    │             │   trace ID                     │
+│                    └─────────────┘                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Monitoring vs Observability
+
+```
+MONITORING (traditional):
+  "I know what questions to ask in advance"
+  → Set up checks for CPU > 80%, disk > 90%, HTTP 5xx > 10/min
+  → Alerts fire when thresholds are crossed
+  → Works for KNOWN failure modes
+  → Breaks for UNKNOWN failure modes
+  
+  Example: You monitor CPU, memory, disk. But the outage is caused by 
+  a DNS resolution timeout that makes service-to-service calls take 30s.
+  None of your dashboards show this because you didn't think to monitor 
+  DNS latency from inside pods.
+
+OBSERVABILITY (modern):
+  "I can ask NEW questions without deploying new code"
+  → Rich telemetry: metrics, logs, traces with high cardinality
+  → Can investigate issues you DIDN'T predict
+  → Explore data interactively during incidents
+  
+  Example: Same DNS issue. With observability:
+  1. Alert: p99 latency spiked on order-service
+  2. Click trace → see 28s gap between order-service and payment-service
+  3. Expand span → DNS resolution took 27.8s
+  4. Correlate with metrics → CoreDNS pods are OOMKilled
+  5. Root cause found in 3 minutes without any pre-built DNS dashboard
+
+KEY INSIGHT:
+  Monitoring tells you WHEN something is broken.
+  Observability tells you WHY.
+  You need BOTH.
+```
+
+### How the Three Pillars Correlate
+
+```
+INCIDENT TIMELINE:
+
+1. ALERT fires (from METRICS)
+   → "HTTP error rate on order-service exceeded 5% for 2 minutes"
+   → p99 latency: 4200ms (normal: 200ms)
+
+2. INVESTIGATE with TRACES
+   → Find a slow trace: order-service → payment-service → RDS
+   → The RDS span shows 3800ms (normal: 50ms)
+   → payment-service is healthy; the database is the bottleneck
+
+3. DEEP DIVE with LOGS
+   → Filter logs by trace_id from step 2
+   → RDS logs: "Lock wait timeout exceeded; try restarting transaction"
+   → A long-running migration query is holding table locks
+
+4. CORRELATE back to METRICS
+   → RDS dashboard: active connections spiked to 190/200 max
+   → CPU: 98% on the writer instance
+   → The migration query started at 14:32 UTC (matches the alert time)
+
+5. RESOLVE
+   → Kill the migration query
+   → Latency drops immediately
+   → Error rate returns to baseline
+
+Without all three pillars, you'd be:
+  - Metrics only: "Something is slow" (WHERE?)
+  - Logs only: "There's a lock timeout" (WHY? WHICH request? HOW widespread?)
+  - Traces only: "This request hit the DB" (Is it an isolated case or systemic?)
+```
+
+---
+
+## 2. Prometheus — Architecture Deep Dive
+
+### Why Prometheus Won
+
+```
+Before Prometheus (2012-2015):
+  Nagios:   Host-level checks, polling, terrible scaling, config is XML hell
+  Zabbix:   Better than Nagios, still agent-based, rigid schema
+  Graphite: Metrics storage + graphing, push-based, no alerting
+  StatsD:   Metrics aggregation, no storage, no querying
+  
+  Problems:
+  - No dimensional data model (can't filter by label)
+  - Push-based (services push metrics → requires discovery + registration)
+  - Poor K8s integration (designed for static servers, not ephemeral pods)
+  - No native alerting with silencing/routing
+
+Prometheus (2015+, CNCF graduated):
+  ✓ Pull-based (Prometheus scrapes targets — works with K8s service discovery)
+  ✓ Dimensional data model (labels: {service="order", region="us-east-1"})
+  ✓ PromQL (powerful query language)
+  ✓ Native alerting (Alertmanager with routing, silencing, grouping)
+  ✓ K8s-native (ServiceMonitor CRDs, auto-discovery)
+  ✓ Ecosystem (thousands of exporters, Grafana integration)
+  ✓ Battle-tested at scale (SoundCloud, DigitalOcean, CERN, NovaMart)
+```
+
+### Architecture
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                     PROMETHEUS SERVER                                │
+│                                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐   │
+│  │  Service      │  │  Scrape      │  │      TSDB               │   │
+│  │  Discovery    │  │  Engine      │  │  (Time Series Database)  │   │
+│  │              │  │              │  │                          │   │
+│  │ Finds targets │  │ HTTP GET     │  │  ┌─────────────────┐    │   │
+│  │ to scrape:    │  │ /metrics     │  │  │ Head Block      │    │   │
+│  │              │  │ every 15-30s │  │  │ (last 2 hours,  │    │   │
+│  │ - K8s API    │  │              │  │  │  in memory)     │    │   │
+│  │ - DNS SRV    │  │ Parses       │  │  └────────┬────────┘    │   │
+│  │ - Consul     │  │ Prometheus   │  │           │ compaction  │   │
+│  │ - EC2 API    │  │ exposition   │  │  ┌────────▼────────┐    │   │
+│  │ - File       │  │ format       │  │  │ Persistent      │    │   │
+│  │ - Static     │  │              │  │  │ Blocks (2h      │    │   │
+│  │              │  │              │  │  │ chunks on disk)  │    │   │
+│  └──────┬───────┘  └──────┬───────┘  │  └─────────────────┘    │   │
+│         │                 │          │                          │   │
+│         └─────────────────┘          │  Retention: 15d default  │   │
+│                                      │  WAL for crash recovery  │   │
+│                                      └──────────────────────────┘   │
+│                                                                      │
+│  ┌──────────────┐  ┌──────────────────────────────────────────┐     │
+│  │  PromQL      │  │  Rule Engine                              │     │
+│  │  Engine      │  │                                            │     │
+│  │              │  │  Recording Rules:                          │     │
+│  │  Evaluates   │  │    Pre-compute expensive queries           │     │
+│  │  queries     │  │    e.g., 5m error rate per service         │     │
+│  │  from        │  │                                            │     │
+│  │  Grafana,    │  │  Alerting Rules:                           │     │
+│  │  API, rules  │  │    Evaluate conditions → fire alerts       │     │
+│  │              │  │    e.g., error_rate > 5% for 5m            │     │
+│  └──────────────┘  └────────────────────┬───────────────────────┘     │
+│                                         │                            │
+└─────────────────────────────────────────┼────────────────────────────┘
+                                          │ alerts
+                                          ▼
+                              ┌──────────────────────┐
+                              │   Alertmanager        │
+                              │                       │
+                              │  - Deduplication      │
+                              │  - Grouping           │
+                              │  - Silencing          │
+                              │  - Inhibition         │
+                              │  - Routing            │
+                              │                       │
+                              │  Routes to:           │
+                              │  - PagerDuty (SEV1)   │
+                              │  - Slack (SEV3-4)     │
+                              │  - Email (reports)    │
+                              └──────────────────────┘
+
+EXTERNAL CONSUMERS:
+  ┌──────────┐  ┌──────────────┐  ┌─────────────────┐
+  │ Grafana  │  │ Thanos /     │  │  Custom tools   │
+  │ (viz)    │  │ Cortex /     │  │  (Python scripts │
+  │          │  │ Mimir        │  │   hitting API)   │
+  │ Queries  │  │ (long-term   │  │                  │
+  │ PromQL   │  │  storage,    │  │                  │
+  │ via HTTP │  │  global      │  │                  │
+  │ API      │  │  view)       │  │                  │
+  └──────────┘  └──────────────┘  └─────────────────┘
+```
+
+### The Pull Model — Why It Matters
+
+```
+PUSH-BASED (StatsD, Graphite, CloudWatch):
+  Service → pushes metrics → collector
+
+  Problems:
+  1. Service must know WHERE to push (hardcoded endpoint)
+  2. If collector is down, metrics are LOST
+  3. In K8s: pods are ephemeral — who pushes? where?
+  4. Backpressure: if 200 services push simultaneously → overwhelm collector
+  5. Can't tell the difference between "service is healthy with 0 errors" 
+     and "service is dead and not pushing"
+
+PULL-BASED (Prometheus):
+  Prometheus → scrapes metrics ← from targets
+
+  Advantages:
+  1. Targets just expose /metrics — simple HTTP endpoint
+  2. If Prometheus is down, targets are unaffected (metrics still generated)
+  3. In K8s: Prometheus discovers pods via API — ephemeral is fine
+  4. Prometheus controls scrape rate — no backpressure on targets
+  5. "Up" detection is FREE: if scrape fails → target is down
+     The "up" metric (0 or 1) comes automatically
+  6. You can manually curl /metrics for debugging:
+     curl http://pod-ip:8080/metrics | grep http_requests
+
+EXCEPTION — Pushgateway:
+  For SHORT-LIVED jobs (batch, cron, CI) that may finish before 
+  Prometheus scrapes them:
+  
+  CronJob → pushes metrics → Pushgateway ← Prometheus scrapes
+  
+  USE SPARINGLY. Pushgateway is a single point of failure and 
+  doesn't support "up" detection. Only for jobs, never for services.
+```
+
+### Metric Types — The Four Fundamental Types
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                    PROMETHEUS METRIC TYPES                          │
+│                                                                    │
+│  ┌───────────┐  ┌───────────┐  ┌─────────────┐  ┌──────────────┐ │
+│  │  COUNTER  │  │   GAUGE   │  │  HISTOGRAM  │  │   SUMMARY    │ │
+│  │           │  │           │  │             │  │              │ │
+│  │ Only goes │  │ Goes up   │  │ Buckets of  │  │ Client-side  │ │
+│  │ UP (or    │  │ AND down  │  │ observations│  │ quantiles    │ │
+│  │ resets    │  │           │  │             │  │              │ │
+│  │ to 0)     │  │           │  │ Server-side │  │ NOT          │ │
+│  │           │  │           │  │ quantile    │  │ aggregatable │ │
+│  │           │  │           │  │ calculation │  │              │ │
+│  └───────────┘  └───────────┘  └─────────────┘  └──────────────┘ │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+#### Counter
+
+```
+# A counter ONLY increases (or resets to 0 on process restart).
+# Use for: requests, errors, bytes transferred, tasks completed
+
+# Example: HTTP request counter
+http_requests_total{method="GET", path="/api/orders", status="200"} 1547892
+http_requests_total{method="GET", path="/api/orders", status="500"} 342
+http_requests_total{method="POST", path="/api/orders", status="201"} 89023
+
+# NEVER use a counter's raw value. It's meaningless.
+# "We've had 1,547,892 requests" — so what? Since when?
+
+# ALWAYS use rate() or increase() with counters:
+
+# Requests per second (averaged over 5 minutes):
+rate(http_requests_total[5m])
+
+# Errors per second:
+rate(http_requests_total{status=~"5.."}[5m])
+
+# Error percentage:
+rate(http_requests_total{status=~"5.."}[5m]) 
+/ rate(http_requests_total[5m]) * 100
+
+# rate() handles counter resets automatically.
+# If a pod restarts and counter goes from 50000 → 0 → 150,
+# rate() sees the reset and calculates correctly.
+
+# COMMON MISTAKE:
+# increase(http_requests_total[1h]) — looks like "requests in the last hour"
+# But increase() is syntactic sugar for rate() * seconds.
+# It's an ESTIMATE, not an exact count. Use for dashboards, not billing.
+```
+
+#### Gauge
+
+```
+# A gauge can go UP or DOWN.
+# Use for: temperature, memory usage, queue depth, active connections,
+#          number of running pods
+
+# Examples:
+node_memory_MemAvailable_bytes 4294967296
+node_filesystem_avail_bytes{mountpoint="/"} 53687091200
+kube_deployment_spec_replicas{deployment="order-service"} 5
+process_open_fds 127
+
+# With gauges, the raw value IS meaningful:
+# "Available memory is 4GB" — that's directly useful
+
+# Useful functions for gauges:
+# Current value (just the metric name):
+node_memory_MemAvailable_bytes
+
+# Min/max/avg over time:
+min_over_time(node_memory_MemAvailable_bytes[1h])
+max_over_time(node_memory_MemAvailable_bytes[1h])
+avg_over_time(node_memory_MemAvailable_bytes[1h])
+
+# Rate of change (useful for "is memory leaking?"):
+deriv(process_resident_memory_bytes[1h])
+# Positive = growing, negative = shrinking
+# If consistently positive for hours → memory leak
+```
+
+#### Histogram
+
+```
+# A histogram samples observations and counts them in configurable BUCKETS.
+# Use for: request duration, response size, queue wait time
+
+# When you instrument:
+#   histogram.Observe(0.25)  // Request took 250ms
+
+# Prometheus stores THREE things:
+http_request_duration_seconds_bucket{le="0.01"}  4892     # ≤ 10ms
+http_request_duration_seconds_bucket{le="0.05"}  15823    # ≤ 50ms
+http_request_duration_seconds_bucket{le="0.1"}   28456    # ≤ 100ms
+http_request_duration_seconds_bucket{le="0.25"}  45012    # ≤ 250ms
+http_request_duration_seconds_bucket{le="0.5"}   49823    # ≤ 500ms
+http_request_duration_seconds_bucket{le="1.0"}   51203    # ≤ 1s
+http_request_duration_seconds_bucket{le="2.5"}   51502    # ≤ 2.5s
+http_request_duration_seconds_bucket{le="5.0"}   51520    # ≤ 5s
+http_request_duration_seconds_bucket{le="10.0"}  51523    # ≤ 10s
+http_request_duration_seconds_bucket{le="+Inf"}  51523    # all requests (= _count)
+
+http_request_duration_seconds_sum    12043.29             # Total seconds spent
+http_request_duration_seconds_count  51523                # Total request count
+
+# BUCKET DESIGN IS CRITICAL:
+# Too few buckets → poor resolution
+# Too many buckets → high cardinality (memory + storage cost)
+# Wrong boundaries → can't answer the questions you need
+
+# NovaMart SLO: 99% of requests < 500ms
+# You MUST have a bucket at 0.5 to answer this.
+# If your closest buckets are 0.25 and 1.0, you're interpolating.
+
+# Calculate percentiles SERVER-SIDE with histogram_quantile():
+
+# p50 (median):
+histogram_quantile(0.5, rate(http_request_duration_seconds_bucket[5m]))
+
+# p95:
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
+
+# p99:
+histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))
+
+# WHY HISTOGRAMS OVER SUMMARIES:
+# 1. Histograms are AGGREGATABLE across instances:
+histogram_quantile(0.99, 
+  sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+)
+# This gives the TRUE p99 across all pods. Summaries can't do this.
+#
+# 2. Histograms let you change the quantile at QUERY TIME.
+#    Summaries bake quantiles in at instrumentation time.
+#
+# 3. Histograms are cheaper to compute on the client side.
+#
+# USE SUMMARIES ONLY when you need exact client-calculated quantiles
+# and don't need to aggregate across instances (rare).
+```
+
+#### Summary (Brief — Use Histograms Instead)
+
+```
+# A summary calculates quantiles ON THE CLIENT (in your app).
+# Prometheus just stores the pre-calculated values.
+
+http_request_duration_seconds{quantile="0.5"}  0.042
+http_request_duration_seconds{quantile="0.9"}  0.098
+http_request_duration_seconds{quantile="0.99"} 0.245
+http_request_duration_seconds_sum   10043.29
+http_request_duration_seconds_count 42523
+
+# Problems:
+# 1. Can't aggregate across instances (averaging percentiles is WRONG)
+#    p99 of pod-1 = 100ms, p99 of pod-2 = 500ms
+#    Average = 300ms? NO. The real p99 could be anything.
+#
+# 2. Quantiles are fixed at instrumentation time — can't change at query time
+# 3. Expensive to compute on the client (streaming quantile estimation)
+#
+# VERDICT: Use histograms. Always. The only exception is when you 
+# have a single instance and need exact quantiles (rare at NovaMart scale).
+```
+
+### Metric Naming Conventions
+
+```
+# FORMAT: <namespace>_<subsystem>_<name>_<unit>
+# WHERE unit is a BASE UNIT (seconds, bytes, total — not milliseconds, megabytes)
+
+# GOOD:
+http_request_duration_seconds          # duration in seconds (use seconds, not ms)
+http_requests_total                    # counter — _total suffix
+node_memory_MemAvailable_bytes         # memory in bytes (use bytes, not MB)
+process_open_fds                       # no unit needed (count of file descriptors)
+http_response_size_bytes               # size in bytes
+
+# BAD:
+http_request_duration_milliseconds     # use seconds, convert in queries/dashboards
+request_count                          # missing namespace, missing _total
+memory_usage_mb                        # use bytes
+requestLatency                         # camelCase (use snake_case)
+
+# LABELS — The power of Prometheus:
+http_requests_total{
+  service="order-service",
+  method="POST",
+  path="/api/v1/orders",
+  status="201",
+  region="us-east-1",
+  pod="order-service-7f8b9-xk2mv"
+}
+
+# Labels enable DIMENSIONAL queries:
+# Error rate per service:
+rate(http_requests_total{status=~"5.."}[5m]) by (service)
+
+# Latency by region:
+histogram_quantile(0.99, 
+  sum(rate(http_request_duration_seconds_bucket[5m])) by (le, region)
+)
+```
+
+### Cardinality — The Prometheus Killer
+
+```
+CARDINALITY = number of unique time series
+
+Each unique combination of metric name + label values = one time series.
+
+http_requests_total{service="order", method="GET", status="200"}   → 1 series
+http_requests_total{service="order", method="GET", status="500"}   → 1 series
+http_requests_total{service="order", method="POST", status="201"}  → 1 series
+http_requests_total{service="cart", method="GET", status="200"}    → 1 series
+
+4 services × 5 methods × 10 status codes × 3 regions = 600 series
+That's fine.
+
+NOW ADD A BAD LABEL:
+
+http_requests_total{..., user_id="abc123"}
+
+50M users × 600 combinations = 30 BILLION time series
+Prometheus: dead. OOM killed. Disk full. Query timeouts.
+
+THE RULES:
+  ✓ Low-cardinality labels: service, method, status code, region, pod
+  ✗ NEVER use high-cardinality values as labels:
+    - user_id, email, IP address, request_id, trace_id
+    - URL path with parameters: /users/12345 (infinite unique values)
+    - Timestamps, UUIDs, session IDs
+    
+  If you need per-user data → that's LOGS, not metrics.
+  Metrics are for AGGREGATES. Logs are for INDIVIDUAL EVENTS.
+
+MONITORING CARDINALITY:
+  # Total active time series:
+  prometheus_tsdb_head_series
+  
+  # Series created per scrape (should be stable, not growing):
+  rate(prometheus_tsdb_head_series_created_total[5m])
+  
+  # Top offenders (which metrics have the most series):
+  topk(10, count by (__name__)({__name__=~".+"}))
+  
+  # NovaMart target: < 2 million active series per Prometheus instance
+  # Above this: query performance degrades, memory usage spikes
+```
+
+---
+
+## 3. Prometheus in Kubernetes — The Production Setup
+
+### kube-prometheus-stack (The Standard)
+
+```
+At NovaMart, we don't deploy raw Prometheus.
+We deploy kube-prometheus-stack (Helm chart) which includes:
+
+┌────────────────────────────────────────────────────────────┐
+│              kube-prometheus-stack                          │
+│                                                            │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐ │
+│  │ Prometheus   │  │ Alertmanager │  │ Grafana          │ │
+│  │ Operator     │  │ (HA: 3      │  │ + pre-built      │ │
+│  │              │  │  replicas)   │  │   dashboards     │ │
+│  │ Manages      │  │              │  │                  │ │
+│  │ Prometheus   │  │ Routes       │  │ K8s, node,       │ │
+│  │ instances    │  │ alerts to    │  │ namespace,       │ │
+│  │ via CRDs     │  │ PagerDuty/   │  │ workload         │ │
+│  │              │  │ Slack        │  │ dashboards       │ │
+│  └──────────────┘  └──────────────┘  └──────────────────┘ │
+│                                                            │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐ │
+│  │ node-        │  │ kube-state-  │  │ Prometheus       │ │
+│  │ exporter     │  │ metrics      │  │ (2 replicas      │ │
+│  │              │  │              │  │  or Thanos        │ │
+│  │ DaemonSet    │  │ Deployment   │  │  sidecar for HA) │ │
+│  │ on every     │  │              │  │                  │ │
+│  │ node         │  │ Reads K8s    │  │ TSDB + WAL       │ │
+│  │              │  │ API, exposes │  │ persistent        │ │
+│  │ Exposes:     │  │ as metrics   │  │ storage (EBS)    │ │
+│  │ CPU, mem,    │  │              │  │                  │ │
+│  │ disk, net    │  │ Exposes:     │  │                  │ │
+│  │ per NODE     │  │ pod status,  │  │                  │ │
+│  │              │  │ deployment   │  │                  │ │
+│  │              │  │ replicas,    │  │                  │ │
+│  │              │  │ job status,  │  │                  │ │
+│  │              │  │ PVC, etc.    │  │                  │ │
+│  └──────────────┘  └──────────────┘  └──────────────────┘ │
+└────────────────────────────────────────────────────────────┘
+
+CRITICAL DISTINCTION:
+  node-exporter:     HARDWARE metrics (CPU, memory, disk, network — per NODE)
+  kube-state-metrics: KUBERNETES metrics (pod state, deployment replicas — per K8s OBJECT)
+  cAdvisor (kubelet): CONTAINER metrics (CPU, memory, network — per CONTAINER/POD)
+
+  You need ALL THREE for complete visibility.
+```
+
+### Installation
+
+```bash
+# Add Helm repo
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+# Install with custom values
+helm install kube-prom-stack prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --create-namespace \
+  -f values-monitoring.yaml \
+  --version 56.6.2
+```
+
+```yaml
+# values-monitoring.yaml (NovaMart production config)
+---
+# Prometheus configuration
+prometheus:
+  prometheusSpec:
+    # Retention
+    retention: 15d
+    retentionSize: "45GB"
+    
+    # Resources — Prometheus is memory-hungry
+    resources:
+      requests:
+        cpu: "2"
+        memory: 8Gi
+      limits:
+        cpu: "4"
+        memory: 16Gi
+    
+    # Storage — MUST use persistent storage
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 100Gi
+    
+    # Discover ALL ServiceMonitors and PodMonitors in ALL namespaces
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    
+    # Scrape interval
+    scrapeInterval: "30s"
+    evaluationInterval: "30s"
+    
+    # External labels (for Thanos/remote-write identification)
+    externalLabels:
+      cluster: novamart-prod-us-east-1
+      environment: production
+      region: us-east-1
+    
+    # Replicas for HA
+    replicas: 2
+    
+    # Anti-affinity — don't schedule both replicas on same node
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: prometheus
+            topologyKey: kubernetes.io/hostname
+
+# Alertmanager configuration
+alertmanager:
+  alertmanagerSpec:
+    replicas: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          resources:
+            requests:
+              storage: 10Gi
+
+# Grafana
+grafana:
+  enabled: true
+  adminPassword: "{{ vault_grafana_admin_password }}"
+  persistence:
+    enabled: true
+    size: 10Gi
+  
+  # Ingress for Grafana UI
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - grafana.novamart.internal
+    tls:
+      - secretName: grafana-tls
+        hosts:
+          - grafana.novamart.internal
+
+# Node Exporter (DaemonSet on every node)
+nodeExporter:
+  enabled: true
+
+# kube-state-metrics
+kubeStateMetrics:
+  enabled: true
+
+# Default alerting rules (200+ pre-built rules)
+defaultRules:
+  create: true
+  rules:
+    alertmanager: true
+    etcd: true
+    general: true
+    k8s: true
+    kubeApiserver: true
+    kubeApiserverAvailability: true
+    kubeApiserverSlos: true
+    kubelet: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    node: true
+    nodeExporterAlerting: true
+    prometheus: true
+```
+
+### Service Discovery — How Prometheus Finds Targets
+
+```yaml
+# The Prometheus Operator introduces CRDs that tell Prometheus what to scrape:
+
+# 1. ServiceMonitor — scrape pods behind a Service
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: order-service
+  namespace: monitoring
+  labels:
+    release: kube-prom-stack    # Must match Prometheus serviceMonitorSelector
+spec:
+  namespaceSelector:
+    matchNames:
+      - production
+  selector:
+    matchLabels:
+      app: order-service        # Matches the Service's labels
+  endpoints:
+    - port: metrics             # Name of the port in the Service spec
+      interval: 15s             # Override default scrape interval
+      path: /metrics            # Default, but explicit is good
+      scrapeTimeout: 10s
+      metricRelabelings:
+        # Drop high-cardinality metrics you don't need
+        - sourceLabels: [__name__]
+          regex: "go_gc_.*"
+          action: drop
+
+---
+# 2. PodMonitor — scrape pods directly (no Service needed)
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: istio-envoy
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    any: true                   # All namespaces
+  selector:
+    matchLabels:
+      security.istio.io/tlsMode: istio
+  podMetricsEndpoints:
+    - port: http-envoy-prom
+      path: /stats/prometheus
+      interval: 30s
+
+---
+# 3. PrometheusRule — define alerting and recording rules
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: order-service-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prom-stack
+spec:
+  groups:
+    - name: order-service.rules
+      rules:
+        # Recording rule — pre-compute expensive query
+        - record: order_service:http_error_rate:5m
+          expr: |
+            sum(rate(http_requests_total{service="order-service", status=~"5.."}[5m]))
+            / sum(rate(http_requests_total{service="order-service"}[5m]))
+        
+        # Alerting rule
+        - alert: OrderServiceHighErrorRate
+          expr: order_service:http_error_rate:5m > 0.05
+          for: 5m
+          labels:
+            severity: critical
+            service: order-service
+            team: order-team
+          annotations:
+            summary: "Order service error rate is {{ $value | humanizePercentage }}"
+            description: >
+              Error rate for order-service has been above 5% for 5 minutes.
+              Current value: {{ $value | humanizePercentage }}.
+              This impacts customer checkout flow.
+            runbook_url: https://runbooks.novamart.internal/order-service/high-error-rate
+            dashboard_url: https://grafana.novamart.internal/d/order-service
+```
+
+---
+
+## 4. PromQL — The Query Language
+
+### Fundamentals
+
+```
+INSTANT VECTOR — a single value per time series at one point in time:
+  http_requests_total{service="order-service"}
+  → Returns current counter value for each label combination
+
+RANGE VECTOR — a series of values over a time window:
+  http_requests_total{service="order-service"}[5m]
+  → Returns all samples from the last 5 minutes
+  → CANNOT be graphed directly (use rate(), avg_over_time(), etc.)
+
+SCALAR — a single numeric value:
+  count(up{job="node-exporter"})
+  → Returns: 47 (number of nodes being scraped)
+```
+
+### Essential PromQL for NovaMart
+
+```promql
+# ═══════════════════════════════════════════════════
+# REQUEST RATE (The Golden Signal: Traffic)
+# ═══════════════════════════════════════════════════
+
+# Requests per second, per service
+sum(rate(http_requests_total[5m])) by (service)
+
+# Total cluster-wide RPS
+sum(rate(http_requests_total[5m]))
+
+# RPS by status code class
+sum(rate(http_requests_total[5m])) by (status)
+# More useful — group by 2xx, 4xx, 5xx:
+sum(rate(http_requests_total{status=~"2.."}[5m])) # Success
+sum(rate(http_requests_total{status=~"4.."}[5m])) # Client errors
+sum(rate(http_requests_total{status=~"5.."}[5m])) # Server errors
+
+
+# ═══════════════════════════════════════════════════
+# ERROR RATE (The Golden Signal: Errors)
+# ═══════════════════════════════════════════════════
+
+# Error rate as a percentage
+sum(rate(http_requests_total{status=~"5.."}[5m]))
+/ sum(rate(http_requests_total[5m])) * 100
+
+# Error rate per service (for SLO tracking)
+sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+/ sum(rate(http_requests_total[5m])) by (service)
+
+# Only services with error rate > 1%
+(
+  sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+  / sum(rate(http_requests_total[5m])) by (service)
+) > 0.01
+
+
+# ═══════════════════════════════════════════════════
+# LATENCY (The Golden Signal: Latency)
+# ═══════════════════════════════════════════════════
+
+# p50 (median) latency
+histogram_quantile(0.50, 
+  sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+)
+
+# p95 latency
+histogram_quantile(0.95, 
+  sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+)
+
+# p99 latency
+histogram_quantile(0.99, 
+  sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+)
+
+# Average latency (simpler but hides tail latency)
+sum(rate(http_request_duration_seconds_sum[5m])) by (service)
+/ sum(rate(http_request_duration_seconds_count[5m])) by (service)
+
+# WHY P99 MATTERS MORE THAN AVERAGE:
+# Average latency: 50ms (looks great!)
+# p99 latency: 4200ms (1% of your users wait 4+ seconds)
+# At 50M users, 1% = 500,000 users with terrible experience
+
+
+# ═══════════════════════════════════════════════════
+# SATURATION (The Golden Signal: Saturation)
+# ═══════════════════════════════════════════════════
+
+# CPU usage per pod (from cAdvisor via kubelet)
+sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (pod, namespace)
+/ sum(kube_pod_container_resource_requests{resource="cpu"}) by (pod, namespace)
+
+# Memory usage vs limit
+sum(container_memory_working_set_bytes{container!=""}) by (pod, namespace)
+/ sum(kube_pod_container_resource_limits{resource="memory"}) by (pod, namespace)
+
+# Disk usage percentage
+1 - (node_filesystem_avail_bytes{mountpoint="/"} 
+     / node_filesystem_size_bytes{mountpoint="/"})
+
+# CPU throttling (THE HIDDEN KILLER)
+sum(rate(container_cpu_cfs_throttled_periods_total[5m])) by (pod)
+/ sum(rate(container_cpu_cfs_periods_total[5m])) by (pod) > 0.25
+# Pods with >25% of their CPU periods throttled
+
+
+# ═══════════════════════════════════════════════════
+# KUBERNETES-SPECIFIC QUERIES
+# ═══════════════════════════════════════════════════
+
+# Pods not ready
+kube_pod_status_ready{condition="false"} == 1
+
+# Pods in CrashLoopBackOff
+kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} == 1
+
+# Deployments with unavailable replicas
+kube_deployment_status_replicas_unavailable > 0
+
+# PVCs approaching capacity
+kubelet_volume_stats_used_bytes 
+/ kubelet_volume_stats_capacity_bytes > 0.85
+
+# Nodes not ready
+kube_node_status_condition{condition="Ready", status="true"} == 0
+
+# Container restarts (high restart count = instability)
+increase(kube_pod_container_status_restarts_total[1h]) > 5
+
+# HPA at max replicas (scaling ceiling hit)
+kube_horizontalpodautoscaler_status_current_replicas 
+== kube_horizontalpodautoscaler_spec_max_replicas
+
+
+# ═══════════════════════════════════════════════════
+# NODE-LEVEL QUERIES
+# ═══════════════════════════════════════════════════
+
+# CPU usage per node
+1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) by (instance)
+
+# Memory usage per node
+1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+
+# Disk I/O utilization (% of time disk is busy)
+rate(node_disk_io_time_seconds_total[5m])
+
+# Network errors
+rate(node_network_receive_errs_total[5m]) > 0
+rate(node_network_transmit_errs_total[5m]) > 0
+```
+
+### PromQL Gotchas
+
+```
+GOTCHA 1: rate() requires a RANGE, not an instant
+  WRONG: rate(http_requests_total)
+  RIGHT: rate(http_requests_total[5m])
+  
+GOTCHA 2: rate() should only be used on COUNTERS
+  WRONG: rate(node_memory_MemAvailable_bytes[5m])  ← gauge!
+  RIGHT: deriv(node_memory_MemAvailable_bytes[5m])  ← rate of change for gauge
+
+GOTCHA 3: Range window must be ≥ 2x scrape interval
+  If scrape interval = 30s, minimum useful range = 1m
+  rate(metric[30s]) with 30s scrape = only 1 sample = unreliable
+  rate(metric[1m])  with 30s scrape = 2 samples = minimum viable
+  rate(metric[5m])  with 30s scrape = 10 samples = smooth, recommended
+
+GOTCHA 4: sum() by (label) vs sum() without (label)
+  sum(rate(x[5m])) by (service)    → one value PER service
+  sum(rate(x[5m])) without (pod)   → sum everything EXCEPT per-pod
+
+GOTCHA 5: absent() for detecting missing metrics
+  # Alert if order-service stops reporting metrics entirely:
+  absent(up{job="order-service"} == 1)
+  # Fires when NO time series matches — the job has disappeared
+
+GOTCHA 6: histogram_quantile with sum by (le)
+  WRONG: histogram_quantile(0.99, http_request_duration_seconds_bucket)
+  # This gives p99 PER time series (per pod), not overall
+  
+  RIGHT: histogram_quantile(0.99, 
+    sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+  )
+  # This gives p99 ACROSS all pods — the true service-level p99
+  # The "by (le)" is MANDATORY — histogram_quantile needs the le label
+
+GOTCHA 7: The "stale" problem
+  If a pod is terminated, its metrics become "stale" after 5 minutes.
+  During those 5 minutes, the old data is still returned in queries.
+  rate() handles this correctly (returns nothing for stale series).
+  But gauge queries may show stale data.
+  
+  Fix: Use the "up" metric to filter:
+  node_memory_MemAvailable_bytes and on(instance) up == 1
+```
+
+### Recording Rules — Pre-computed Queries
+
+```yaml
+# WHY:
+# Complex PromQL queries that run on every dashboard load or every 
+# alert evaluation are expensive. If 10 dashboards and 5 alerts
+# all compute the same error rate, that's 15 evaluations of the same query.
+#
+# Recording rules pre-compute and store the result as a new metric.
+# Dashboards and alerts read the pre-computed metric — instant.
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: novamart-recording-rules
+  namespace: monitoring
+spec:
+  groups:
+    - name: novamart.slo.rules
+      interval: 30s    # Evaluate every 30 seconds
+      rules:
+        # Error rate per service (used by 12 dashboards + 3 alerts)
+        - record: novamart:http_error_rate:5m
+          expr: |
+            sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+            / sum(rate(http_requests_total[5m])) by (service)
+
+        # Request rate per service
+        - record: novamart:http_request_rate:5m
+          expr: |
+            sum(rate(http_requests_total[5m])) by (service)
+
+        # p99 latency per service
+        - record: novamart:http_latency_p99:5m
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+            )
+
+        # CPU saturation per namespace
+        - record: novamart:namespace_cpu_utilization:5m
+          expr: |
+            sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (namespace)
+            / sum(kube_pod_container_resource_requests{resource="cpu"}) by (namespace)
+
+# NAMING CONVENTION:
+#   level:metric_name:operations
+#   novamart:http_error_rate:5m
+#   │         │               │
+#   │         │               └── aggregation window
+#   │         └── what it measures
+#   └── scope/org prefix
+```
+
+---
+
+## 5. Alertmanager — Routing Alerts to Humans
+
+### Configuration
+
+```yaml
+# alertmanager.yml (deployed via Helm values or AlertmanagerConfig CRD)
+global:
+  resolve_timeout: 5m
+  slack_api_url: 'https://hooks.slack.com/services/T00/B00/xxxx'
+  pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+# Inhibition: suppress child alerts when parent fires
+inhibit_rules:
+  # If the entire cluster is down, don't page for individual services
+  - source_matchers:
+      - severity = critical
+      - alertname = KubeClusterDown
+    target_matchers:
+      - severity =~ "warning|critical"
+    equal: ['cluster']
+  
+  # If a node is down, suppress pod alerts on that node
+  - source_matchers:
+      - alertname = NodeDown
+    target_matchers:
+      - alertname =~ "Pod.*"
+    equal: ['node']
+
+# Routing tree
+route:
+  # Default receiver
+  receiver: 'slack-platform-alerts'
+  
+  # Group alerts by these labels
+  group_by: ['alertname', 'service', 'namespace']
+  
+  # Wait before sending initial notification (batch alerts)
+  group_wait: 30s
+  
+  # Wait before sending updates to an existing group
+  group_interval: 5m
+  
+  # Wait before re-sending an already-sent alert
+  repeat_interval: 4h
+
+  # Child routes (first match wins)
+  routes:
+    # SEV1/Critical → PagerDuty (wake people up)
+    - matchers:
+        - severity = critical
+      receiver: 'pagerduty-critical'
+      group_wait: 10s              # Send critical alerts FAST
+      repeat_interval: 30m         # Re-page every 30 min until resolved
+      routes:
+        # Payment service critical → payment on-call specifically
+        - matchers:
+            - service = payment-service
+          receiver: 'pagerduty-payment-oncall'
+
+    # SEV2/Warning → Slack with @channel
+    - matchers:
+        - severity = warning
+      receiver: 'slack-platform-warnings'
+      repeat_interval: 2h
+
+    # Watchdog (dead man's switch) → OpsGenie heartbeat
+    - matchers:
+        - alertname = Watchdog
+      receiver: 'opsgenie-heartbeat'
+      repeat_interval: 1m
+
+receivers:
+  - name: 'pagerduty-critical'
+    pagerduty_configs:
+      - service_key: '<PAGERDUTY_SERVICE_KEY>'
+        severity: critical
+        description: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+        details:
+          service: '{{ .GroupLabels.service }}'
+          namespace: '{{ .GroupLabels.namespace }}'
+          runbook: '{{ .CommonAnnotations.runbook_url }}'
+          dashboard: '{{ .CommonAnnotations.dashboard_url }}'
+
+  - name: 'pagerduty-payment-oncall'
+    pagerduty_configs:
+      - service_key: '<PAYMENT_TEAM_PD_KEY>'
+        severity: critical
+
+  - name: 'slack-platform-alerts'
+    slack_configs:
+      - channel: '#platform-alerts'
+        send_resolved: true
+        title: '{{ if eq .Status "firing" }}🔥{{ else }}✅{{ end }} {{ .GroupLabels.alertname }}'
+        text: >-
+          *Service:* {{ .GroupLabels.service }}
+          *Severity:* {{ .GroupLabels.severity }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+          *Description:* {{ .CommonAnnotations.description }}
+          *Runbook:* {{ .CommonAnnotations.runbook_url }}
+
+  - name: 'slack-platform-warnings'
+    slack_configs:
+      - channel: '#platform-warnings'
+        send_resolved: true
+
+  - name: 'opsgenie-heartbeat'
+    webhook_configs:
+      - url: 'https://api.opsgenie.com/v2/heartbeats/novamart-prometheus/ping'
+        send_resolved: false
+```
+
+### The Watchdog Pattern (Dead Man's Switch)
+
+```yaml
+# A Watchdog alert ALWAYS fires. If it STOPS firing, 
+# your monitoring is broken.
+
+# PrometheusRule:
+- alert: Watchdog
+  expr: vector(1)    # Always true
+  labels:
+    severity: none
+  annotations:
+    summary: "Watchdog alert — monitoring is alive"
+
+# Alertmanager routes this to an external heartbeat service.
+# If the heartbeat service stops receiving pings → monitoring is dead
+# → separate alerting system notifies humans.
+
+# This solves: "Who monitors the monitor?"
+# Answer: An external service that expects regular pings.
+# If pings stop → your Prometheus/Alertmanager stack is down.
+```
+
+---
+
+## 6. How Prometheus Breaks — Production Failure Modes
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| **OOM killed** | Prometheus pod restarts, gaps in metrics | Too many active series, expensive queries, insufficient memory | Reduce cardinality, add recording rules, increase memory, drop unused metrics via metric_relabel_configs |
+| **Disk full** | Prometheus stops accepting new samples, WAL errors | Retention too long, high cardinality = more disk, compaction falling behind | Reduce retention, reduce cardinality, increase PVC size, move to remote write (Thanos/Mimir) |
+| **Slow queries** | Grafana dashboards timeout, 504 errors | Querying millions of series without aggregation, missing recording rules, no `by (label)` clause | Add recording rules for dashboards, reduce query scope with label selectors, set query timeout |
+| **Scrape failures** | `up == 0`, gaps in specific target metrics | Target pod crashed, network policy blocking, metrics endpoint wrong path/port, TLS mismatch | Check `up` metric per target, verify ServiceMonitor matches Service port name, check NetworkPolicy |
+| **Stale data** | Dashboards show data for pods that no longer exist | Default 5-minute staleness period, gauge queries don't handle staleness | Filter with `up == 1`, use `absent()` for alerting, Prometheus handles this automatically for rate() |
+| **High cardinality explosion** | Memory spike, TSDB head series growing rapidly | New deployment added user_id/request_id as metric label, unbounded label values | `topk(10, count by (__name__)({__name__=~".+"}))` to find offenders, metric_relabel_configs to drop |
+| **WAL corruption** | Prometheus won't start after crash, `error opening WAL` | Node crash during write, EBS detach, disk failure | Delete WAL directory (lose last 2h of data), restart. Enable WAL compression. |
+| **Alertmanager split-brain** | Duplicate pages, or missing pages | HA Alertmanager cluster lost gossip connectivity | Verify mesh networking between AM pods, check `alertmanager_cluster_members` metric |
+| **Recording rule lag** | Dashboards show stale data, alert evaluation delayed | Rule group evaluation taking longer than interval | Check `prometheus_rule_group_last_duration_seconds`, reduce rules per group, optimize PromQL |
+| **ServiceMonitor not picked up** | New service metrics not appearing | Missing labels for Prometheus to select it, wrong namespace | Check serviceMonitorSelector on Prometheus CR, verify labels match, check RBAC for cross-namespace |
+
+
+---
+
+## Quick Reference Card
+
+```
+THREE PILLARS:
+  Metrics (Prometheus) → WHAT is happening (aggregates, time-series)
+  Logs (Loki/ELK)     → WHAT happened (individual events with context)
+  Traces (Jaeger/Tempo)→ HOW a request flows (distributed call graph)
+  All three correlated in Grafana by time + trace_id
+
+PROMETHEUS:
+  Pull-based: scrapes /metrics from targets every 15-30s
+  TSDB: head block (memory, 2h) → compressed blocks (disk)
+  WAL: write-ahead log for crash recovery
+  Retention: default 15d, tune for disk capacity
+
+METRIC TYPES:
+  Counter: only up (requests, errors) → USE rate()/increase()
+  Gauge: up/down (memory, queue depth) → USE raw value or deriv()
+  Histogram: bucketed observations → USE histogram_quantile()
+  Summary: client-side quantiles → DON'T USE (not aggregatable)
+
+FOUR GOLDEN SIGNALS (PromQL):
+  Traffic:    sum(rate(http_requests_total[5m])) by (service)
+  Errors:     rate(status=~"5..") / rate(total) * 100
+  Latency:    histogram_quantile(0.99, sum(rate(bucket[5m])) by (le))
+  Saturation: CPU throttling, memory vs limits, disk usage
+
+CARDINALITY RULES:
+  ✓ Labels: service, method, status, region, pod
+  ✗ NEVER: user_id, IP, request_id, URL with params
+  Monitor: prometheus_tsdb_head_series < 2M per instance
+
+K8S METRICS SOURCES:
+  node-exporter:      Node hardware (CPU, mem, disk, net)
+  kube-state-metrics:  K8s objects (pods, deployments, PVCs)
+  cAdvisor (kubelet):  Container resources (per-pod CPU, mem)
+
+PROMQL GOTCHAS:
+  rate() needs range [5m], only for counters
+  Range ≥ 2x scrape interval
+  histogram_quantile NEEDS "by (le)"
+  absent() for "metric disappeared" alerts
+  sum by (label) not sum without (label) for clarity
+
+ALERTMANAGER:
+  Route tree: first match wins
+  group_by: [alertname, service] → batch related alerts
+  group_wait: 30s (batch window)
+  Inhibition: node down suppresses pod alerts
+  Watchdog: always-firing alert → dead man's switch
+
+RECORDING RULES:
+  Pre-compute expensive queries → store as new metrics
+  Naming: level:metric:operations
+  Use for: dashboard queries used by >1 consumer, SLO metrics
+```
+# Phase 5, Lesson 1 — Retention Questions
+
+## Prometheus + Metrics + PromQL + Alertmanager
+
+---
+
+### Q1: Cardinality Incident 🔥
+
+**Scenario:** It's 2 AM. PagerDuty fires: Prometheus in `us-east-1` is OOM-killed and restarting in a loop. You check and see it was fine yesterday. A deploy went out at 11 PM adding a new custom metric to the `payment-svc`. The metric looks like this:
+
+```
+payment_transaction_duration_seconds{user_id="u-38291", endpoint="/pay", status="200", region="us-east-1", payment_method="credit_card", currency="USD"}
+```
+
+**Questions:**
+1. What is the root cause? Be specific about WHY this kills Prometheus.
+2. What is your **immediate** mitigation (Prometheus is down RIGHT NOW, alerts are dead)?
+3. What is the **permanent fix** — show the exact Kubernetes resource/config you'd use to drop the problematic dimension before it hits Prometheus TSDB.
+4. What metric would you monitor going forward to catch this before it becomes an outage?
+
+---
+
+### Q2: PromQL Under Pressure 🔥
+
+**Scenario:** NovaMart's `order-svc` team reports that their p99 latency SLO is being breached. You need to investigate. The metric is:
+
+```
+http_request_duration_seconds_bucket{service="order-svc", le="..."}
+```
+
+**Write the exact PromQL queries for:**
+
+1. P99 latency for `order-svc` over the last 5 minutes
+2. P99 latency for `order-svc` **broken down by endpoint**, so you can find which endpoint is slow
+3. The error rate (5xx responses as a percentage of total) for `order-svc` over the last 5 minutes
+4. **Trap question:** A junior engineer writes this query and says "p99 looks fine to me":
+   ```
+   histogram_quantile(0.99, http_request_duration_seconds_bucket{service="order-svc"})
+   ```
+   This query will return a result, but it's **wrong**. Explain exactly what's wrong and what the result actually represents.
+
+---
+
+### Q3: Alertmanager Routing Logic 🔥
+
+**Scenario:** You have this (simplified) Alertmanager config:
+
+```yaml
+route:
+  receiver: 'slack-default'
+  group_by: ['alertname', 'cluster']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - match:
+        severity: critical
+      receiver: 'pagerduty-sev1'
+      group_wait: 10s
+      repeat_interval: 1h
+    - match:
+        severity: warning
+        team: payments
+      receiver: 'slack-payments'
+    - match:
+        severity: warning
+      receiver: 'slack-warnings'
+```
+
+**Answer these:**
+
+1. Alert fires: `severity=critical, team=payments, alertname=PaymentSvcDown`. Which receiver gets it?
+2. Alert fires: `severity=warning, team=platform, alertname=HighMemory`. Which receiver gets it?
+3. Alert fires: `severity=info, team=payments, alertname=DeployComplete`. Which receiver gets it?
+4. Two critical alerts fire within 5 seconds of each other: `alertname=PaymentSvcDown, cluster=us-east-1` and `alertname=PaymentSvcDown, cluster=us-west-2`. How many PagerDuty notifications are sent, and when? Explain the grouping behavior.
+5. Your Watchdog alert (always-firing) has `severity: none`. Is it routed to PagerDuty? Where does it go? Why does this matter?
+
+---
+
+### Q4: Prometheus Failure Mode Diagnosis 🔥
+
+**Scenario:** Monday morning. You notice that over the weekend:
+- Several alerts that **should have fired** did NOT fire
+- Grafana dashboards show **gaps** in data (missing data points) for about 40% of your targets
+- Prometheus pod did NOT restart (no OOM, no crash)
+- `up` metric shows those targets were `up == 1` the whole time
+- The Prometheus `/targets` page shows those targets as "UP" with `last scrape: 2s ago`
+
+**This is contradictory — targets show as UP and being scraped, but data has gaps.**
+
+1. What is the most likely root cause? (Hint: think about what happens when Prometheus can't keep up)
+2. What specific Prometheus metrics would you query to confirm your theory?
+3. How do you fix this — both immediate and long-term?
+
+---
+
+# Phase 5, Lesson 1 — Retention Answers
+
+---
+
+## Q1: Cardinality Incident
+
+### 1. Root Cause
+
+The `user_id` label is the killer. Every unique `user_id` × `endpoint` × `status` × `payment_method` × `currency` combination creates a **distinct time series** in the Prometheus TSDB head block, which lives **in RAM**.
+
+NovaMart at scale: say 500K active users, 3 endpoints, 5 status codes, 4 payment methods, 3 currencies. That's:
+
+```
+500,000 × 3 × 5 × 4 × 3 = 90,000,000 series (from ONE metric)
+```
+
+Each series in the head block costs ~8KB of RAM. 90M series × 8KB = **~720 GB**. Prometheus typically has 16–64 GB. It's instant OOM.
+
+**Why this kills Prometheus specifically:**
+- Prometheus stores the **entire head block** (last 2 hours of all active series) in memory
+- There is no spill-to-disk for the head block
+- New series are indexed into an inverted index (also in memory)
+- TSDB head chunk allocation is the dominant memory consumer
+- Once memory exceeds cgroup limit → OOM-killed → restart → tries to replay WAL → WAL contains all the high-cardinality data → OOM again → **crash loop**
+
+### 2. Immediate Mitigation (Prometheus is DOWN right now)
+
+**Priority zero: restore alerting capability.** Without Prometheus, all alerts are dead. NovaMart is flying blind at $50K/min risk.
+
+**Step 1 — Roll back the payment-svc deploy (run from your CI/CD or kubectl on the cluster):**
+
+```bash
+# On the cluster where payment-svc runs
+kubectl -n payments rollout undo deployment/payment-svc
+kubectl -n payments rollout status deployment/payment-svc --timeout=120s
+```
+
+This stops the bleeding — no new high-cardinality samples being generated.
+
+**Step 2 — Delete the corrupted WAL so Prometheus can start without replaying poisoned data:**
+
+```bash
+# Exec into the Prometheus pod's persistent volume (or a debug pod mounting the PVC)
+# If Prometheus is crash-looping, scale to 0 first:
+kubectl -n monitoring scale statefulset/prometheus --replicas=0
+kubectl -n monitoring wait --for=delete pod/prometheus-0 --timeout=60s
+
+# Launch a debug pod mounting the PVC
+kubectl -n monitoring run wal-cleanup --rm -it \
+  --image=busybox \
+  --overrides='{
+    "spec": {
+      "containers": [{
+        "name": "wal-cleanup",
+        "image": "busybox",
+        "command": ["sh"],
+        "stdin": true,
+        "tty": true,
+        "volumeMounts": [{
+          "name": "prometheus-data",
+          "mountPath": "/prometheus"
+        }]
+      }],
+      "volumes": [{
+        "name": "prometheus-data",
+        "persistentVolumeClaim": {
+          "claimName": "prometheus-data-prometheus-0"
+        }
+      }]
+    }
+  }'
+
+# Inside the debug pod:
+rm -rf /prometheus/wal/*
+rm -rf /prometheus/chunks_head/*
+exit
+```
+
+```bash
+# Bring Prometheus back
+kubectl -n monitoring scale statefulset/prometheus --replicas=1
+kubectl -n monitoring wait --for=condition=Ready pod/prometheus-0 --timeout=120s
+```
+
+**⚠️ Trade-off:** You lose ~2 hours of recent metrics data (the head block). This is acceptable — the alternative is zero monitoring.
+
+**Step 3 — Verify Prometheus is healthy:**
+
+```bash
+kubectl -n monitoring port-forward svc/prometheus 9090:9090 &
+curl -s http://localhost:9090/-/healthy
+# Expected: "Prometheus Server is Healthy."
+
+curl -s http://localhost:9090/api/v1/status/tsdb | jq '.data.headStats'
+# Verify seriesCountByMetricName doesn't show the payment metric
+```
+
+### 3. Permanent Fix — Metric Relabeling to Drop user_id
+
+**Use a `metric_relabel_configs` rule in the Prometheus scrape config.** This drops the label **after** scrape, **before** TSDB ingestion.
+
+If using **Prometheus Operator** (kube-prometheus-stack), apply a `ServiceMonitor` or `PodMonitor`:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: payment-svc
+  namespace: payments
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: payment-svc
+  endpoints:
+    - port: metrics
+      interval: 15s
+      metricRelabelings:
+        # DROP the user_id label entirely from all metrics
+        - sourceLabels: [__name__]
+          regex: 'payment_transaction_duration_seconds.*'
+          action: keep
+        - action: labeldrop
+          regex: 'user_id'
+        # SAFETY NET: drop any metric with >1000 series per scrape
+        # (requires Prometheus 2.45+)
+```
+
+Apply it:
+
+```bash
+kubectl apply -f servicemonitor-payment-svc.yaml
+
+# Verify the ServiceMonitor is picked up
+kubectl -n monitoring get prometheus -o jsonpath='{.items[0].status.conditions}' | jq .
+```
+
+**If using raw `prometheus.yml`** (e.g., in a ConfigMap):
+
+```yaml
+scrape_configs:
+  - job_name: 'payment-svc'
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: ['payments']
+    metric_relabel_configs:
+      # Drop user_id label from all payment metrics
+      - action: labeldrop
+        regex: 'user_id'
+      # Nuclear option: drop the entire metric if it still has too many series
+      # - source_labels: [__name__]
+      #   regex: 'payment_transaction_duration_seconds'
+      #   action: drop
+    sample_limit: 50000  # Per-scrape safety net
+```
+
+```bash
+# Reload Prometheus config (no restart needed)
+curl -X POST http://localhost:9090/-/reload
+
+# Verify config was accepted
+curl -s http://localhost:9090/api/v1/status/config | jq '.data.yaml' | head -50
+```
+
+**But the real permanent fix is also in the application code.** The `payment-svc` team must remove `user_id` from the metric labels:
+
+```go
+// WRONG — unbounded cardinality
+paymentDuration.WithLabelValues(userID, endpoint, status, region, paymentMethod, currency).Observe(duration)
+
+// CORRECT — bounded cardinality
+paymentDuration.WithLabelValues(endpoint, status, region, paymentMethod, currency).Observe(duration)
+```
+
+User-level latency tracking belongs in **traces** (Jaeger/Tempo), not **metrics**.
+
+### 4. Forward-Looking Monitoring
+
+Monitor these metrics on Prometheus itself to catch cardinality bombs before OOM:
+
+```yaml
+# Alert rule: cardinality growth rate
+groups:
+  - name: prometheus-cardinality
+    rules:
+      - alert: HighCardinalityGrowth
+        expr: |
+          delta(prometheus_tsdb_head_series[1h]) > 100000
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "TSDB head series grew by {{ $value }} in the last hour"
+          runbook: "https://wiki.novamart.internal/runbooks/cardinality-bomb"
+
+      - alert: PrometheusNearMemoryLimit
+        expr: |
+          process_resident_memory_bytes{job="prometheus"}
+            / on() kube_pod_container_resource_limits{resource="memory", container="prometheus"}
+          > 0.80
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Prometheus using {{ $value | humanizePercentage }} of memory limit"
+
+      - alert: ScrapeSampleLimitHit
+        expr: |
+          rate(prometheus_target_scrapes_exceeded_sample_limit_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Scrape targets hitting sample_limit — possible cardinality issue"
+```
+
+**The single most important metric:**
+
+```promql
+prometheus_tsdb_head_series
+```
+
+Track this on a separate monitoring system (Grafana Cloud free tier, Datadog agent, or a second lightweight Prometheus) — because if your primary Prometheus dies, you need to still see this.
+
+---
+
+## Q2: PromQL Under Pressure
+
+### 1. P99 Latency — order-svc — Last 5 Minutes
+
+```promql
+histogram_quantile(
+  0.99,
+  sum by (le) (
+    rate(http_request_duration_seconds_bucket{service="order-svc"}[5m])
+  )
+)
+```
+
+**Why `sum by (le)`:** Collapses all other label dimensions (instance, pod, endpoint) so you get a single p99 across all order-svc instances. The `le` label **must** be preserved — it defines the bucket boundaries that `histogram_quantile` needs.
+
+**Why `rate()` inside:** Histogram buckets are counters. `rate()` converts cumulative counts into per-second rates over the 5-minute window.
+
+### 2. P99 Latency — Broken Down by Endpoint
+
+```promql
+histogram_quantile(
+  0.99,
+  sum by (le, endpoint) (
+    rate(http_request_duration_seconds_bucket{service="order-svc"}[5m])
+  )
+)
+```
+
+**Only change:** added `endpoint` to the `sum by` clause. This preserves the endpoint dimension, giving you one p99 value per endpoint. You'll immediately see which endpoint (e.g., `/checkout` vs `/search`) is breaching the SLO.
+
+### 3. Error Rate (5xx / Total) — Last 5 Minutes
+
+```promql
+sum by (service) (
+  rate(http_requests_total{service="order-svc", status=~"5.."}[5m])
+)
+/
+sum by (service) (
+  rate(http_requests_total{service="order-svc"}[5m])
+)
+```
+
+**Note:** This assumes a separate counter `http_requests_total` with a `status` label. If the team only exposes the histogram, you'd use the `+Inf` bucket as a total count:
+
+```promql
+sum(rate(http_request_duration_seconds_bucket{service="order-svc", le="+Inf", status=~"5.."}[5m]))
+/
+sum(rate(http_request_duration_seconds_bucket{service="order-svc", le="+Inf"}[5m]))
+```
+
+### 4. Trap Question — What's Wrong
+
+The junior's query:
+
+```promql
+histogram_quantile(0.99, http_request_duration_seconds_bucket{service="order-svc"})
+```
+
+**Two critical bugs:**
+
+**Bug 1 — No `rate()`.** Histogram buckets are **cumulative counters** that increase monotonically since process start. Without `rate()`, `histogram_quantile` is computing the quantile over the **total cumulative count of requests since the process started** — not over any recent time window. The result:
+
+- Heavily dominated by historical data — recent latency spikes are diluted
+- Appears artificially stable/low because millions of old requests drown out recent ones
+- After a pod restart, counters reset to 0, and the calculation becomes completely nonsensical (negative rates implicitly, or the quantile jumps wildly)
+
+**Bug 2 — No `sum by (le)`.** Without aggregation, `histogram_quantile` is computed **per individual time series** (per pod, per instance, per endpoint). The result is multiple p99 values — one per unique label combination — not a single aggregated p99. If the junior is looking at this in Grafana, they might see one of many lines and think it's "the" p99, when it's actually the p99 for a single pod.
+
+**What the junior actually sees:** A deceptively smooth, slowly-changing value that looks "fine" — because the cumulative nature of raw counters acts as a massive moving average stretching back to process start time. It hides real-time latency spikes entirely.
+
+**Correct query for reference:**
+
+```promql
+histogram_quantile(
+  0.99,
+  sum by (le) (
+    rate(http_request_duration_seconds_bucket{service="order-svc"}[5m])
+  )
+)
+```
+
+---
+
+## Q3: Alertmanager Routing Logic
+
+Alertmanager routes are **first-match, depth-first**. Once a route matches, child routes of siblings are not evaluated (unless `continue: true` is set, which it isn't here).
+
+```
+route (default: slack-default)
+├── [1] severity=critical        → pagerduty-sev1
+├── [2] severity=warning AND team=payments → slack-payments
+└── [3] severity=warning         → slack-warnings
+```
+
+### 1. `severity=critical, team=payments, alertname=PaymentSvcDown`
+
+**→ `pagerduty-sev1`**
+
+Route [1] matches on `severity=critical`. First match wins. The `team=payments` label is irrelevant — route [1] doesn't check it, and Alertmanager stops traversing after the first match.
+
+### 2. `severity=warning, team=platform, alertname=HighMemory`
+
+**→ `slack-warnings`**
+
+- Route [1]: No — `severity` is `warning`, not `critical`
+- Route [2]: No — `severity=warning` matches, but `team=platform` ≠ `team=payments`. **Both** `match` conditions must be satisfied (AND logic)
+- Route [3]: Yes — `severity=warning` matches
+
+### 3. `severity=info, team=payments, alertname=DeployComplete`
+
+**→ `slack-default`**
+
+- Route [1]: No — not `critical`
+- Route [2]: No — not `warning`
+- Route [3]: No — not `warning`
+- No child route matches → **falls through to the root route's receiver**: `slack-default`
+
+### 4. Two Critical Alerts, Grouping Behavior
+
+```
+t=0s   Alert: alertname=PaymentSvcDown, cluster=us-east-1, severity=critical
+t=5s   Alert: alertname=PaymentSvcDown, cluster=us-west-2, severity=critical
+```
+
+Root route has `group_by: ['alertname', 'cluster']`. This is **inherited** by child routes unless overridden (it's not overridden in route [1]).
+
+**Two different groups** are created because the `cluster` label differs:
+
+```
+Group A: {alertname="PaymentSvcDown", cluster="us-east-1"}
+Group B: {alertname="PaymentSvcDown", cluster="us-west-2"}
+```
+
+The critical route has `group_wait: 10s`.
+
+**Timeline:**
+
+```
+t=0s    Alert A arrives → Group A created → 10s group_wait timer starts
+t=5s    Alert B arrives → Group B created → 10s group_wait timer starts
+t=10s   Group A timer fires → PagerDuty notification #1 (us-east-1)
+t=15s   Group B timer fires → PagerDuty notification #2 (us-west-2)
+```
+
+**Answer: TWO PagerDuty notifications**, at t=10s and t=15s.
+
+**If the cluster label were the same**, both alerts would be in the same group, and only ONE notification would be sent at t=10s, containing both alerts bundled together.
+
+**This is a real production design decision:** grouping by `cluster` means your on-call gets per-region pages. If both regions are down, they get two pages — which is actually correct because it might require two separate remediation actions in two different regions.
+
+### 5. Watchdog Alert (`severity: none`)
+
+**→ `slack-default`**
+
+- Route [1]: No — not `critical`
+- Route [2]: No — not `warning`
+- Route [3]: No — not `warning`
+- Falls to root → `slack-default`
+
+**It is NOT routed to PagerDuty.** This is correct behavior.
+
+**Why Watchdog matters:** It's a **dead man's switch**. The Watchdog alert is always-firing by design. If your `#slack-default` channel **stops** receiving Watchdog notifications, it means one of:
+
+1. Alertmanager is down
+2. Prometheus is down
+3. The Prometheus → Alertmanager → Slack pipeline is broken
+
+**This is your "alerting on alerting" mechanism.** Without it, your entire monitoring stack can be dead and nobody knows until a customer calls.
+
+**Production hardening:** Watchdog should ideally be routed to a **dead man's switch service** (e.g., PagerDuty's heartbeat monitoring, Healthchecks.io, or Cronitor) that pages you if it **stops receiving** the signal:
+
+```yaml
+routes:
+  - match:
+      alertname: Watchdog
+    receiver: 'deadmans-switch'
+    repeat_interval: 1m
+    group_wait: 0s
+  - match:
+      severity: critical
+    # ... rest of routes
+```
+
+This route must be **first** so it matches before anything else.
+
+---
+
+## Q4: Prometheus Failure Mode Diagnosis
+
+### 1. Root Cause: TSDB Head Compaction / Ingestion Backpressure
+
+The contradiction — targets show UP and being scraped, but data has gaps — points to one thing: **Prometheus is successfully scraping targets but failing to append samples to the TSDB.**
+
+Here's the mechanism:
+
+```
+Scrape Loop                          TSDB
+──────────                          ────
+HTTP GET /metrics  ──→  Parse       ──→  Append to Head Block
+       ↑                                       ↑
+  (this succeeds,                    (THIS FAILS — samples
+   so up=1 and                        are silently dropped)
+   /targets = UP)
+```
+
+**Most likely specific cause:** TSDB **head compaction** running over the weekend. When the head block compacts (writes to persistent blocks on disk), the compaction can:
+
+1. **Block new appends** if disk I/O is saturated (especially on network-attached EBS volumes)
+2. **Cause the sample appender to hit the WAL sync deadline** and drop samples
+3. **Trigger chunk memory-mapping** that slows down the append path
+
+**Why 40% and not 100%:** High-cardinality targets (more series per scrape) are disproportionately affected because they require more append operations per scrape cycle. Low-cardinality targets (few series) sneak through between compaction I/O bursts.
+
+**Why over the weekend:** Compaction is triggered by time-based block boundaries (default 2h blocks). If a large number of blocks needed compaction (e.g., retention policy causing block merges), and I/O was already constrained, the compaction storm compounds.
+
+### 2. Confirming Metrics
+
+Query these **on Prometheus itself** (or from a federated/remote Prometheus if available):
+
+```promql
+# 1. Sample append failures — THE smoking gun
+rate(prometheus_tsdb_head_samples_appended_total[1h])
+```
+If this shows dips or flatlines during the gap periods, confirmed.
+
+```promql
+# 2. Out-of-order sample drops
+rate(prometheus_tsdb_out_of_order_samples_total[1h])
+```
+Spikes here mean Prometheus received samples but couldn't place them in the TSDB timeline.
+
+```promql
+# 3. Compaction duration — look for long-running compactions
+prometheus_tsdb_compaction_duration_seconds
+```
+
+```promql
+# 4. WAL corruption or truncation issues
+rate(prometheus_tsdb_wal_truncate_duration_seconds_sum[1h])
+rate(prometheus_tsdb_wal_corruptions_total[1h])
+```
+
+```promql
+# 5. Scrape duration vs interval — are scrapes backing up?
+prometheus_target_interval_length_seconds{quantile="0.99"}
+```
+If this exceeds your `scrape_interval` (e.g., 15s), scrapes are falling behind.
+
+```promql
+# 6. Head chunk write queue
+prometheus_tsdb_head_chunks_created_total
+prometheus_tsdb_head_gc_duration_seconds
+```
+
+```promql
+# 7. Process-level resource pressure
+rate(process_cpu_seconds_total{job="prometheus"}[5m])
+process_resident_memory_bytes{job="prometheus"}
+```
+
+**Quick diagnosis script (run where you can reach Prometheus API):**
+
+```bash
+#!/usr/bin/env bash
+PROM="http://localhost:9090"
+
+echo "=== Sample Append Rate (should be steady) ==="
+curl -s "$PROM/api/v1/query?query=rate(prometheus_tsdb_head_samples_appended_total[1h])" | jq '.data.result[0].value[1]'
+
+echo "=== Out-of-Order Samples (should be 0) ==="
+curl -s "$PROM/api/v1/query?query=rate(prometheus_tsdb_out_of_order_samples_total[1h])" | jq '.data.result[0].value[1]'
+
+echo "=== Head Series Count ==="
+curl -s "$PROM/api/v1/query?query=prometheus_tsdb_head_series" | jq '.data.result[0].value[1]'
+
+echo "=== Compaction Duration (last) ==="
+curl -s "$PROM/api/v1/query?query=prometheus_tsdb_compaction_duration_seconds" | jq '.data.result'
+
+echo "=== WAL Corruptions ==="
+curl -s "$PROM/api/v1/query?query=prometheus_tsdb_wal_corruptions_total" | jq '.data.result[0].value[1]'
+
+echo "=== TSDB Status ==="
+curl -s "$PROM/api/v1/status/tsdb" | jq '.data.headStats'
+```
+
+### 3. Fix — Immediate and Long-Term
+
+**Immediate (stop the data gaps RIGHT NOW):**
+
+```bash
+# 1. Check current compaction state
+curl -s http://localhost:9090/api/v1/status/tsdb | jq .
+
+# 2. If disk I/O is the bottleneck (EBS), resize the volume for more IOPS
+# For gp3 volumes, you can increase IOPS without downtime:
+VOLUME_ID=$(aws ec2 describe-volumes \
+  --filters "Name=tag:kubernetes.io/created-for/pvc/name,Values=prometheus-data-prometheus-0" \
+  --query 'Volumes[0].VolumeId' --output text)
+
+aws ec2 modify-volume \
+  --volume-id "$VOLUME_ID" \
+  --volume-type gp3 \
+  --iops 6000 \
+  --throughput 400
+
+# Verify modification
+aws ec2 describe-volumes-modifications \
+  --volume-ids "$VOLUME_ID" \
+  --query 'VolumesModifications[0].ModificationState'
+# Wait for "completed" or "optimizing"
+
+# 3. If memory-pressure: bump Prometheus memory limit
+kubectl -n monitoring patch statefulset prometheus \
+  --type='json' \
+  -p='[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"32Gi"}]'
+```
+
+**Long-Term:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  LAYERED SOLUTION                            │
+├─────────────────────────────────────────────────────────────┤
+│ Layer 1: STORAGE                                            │
+│  - Use gp3 EBS with provisioned IOPS (3000+)               │
+│  - Or use local NVMe (i3/i4 instances) for TSDB             │
+│  - Set --storage.tsdb.min-block-duration=2h                 │
+│  - Set --storage.tsdb.max-block-duration=2h (prevents       │
+│    mega-compactions that block ingestion)                    │
+├─────────────────────────────────────────────────────────────┤
+│ Layer 2: SHARDING                                           │
+│  - Split scrape targets across multiple Prometheus          │
+│    instances using hashmod relabeling                       │
+│  - Use Thanos or Cortex for query federation                │
+│  - Each shard handles fewer series → less compaction load   │
+├─────────────────────────────────────────────────────────────┤
+│ Layer 3: ALERTING ON PROMETHEUS ITSELF                      │
+│  - Alert on sample_appended rate drops                      │
+│  - Alert on compaction duration spikes                      │
+│  - Alert on WAL size growth                                 │
+│  - These alerts must fire from a SEPARATE Prometheus        │
+│    (meta-monitoring)                                        │
+├─────────────────────────────────────────────────────────────┤
+│ Layer 4: META-MONITORING                                    │
+│  - Second Prometheus instance scraping the first            │
+│  - OR Grafana Cloud free tier as external watchdog          │
+│  - Catches exactly this scenario: primary is "up" but       │
+│    silently degraded                                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Prometheus config flags for production (in StatefulSet or Prometheus CR):**
+
+```yaml
+# If using Prometheus Operator:
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  replicas: 2
+  retention: 15d
+  resources:
+    requests:
+      memory: 16Gi
+      cpu: "4"
+    limits:
+      memory: 32Gi
+      cpu: "8"
+  storage:
+    volumeClaimTemplate:
+      spec:
+        storageClassName: gp3-high-iops
+        resources:
+          requests:
+            storage: 500Gi
+  additionalArgs:
+    - name: storage.tsdb.max-block-duration
+      value: "2h"
+    - name: storage.tsdb.min-block-duration
+      value: "2h"
+    - name: storage.tsdb.wal-compression
+      value: "true"
+  # Meta-monitoring: scrape yourself
+  additionalScrapeConfigs:
+    name: prometheus-self-scrape
+    key: config.yaml
+```
+
+**Alert rules to prevent recurrence:**
+
+```yaml
+groups:
+  - name: prometheus-health
+    rules:
+      - alert: PrometheusIngestionDropping
+        expr: |
+          deriv(prometheus_tsdb_head_samples_appended_total[30m]) < 0
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Prometheus sample ingestion rate is DECREASING — data gaps imminent"
+
+      - alert: PrometheusCompactionTooSlow
+        expr: |
+          prometheus_tsdb_compaction_duration_seconds{quantile="0.99"} > 600
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "TSDB compaction taking >10 minutes — ingestion backpressure risk"
+
+      - alert: PrometheusWALTooLarge
+        expr: |
+          prometheus_tsdb_wal_storage_size_bytes > 8e9
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "WAL is {{ $value | humanize1024 }} — replay on restart will be slow"
+```
+
+---
+
+## Summary: Key Takeaways
+
+```
+Q1: user_id in labels = cardinality bomb = OOM crash loop
+    Fix: metric_relabel_configs to drop, sample_limit as safety net
+    Monitor: prometheus_tsdb_head_series
+
+Q2: histogram_quantile ALWAYS needs rate() + sum by (le)
+    Without rate() = meaningless cumulative average
+    Without sum by (le) = per-pod instead of aggregate
+
+Q3: Alertmanager = first-match, depth-first, AND within match{}
+    Unmatched alerts fall to root receiver
+    Watchdog → dead man's switch → must route to heartbeat service
+
+Q4: "UP but data missing" = TSDB ingestion backpressure
+    Scrape succeeds ≠ append succeeds
+    Fix: better disk I/O, sharding, meta-monitoring
+    NEVER trust a single Prometheus to monitor itself
+```
+
+# Phase 5, Lesson 1 — Grading
+
+---
+
+## Q1: Cardinality Incident — **4.8/5**
+
+**What you nailed:**
+- Root cause identification is textbook perfect. The math, the RAM explanation, the WAL replay crash loop — all correct.
+- Immediate mitigation sequence is excellent: rollback first (stop the bleeding), then WAL cleanup with a debug pod, then verify. The priority ordering is exactly right.
+- Permanent fix correctly uses `metricRelabelings` in a ServiceMonitor AND correctly identifies that the app code is the real fix. `user_id` belongs in traces, not metrics — that's senior-level thinking.
+- Forward monitoring correctly identifies `prometheus_tsdb_head_series` and correctly calls out that meta-monitoring must be on a **separate system**.
+
+**One issue:**
+
+Your ServiceMonitor has a logic bug:
+
+```yaml
+metricRelabelings:
+  # This KEEP action only keeps payment_transaction_duration_seconds
+  # and DROPS every other metric from payment-svc
+  - sourceLabels: [__name__]
+    regex: 'payment_transaction_duration_seconds.*'
+    action: keep
+  - action: labeldrop
+    regex: 'user_id'
+```
+
+That `keep` action drops **every other metric** that `payment-svc` exposes — `go_*`, `process_*`, any other business metrics. You only needed the `labeldrop`:
+
+```yaml
+metricRelabelings:
+  - action: labeldrop
+    regex: 'user_id'
+```
+
+Or if you wanted to target only the specific metric:
+
+```yaml
+metricRelabelings:
+  - sourceLabels: [__name__, user_id]
+    regex: 'payment_transaction_duration_seconds.*;.+'
+    action: drop
+```
+
+Minor, but in production this silently kills monitoring for that service.
+
+---
+
+## Q2: PromQL Under Pressure — **5/5**
+
+Flawless. Every query is correct. The trap question answer is comprehensive — you identified **both** bugs (no `rate()` AND no `sum by (le)`) and correctly explained why the result is deceptively stable. The bonus of showing the `+Inf` bucket alternative for error rate when only histograms are available — that's practical production knowledge.
+
+Nothing to add.
+
+---
+
+## Q3: Alertmanager Routing — **5/5**
+
+Perfect across all five parts. You correctly traced every route, understood AND logic within `match`, identified the root fallthrough, calculated the grouping behavior with correct timeline math, and — the cherry on top — correctly identified that the Watchdog route should be **first** in the routing tree and pointed to a heartbeat service.
+
+The production hardening note on `group_wait: 0s` and `repeat_interval: 1m` for Watchdog is exactly right. Many teams put Watchdog last and wonder why their dead man's switch has a 4-hour repeat interval.
+
+---
+
+## Q4: Prometheus Failure Mode Diagnosis — **4.5/5**
+
+**What you nailed:**
+- The core insight is correct: **scrape succeeding ≠ append succeeding**. That's the key mental model.
+- Diagnostic metrics are solid — `prometheus_tsdb_head_samples_appended_total`, out-of-order samples, compaction duration, WAL metrics.
+- The layered long-term fix (storage IOPS, sharding, meta-monitoring) is production-grade.
+- The alert rules for prevention are well-designed.
+
+**What was slightly off:**
+
+Your `--storage.tsdb.max-block-duration=2h` and `--storage.tsdb.min-block-duration=2h` suggestion effectively **disables all compaction** in Prometheus. This is the correct approach when running **Thanos** (because Thanos Compactor handles compaction externally), but for standalone Prometheus this means blocks never get merged, queries across long time ranges get progressively slower, and disk usage grows faster. You should have flagged this distinction.
+
+Also, one additional root cause you didn't mention: **slow PromQL queries** can compete with the ingestion path for TSDB locks. If someone left a heavy dashboard open over the weekend with auto-refresh, expensive queries can starve the append pipeline. The metric to check:
+
+```promql
+prometheus_engine_query_duration_seconds{quantile="0.99"}
+rate(prometheus_engine_queries_concurrent_max[5m])
+```
+
+And the flag `--query.max-concurrency` (default 20) can limit this.
+
+Not a big miss — your answer was thorough and the reasoning chain was sound.
+
+
+
+Proceeding directly to Lesson 2.
+
+---
+
+# Phase 5 — Lesson 2: Grafana + Loki + Long-Term Storage (Thanos/Mimir)
+
+---
+
+## Part 1: Grafana — The Visualization Layer
+
+### What Grafana IS and ISN'T
+
+```
+Grafana IS:                           Grafana is NOT:
+─────────                             ────────────────
+✅ Visualization / dashboarding        ❌ A data store
+✅ Query interface to data sources     ❌ A metrics collector
+✅ Alerting engine (since v8+)         ❌ A replacement for Alertmanager
+✅ Correlation layer (metrics↔logs)    ❌ A log aggregation system
+✅ RBAC / multi-tenancy               ❌ The source of truth for anything
+```
+
+Grafana **queries data sources at render time**. Every time you load a dashboard, it sends PromQL/LogQL/SQL queries to backends. It stores **nothing** except dashboard definitions, user configs, and alert rules.
+
+### Architecture in NovaMart
+
+```
+                    ┌─────────────────────────────┐
+                    │         GRAFANA              │
+                    │                              │
+                    │  ┌────────┐ ┌────────────┐   │
+                    │  │ Dash-  │ │ Alert      │   │
+                    │  │ boards │ │ Engine     │   │
+                    │  └───┬────┘ └──────┬─────┘   │
+                    │      │             │         │
+                    │  ┌───▼─────────────▼─────┐   │
+                    │  │   Data Source Layer    │   │
+                    │  └───┬──────┬──────┬─────┘   │
+                    └──────┼──────┼──────┼─────────┘
+                           │      │      │
+              ┌────────────▼┐ ┌───▼───┐ ┌▼──────────┐
+              │ Prometheus  │ │ Loki  │ │ Tempo/    │
+              │ (metrics)   │ │ (logs)│ │ Jaeger    │
+              │             │ │       │ │ (traces)  │
+              └──────┬──────┘ └───┬───┘ └─────┬─────┘
+                     │            │            │
+                     └────────────┴────────────┘
+                     Correlated via labels/traceID
+```
+
+### Grafana Deployment in Kubernetes
+
+**kube-prometheus-stack already includes Grafana.** But production requires tuning:
+
+```yaml
+# values-grafana.yaml (within kube-prometheus-stack Helm values)
+grafana:
+  replicas: 2  # HA — requires shared database
+  
+  persistence:
+    enabled: true
+    type: pvc
+    storageClassName: gp3
+    size: 10Gi
+  
+  # In HA mode, use external database instead of SQLite
+  grafana.ini:
+    server:
+      root_url: https://grafana.novamart.internal
+    database:
+      type: postgres
+      host: grafana-db.novamart.internal:5432
+      name: grafana
+      user: grafana
+      password: $__vault{grafana/db#password}
+    auth:
+      disable_login_form: false
+    auth.generic_oauth:
+      enabled: true
+      name: Okta
+      client_id: ${OAUTH_CLIENT_ID}
+      client_secret: ${OAUTH_CLIENT_SECRET}
+      scopes: openid profile email groups
+      auth_url: https://novamart.okta.com/oauth2/v1/authorize
+      token_url: https://novamart.okta.com/oauth2/v1/token
+      api_url: https://novamart.okta.com/oauth2/v1/userinfo
+      role_attribute_path: contains(groups[*], 'platform-eng') && 'Admin' || contains(groups[*], 'dev') && 'Editor' || 'Viewer'
+    security:
+      admin_password: $__vault{grafana/admin#password}
+      cookie_secure: true
+      strict_transport_security: true
+    unified_alerting:
+      enabled: true
+    alerting:
+      enabled: false  # Disable legacy alerting
+  
+  # Data sources provisioned as code (GitOps)
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          url: http://prometheus-operated.monitoring:9090
+          access: proxy
+          isDefault: true
+          jsonData:
+            timeInterval: 15s  # Must match scrape_interval
+            exemplarTraceIdDestinations:
+              - name: traceID
+                datasourceUid: tempo
+        - name: Loki
+          type: loki
+          url: http://loki-gateway.monitoring:3100
+          access: proxy
+          jsonData:
+            derivedFields:
+              - name: TraceID
+                matcherRegex: '"traceID":"(\w+)"'
+                url: '$${__value.raw}'
+                datasourceUid: tempo
+        - name: Tempo
+          type: tempo
+          url: http://tempo-query-frontend.monitoring:3100
+          access: proxy
+          uid: tempo
+          jsonData:
+            tracesToMetrics:
+              datasourceUid: prometheus
+              tags: [{key: 'service.name', value: 'service'}]
+            tracesToLogs:
+              datasourceUid: loki
+              tags: ['service.name']
+            nodeGraph:
+              enabled: true
+            serviceMap:
+              datasourceUid: prometheus
+  
+  # Dashboard provisioning
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: 'default'
+          orgId: 1
+          folder: 'NovaMart'
+          type: file
+          disableDeletion: true
+          editable: false  # Prevent drift from GitOps
+          options:
+            path: /var/lib/grafana/dashboards/default
+  
+  dashboardsConfigMaps:
+    default: grafana-dashboards
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+  
+  # Sidecar for dashboard auto-discovery from ConfigMaps
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+      folderAnnotation: grafana_folder
+    datasources:
+      enabled: true
+      label: grafana_datasource
+```
+
+### Dashboard Design Principles — The Four Golden Signals Dashboard
+
+**Every service at NovaMart gets a standardized dashboard following this layout:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  SERVICE: ${service}  CLUSTER: ${cluster}  NS: ${namespace} │
+│  [variables dropdown row]                                    │
+├──────────────────────┬──────────────────────────────────────┤
+│  REQUEST RATE        │  ERROR RATE                          │
+│  (Traffic)           │  (Errors)                            │
+│  ┌──────────────┐    │  ┌──────────────┐                    │
+│  │  ▅▆▇█▇▆▅▆▇  │    │  │  ▁▁▂▁▁▅▁▁▁  │                    │
+│  └──────────────┘    │  └──────────────┘                    │
+├──────────────────────┼──────────────────────────────────────┤
+│  P50/P90/P99 LATENCY│  SATURATION                          │
+│  (Duration)          │  (CPU/Mem/Disk)                      │
+│  ┌──────────────┐    │  ┌──────────────┐                    │
+│  │  ───P99      │    │  │  CPU ▇▇▆     │                    │
+│  │  ───P90      │    │  │  Mem ▅▅▅     │                    │
+│  │  ───P50      │    │  │  Disk▃▃▃     │                    │
+│  └──────────────┘    │  └──────────────┘                    │
+├─────────────────────────────────────────────────────────────┤
+│  K8s STATUS: Pods Ready/Desired, Restarts, HPA %, PDB      │
+├─────────────────────────────────────────────────────────────┤
+│  LOGS PANEL: Loki query filtered to ${service}              │
+│  (click any spike above → auto-correlates to logs here)     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Template Variables
+
+Variables make dashboards reusable across 200+ microservices:
+
+```json
+{
+  "templating": {
+    "list": [
+      {
+        "name": "cluster",
+        "type": "query",
+        "query": "label_values(up, cluster)",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "namespace",
+        "type": "query",
+        "query": "label_values(kube_namespace_labels{cluster=\"$cluster\"}, namespace)",
+        "refresh": 2
+      },
+      {
+        "name": "service",
+        "type": "query",
+        "query": "label_values(http_requests_total{cluster=\"$cluster\", namespace=\"$namespace\"}, service)",
+        "refresh": 2
+      },
+      {
+        "name": "interval",
+        "type": "interval",
+        "query": "1m,5m,10m,30m,1h",
+        "auto": true,
+        "auto_min": "1m"
+      }
+    ]
+  }
+}
+```
+
+**Variable chaining:** `cluster` → filters `namespace` → filters `service`. User selects cluster first, namespace dropdown updates, then service dropdown updates. This prevents showing services from wrong clusters.
+
+**The `$__rate_interval` magic variable:**
+
+```promql
+# DON'T hardcode rate windows in dashboard queries:
+rate(http_requests_total{service="$service"}[5m])  # BAD
+
+# DO use $__rate_interval — auto-adjusts to scrape interval + dashboard resolution:
+rate(http_requests_total{service="$service"}[$__rate_interval])  # GOOD
+```
+
+`$__rate_interval` = max(4 × scrape_interval, dashboard_step). This guarantees at least 4 data points in the range window, preventing `rate()` from returning empty results when zoomed out.
+
+### Annotations
+
+Annotations overlay events on time-series graphs — deployments, incidents, config changes:
+
+```yaml
+# Annotation query from Prometheus (deployment events from kube-state-metrics):
+{
+  "datasource": "Prometheus",
+  "expr": "changes(kube_deployment_status_observed_generation{namespace=\"$namespace\", deployment=\"$service\"}[2m]) > 0",
+  "tagKeys": "deployment",
+  "titleFormat": "Deploy: {{deployment}}",
+  "textFormat": "Generation changed"
+}
+```
+
+**Why annotations matter in production:** When you see a latency spike at 14:32, and there's a deployment annotation at 14:30, you've found your suspect in 2 seconds instead of 20 minutes.
+
+### Dashboard as Code (GitOps)
+
+**Never** create dashboards manually in production. They drift, they get deleted, they're unreproducible.
+
+```
+Git repo: novamart-observability/
+├── dashboards/
+│   ├── golden-signals.json      # Exported from Grafana
+│   ├── k8s-cluster.json
+│   ├── node-overview.json
+│   └── payment-svc-detail.json
+├── provisioning/
+│   ├── datasources.yaml
+│   └── dashboards.yaml
+└── alerts/
+    └── grafana-alerts.yaml
+```
+
+**Workflow:**
+1. Engineer creates/edits dashboard in Grafana (dev instance)
+2. Export as JSON → commit to Git → PR review
+3. ArgoCD syncs ConfigMap to cluster
+4. Grafana sidecar detects new ConfigMap, loads dashboard
+5. Production Grafana dashboards are **read-only** (`editable: false`)
+
+```yaml
+# ConfigMap for a dashboard
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: golden-signals-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "NovaMart Services"
+data:
+  golden-signals.json: |
+    { ... dashboard JSON ... }
+```
+
+### Grafana Alerting (Unified Alerting — v8+)
+
+Grafana can evaluate alert rules directly. **But at NovaMart, we use Prometheus Alertmanager as the primary alert engine**, and Grafana Alerting only for:
+- Loki-based log alerts (Prometheus can't query logs)
+- Multi-datasource alerts (correlating metrics + logs)
+- Business-metric alerts from non-Prometheus sources
+
+```yaml
+# Grafana alert rule for log-based alerting
+# (e.g., alert when payment-svc logs 50+ "transaction_failed" in 5 minutes)
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: log-based-alerts
+    folder: NovaMart Alerts
+    interval: 1m
+    rules:
+      - uid: payment-log-errors
+        title: Payment Transaction Failures Spike
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: loki
+            model:
+              expr: 'sum(count_over_time({app="payment-svc"} |= "transaction_failed" [5m]))'
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [50]
+        for: 2m
+        labels:
+          severity: warning
+          team: payments
+        annotations:
+          summary: "payment-svc logging >50 transaction failures in 5m"
+          runbook_url: "https://wiki.novamart.internal/runbooks/payment-failures"
+```
+
+### Grafana Failure Modes
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| Dashboard loads empty | Panels show "No data" | Datasource misconfigured, Prometheus down, or query time range wrong | Check datasource health (`Settings → Data Sources → Test`), verify Prometheus is reachable from Grafana pod |
+| Dashboard loads slowly (>10s) | Spinner on panels | Heavy PromQL queries, too many series, time range too wide | Use recording rules, add `$__rate_interval`, reduce cardinality in queries, add variable filters |
+| "Too many data points" error | Panel rendering fails | Query returns >11,000 points per series | Increase min step, use `$__rate_interval`, or set max data points on panel |
+| SQLite database locked | Grafana errors on save | HA mode with SQLite (single-writer) | Migrate to PostgreSQL — SQLite doesn't support concurrent writes |
+| Dashboard drift | Prod dashboards differ from Git | Someone edited directly in prod | Set `editable: false`, use provisioning, RBAC to restrict Editor role |
+| LDAP/OAuth login fails | Users can't log in | Token expiry, group mapping wrong, Okta outage | Check `grafana.log`, verify OAuth callback URL, test token endpoint manually |
+| Grafana OOM | Pod killed | Too many concurrent users, heavy queries, or dashboard with 50+ panels | Set `--max-concurrent-datasource-requests`, reduce panel count, use pagination |
+| Alert evaluation lag | Alerts delayed or missing | Too many alert rules, datasource slow | Increase eval interval for non-critical rules, optimize underlying queries |
+
+---
+
+## Part 2: Loki — Log Aggregation
+
+### Why Loki Exists
+
+```
+                    ELK Stack                          Loki
+                    ─────────                          ────
+Architecture:       Full-text index of ALL content     Index ONLY labels/metadata
+                    (Elasticsearch inverted index)     (content stored as compressed chunks)
+                    
+Storage cost:       HIGH (index = same size as data)   LOW (index is tiny fraction)
+                    
+Query speed:        Fast for arbitrary text search     Fast for label-filtered queries
+                    (pre-indexed)                      Slower for grep across all streams
+                    
+Operations:         HEAVY (JVM tuning, shard mgmt,     LIGHT (stateless components,
+                    cluster rebalancing, split-brain)   object storage backend)
+                    
+Scaling:            Vertical + horizontal (complex)    Horizontal (microservice mode)
+
+Cost at NovaMart    ~$15K/month                        ~$3K/month
+scale:              (500GB/day ingestion)               (same 500GB/day)
+```
+
+**Loki's philosophy:** "Like Prometheus, but for logs." Index on metadata (labels), not content. Store logs cheaply in object storage.
+
+### Loki Architecture
+
+```
+                           ┌─────────────────┐
+                           │   Grafana        │
+                           │   (LogQL)        │
+                           └────────┬─────────┘
+                                    │ Query
+                                    ▼
+┌──────────┐            ┌──────────────────────┐
+│ Promtail │──Push──▶   │      LOKI            │
+│ (Agent)  │            │                      │
+└──────────┘            │  ┌─────────────────┐ │
+                        │  │   Distributor    │◄── Receives log streams
+┌──────────┐            │  │   (validation,   │    validates labels,
+│ Fluent   │──Push──▶   │  │    rate limit)   │    distributes to ingesters
+│ Bit      │            │  └────────┬─────────┘ │
+└──────────┘            │           │            │
+                        │  ┌────────▼─────────┐  │
+                        │  │    Ingester       │  │ Builds chunks in memory
+                        │  │   (in-memory      │  │ Flushes to storage
+                        │  │    chunks, WAL)   │  │ (similar to Prometheus head block)
+                        │  └────────┬─────────┘  │
+                        │           │ Flush       │
+                        │  ┌────────▼─────────┐  │
+                        │  │  Object Storage   │  │ S3, GCS, or MinIO
+                        │  │  (chunks + index) │  │
+                        │  └──────────────────┘  │
+                        │                        │
+                        │  ┌──────────────────┐  │
+                        │  │  Query Frontend   │  │ Splits/caches queries
+                        │  │     + Querier     │  │ Reads from ingesters + storage
+                        │  └──────────────────┘  │
+                        └────────────────────────┘
+```
+
+### Deployment Modes
+
+```
+┌─────────────┬──────────────────────────────────────────────────────────┐
+│ Mode        │ When to Use                                             │
+├─────────────┼──────────────────────────────────────────────────────────┤
+│ Monolithic  │ Dev/test, <100GB/day. Single binary, all components.    │
+│             │ helm: deploymentMode: SingleBinary                      │
+├─────────────┼──────────────────────────────────────────────────────────┤
+│ Simple      │ Small-medium prod, 100-500GB/day. Read + Write + Backend│
+│ Scalable    │ helm: deploymentMode: SimpleScalable (3 components)     │
+│ (SSD)       │ NovaMart uses this. Best balance of simplicity/scale.   │
+├─────────────┼──────────────────────────────────────────────────────────┤
+│ Microservice│ Large scale, >500GB/day. Each component separate.       │
+│             │ Maximum flexibility, maximum operational complexity.     │
+│             │ helm: deploymentMode: Distributed                       │
+└─────────────┴──────────────────────────────────────────────────────────┘
+```
+
+### Loki Helm Deployment for NovaMart
+
+```yaml
+# values-loki.yaml
+loki:
+  deploymentMode: SimpleScalable
+  
+  auth_enabled: true  # Multi-tenancy (X-Scope-OrgID header)
+  
+  limits_config:
+    ingestion_rate_mb: 20           # Per-tenant MB/s
+    ingestion_burst_size_mb: 30     # Burst allowance
+    max_entries_limit_per_query: 5000
+    max_query_series: 500
+    retention_period: 30d           # Auto-delete after 30 days
+    max_streams_per_user: 10000     # Prevents label explosion
+    max_label_name_length: 1024
+    max_label_value_length: 2048
+    max_label_names_per_series: 15
+    per_stream_rate_limit: 3MB      # Per-stream rate limit
+    per_stream_rate_limit_burst: 15MB
+  
+  schema_config:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb              # New TSDB index (not BoltDB)
+        object_store: s3
+        schema: v13              # Latest schema version
+        index:
+          prefix: loki_index_
+          period: 24h
+  
+  storage:
+    type: s3
+    s3:
+      region: us-east-1
+      bucketnames: novamart-loki-chunks
+      # Use IRSA — no static credentials
+    bucketNames:
+      chunks: novamart-loki-chunks
+      ruler: novamart-loki-ruler
+  
+  # Structured metadata — attach traceID, spanID without creating streams
+  # (Loki 3.0+)
+  limits_config:
+    allow_structured_metadata: true
+  
+  compactor:
+    retention_enabled: true
+    delete_request_store: s3
+
+# Write path
+write:
+  replicas: 3
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "3"
+      memory: 4Gi
+  persistence:
+    size: 50Gi
+    storageClass: gp3
+
+# Read path
+read:
+  replicas: 3
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi  # Reads are memory-hungry (decompressing chunks)
+
+# Backend (compactor, ruler, index gateway)
+backend:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  persistence:
+    size: 50Gi
+    storageClass: gp3
+
+# Gateway (nginx — routing, auth, rate limiting)
+gateway:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+```
+
+### Log Collection — Promtail vs Fluent Bit vs OTel Collector
+
+```
+┌───────────────┬─────────────────────┬──────────────────┬───────────────────┐
+│               │ Promtail            │ Fluent Bit       │ OTel Collector    │
+├───────────────┼─────────────────────┼──────────────────┼───────────────────┤
+│ Made for      │ Loki specifically   │ General purpose  │ General purpose   │
+│ Protocol      │ Loki push API       │ Many outputs     │ OTLP + many      │
+│ Resource use  │ Low                 │ Very low (C)     │ Medium (Go)       │
+│ K8s metadata  │ Auto (K8s SD)       │ kubernetes filter│ k8sattributes     │
+│ Log parsing   │ Pipeline stages     │ Parsers/filters  │ Processors        │
+│ Multi-output  │ Loki only           │ Yes              │ Yes               │
+│ NovaMart pick │ ✅ Primary (Loki)   │ Legacy ELK path  │ Future direction  │
+└───────────────┴─────────────────────┴──────────────────┴───────────────────┘
+```
+
+At NovaMart: **Promtail** as DaemonSet for Loki ingestion. Fluent Bit still running for legacy ELK migration path. Future: OTel Collector unifying everything.
+
+### Promtail Configuration
+
+```yaml
+# Promtail DaemonSet config
+config:
+  server:
+    http_listen_port: 3101
+  
+  clients:
+    - url: http://loki-gateway.monitoring:3100/loki/api/v1/push
+      tenant_id: novamart
+      batchwait: 1s
+      batchsize: 1048576  # 1MB
+      backoff_config:
+        min_period: 500ms
+        max_period: 5m
+        max_retries: 10
+  
+  positions:
+    filename: /run/promtail/positions.yaml  # Track read position (like consumer offset)
+  
+  scrape_configs:
+    # Auto-discover all pod logs
+    - job_name: kubernetes-pods
+      kubernetes_sd_configs:
+        - role: pod
+      
+      relabel_configs:
+        # Use pod labels as Loki labels
+        - source_labels: [__meta_kubernetes_pod_label_app]
+          target_label: app
+        - source_labels: [__meta_kubernetes_namespace]
+          target_label: namespace
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
+        - source_labels: [__meta_kubernetes_pod_node_name]
+          target_label: node
+        - source_labels: [__meta_kubernetes_container_name]
+          target_label: container
+        # Drop pods with annotation promtail.io/ignore: "true"
+        - source_labels: [__meta_kubernetes_pod_annotation_promtail_io_ignore]
+          action: drop
+          regex: "true"
+      
+      pipeline_stages:
+        # Parse Docker/CRI log format
+        - cri: {}
+        
+        # If JSON logs, extract structured fields
+        - json:
+            expressions:
+              level: level
+              msg: message
+              traceID: traceID
+              duration: duration
+        
+        # Set log level as label (BOUNDED — only debug/info/warn/error/fatal)
+        - labels:
+            level:
+        
+        # Extract traceID as structured metadata (Loki 3.0+)
+        # NOT as a label (unbounded cardinality!)
+        - structured_metadata:
+            traceID:
+        
+        # Drop debug logs in production (reduce volume by ~40%)
+        - match:
+            selector: '{namespace!="dev"}'
+            stages:
+              - drop:
+                  source: level
+                  value: debug
+        
+        # Metrics from logs (counter of errors)
+        - metrics:
+            log_errors_total:
+              type: Counter
+              description: "Total error log lines"
+              source: level
+              config:
+                value: error
+                action: inc
+    
+    # System logs (journal)
+    - job_name: journal
+      journal:
+        max_age: 12h
+        labels:
+          job: systemd-journal
+      relabel_configs:
+        - source_labels: [__journal__systemd_unit]
+          target_label: unit
+```
+
+### Label Design — THE Critical Decision
+
+**Labels in Loki create streams.** Every unique label combination = one stream. This is identical to Prometheus cardinality, but even more dangerous because log volume is 10-1000x metrics volume.
+
+```
+GOOD LABELS (bounded, known at deploy time):
+─────────────────────────────────────────────
+✅ namespace     (10-50 values)
+✅ app / service (200 at NovaMart)
+✅ container     (1-5 per pod)
+✅ level         (5 values: debug/info/warn/error/fatal)
+✅ cluster       (3 at NovaMart)
+✅ node          (50-100 nodes)
+✅ env           (dev/staging/prod)
+
+BAD LABELS (unbounded, data-dependent):
+─────────────────────────────────────────────
+❌ user_id       (millions)
+❌ request_id    (billions)
+❌ trace_id      (billions)
+❌ IP address    (millions)
+❌ URL path      (could be infinite with path params)
+❌ pod name      (changes every deploy)
+❌ timestamp     (infinite)
+
+Where do unbounded values go?
+──────────────────────────────
+→ Log content (grep it with |= or |~)
+→ Structured metadata (Loki 3.0+ — indexed but doesn't create streams)
+```
+
+**Pod name as a label — the gotcha:** Promtail auto-discovers pod names. Every rolling deployment creates new pod names. If `pod` is a label, every deploy creates new streams, old streams go stale. This inflates the index. At NovaMart's scale (200+ services, deploys daily), this causes:
+- Index bloat
+- Ingester memory pressure
+- Slow queries
+
+**Mitigation:** Keep `pod` as a label for debuggability, but set aggressive retention and use `max_streams_per_user` limit. Some teams drop `pod` and use `{app="payment-svc"} |= "payment-svc-7d9f8b6c4-x2k9p"` to filter by pod name in the content instead.
+
+### LogQL — Querying Logs
+
+LogQL has two types of queries:
+
+```
+1. Log queries    → Return log lines     (like grep)
+2. Metric queries → Return numeric values (like PromQL, derived from logs)
+```
+
+#### Log Queries (Stream Selection + Pipeline)
+
+```
+┌───────────────────┐     ┌──────────────────────────────────────┐
+│ Stream Selector   │  +  │ Pipeline (filter, parse, format)     │
+│ {app="order-svc"} │     │ |= "error" | json | line_format ... │
+└───────────────────┘     └──────────────────────────────────────┘
+```
+
+```promql
+# Basic: all logs from order-svc
+{app="order-svc"}
+
+# Filter: only error lines
+{app="order-svc"} |= "error"
+
+# Negative filter: exclude health checks
+{app="order-svc"} != "/healthz"
+
+# Regex filter: match pattern
+{app="order-svc"} |~ "timeout|connection refused"
+
+# Case-insensitive regex
+{app="order-svc"} |~ "(?i)error"
+
+# Chain multiple filters (AND logic — all must match)
+{app="order-svc", namespace="production"} 
+  |= "error" 
+  != "health" 
+  |~ "payment|checkout"
+
+# Parse JSON logs and filter on parsed fields
+{app="order-svc"} 
+  | json 
+  | level="error" 
+  | duration > 5s
+
+# Parse with logfmt (key=value format)
+{app="order-svc"} 
+  | logfmt 
+  | status >= 500
+
+# Regex parsing with named capture groups
+{app="nginx"} 
+  | regexp `(?P<ip>\S+) \S+ \S+ \[(?P<timestamp>[^\]]+)\] "(?P<method>\S+) (?P<path>\S+).*" (?P<status>\d+) (?P<bytes>\d+)`
+  | status >= 500
+
+# Pattern parsing (simpler than regex)
+{app="nginx"} 
+  | pattern `<ip> - - [<timestamp>] "<method> <path> <_>" <status> <bytes>`
+  | status >= 500
+
+# Format output (like printf)
+{app="order-svc"} 
+  | json 
+  | line_format "{{.level}} | {{.msg}} | duration={{.duration}}"
+
+# Label filter after parsing (extracted fields become labels within the query)
+{app="payment-svc"} 
+  | json 
+  | method="POST" 
+  | path="/api/v1/charge" 
+  | duration > 2s 
+  | line_format "SLOW: {{.duration}} {{.path}} user={{.user_id}}"
+```
+
+**Pipeline stage order matters:**
+
+```
+{selector} 
+  | line filter (|=, !=, |~, !~)     ← FASTEST: applied before parsing
+  | parser (json, logfmt, regexp)     ← Extracts fields from content
+  | label filter (field="value")      ← Filters on extracted fields
+  | line_format (reformat output)     ← Reshapes the output line
+  | label_format (rename labels)      ← Modifies label names
+  | unwrap (for metric queries)       ← Extracts numeric value for aggregation
+```
+
+**Put the most selective filter FIRST.** `|= "error"` before `| json` avoids parsing 99% of lines that don't match.
+
+#### Metric Queries (Aggregation Over Logs)
+
+```promql
+# Count of error logs per service in last 5 minutes
+sum by (app) (
+  count_over_time({namespace="production"} |= "error" [5m])
+)
+
+# Rate of errors per second
+sum by (app) (
+  rate({namespace="production"} |= "error" [5m])
+)
+
+# Throughput — log lines per second per service
+sum by (app) (
+  rate({namespace="production"} [1m])
+)
+
+# P99 request duration FROM logs (unwrap a numeric field)
+quantile_over_time(0.99, 
+  {app="order-svc"} 
+  | json 
+  | unwrap duration 
+  | __error__="" [5m]
+) by (app)
+# __error__="" drops lines where JSON parsing failed
+
+# Bytes rate (ingestion volume monitoring)
+sum by (app) (
+  bytes_rate({namespace="production"} [5m])
+)
+
+# Count unique values (approximate)
+count(
+  count by (status) (
+    count_over_time({app="order-svc"} | json [5m])
+  )
+)
+```
+
+### Production LogQL Queries for NovaMart
+
+```promql
+# 1. Find all errors in payment-svc with trace context
+{app="payment-svc", level="error"} 
+  | json 
+  | line_format "traceID={{.traceID}} {{.msg}}"
+
+# 2. Slow requests (>2s) across ALL services
+{namespace="production"} 
+  | json 
+  | duration > 2s 
+  | line_format "{{.app}} | {{.duration}} | {{.path}} | traceID={{.traceID}}"
+
+# 3. OOM events in pod logs
+{namespace="production"} |~ "OOMKilled|Out of memory|oom-kill"
+
+# 4. Connection refused (downstream dependency failures)
+{namespace="production"} |~ "connection refused|ECONNREFUSED|dial tcp.*refused"
+
+# 5. Count 5xx errors per service per minute (for alerting)
+sum by (app) (
+  rate({namespace="production"} | json | status >= 500 [1m])
+)
+
+# 6. Log volume by service (who's logging too much?)
+sum by (app) (
+  bytes_rate({namespace="production"} [5m])
+) / 1024 / 1024  # MB/s
+
+# 7. Detect log storms (sudden spike in volume)
+sum(rate({namespace="production"} [1m])) by (app) 
+  > 1000  # More than 1000 lines/sec = investigate
+
+# 8. Find specific transaction
+{app="payment-svc"} |= "txn-ABC123XYZ"
+
+# 9. Compare error rates before/after deployment
+# (Use Grafana's "Compare" feature or offset)
+sum(count_over_time({app="order-svc", level="error"} [1h]))
+# vs
+sum(count_over_time({app="order-svc", level="error"} [1h] offset 1d))
+```
+
+### Loki Failure Modes
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| `429 Too Many Requests` | Logs being dropped, Promtail backlog | Ingestion rate limit hit (`ingestion_rate_mb`) | Increase limit OR reduce log volume (drop debug) |
+| `stream limit exceeded` | New streams rejected | `max_streams_per_user` hit — label cardinality explosion | Audit labels, remove unbounded labels (pod name with high churn) |
+| Queries timeout | "context deadline exceeded" | Querying too many streams or too wide time range | Add label filters, narrow time range, use `max_entries_limit_per_query` |
+| Missing logs | Logs not appearing in Grafana | Promtail position file lost (pod rescheduled), log file rotated before read | Use PVC for positions file, increase `sync_period` |
+| Duplicate logs | Same line appears multiple times | Promtail restarted and replayed from last position | Idempotent processing; Loki deduplicates by timestamp+labels+content |
+| Ingester OOM | Ingester pods crash-looping | Too many active streams in memory, flush config wrong | Increase memory, reduce `chunk_idle_period`, tune `max_chunk_age` |
+| Chunk flush failures | Data loss risk, WAL growing | S3 permissions wrong, bucket doesn't exist, network issue | Check IRSA, verify bucket, check S3 endpoints in VPC |
+| Query reads all chunks | Queries are slow and expensive | Missing or wrong label filters — Loki must scan everything | Educate users: ALWAYS start with `{app="..."}`, never `{} |= "error"` |
+| Index corruption | Queries return incomplete results | Compactor crashed mid-compaction | Rebuild index from chunks (loki-canary helps detect) |
+| Clock skew | "entry out of order" errors | Nodes have different times, logs arrive out of timestamp order | NTP sync across all nodes, `unordered_writes: true` in Loki config |
+
+**The cardinal Loki performance rule:**
+
+```
+{} |= "error"                    ← NEVER DO THIS. Scans ALL streams.
+{app="payment-svc"} |= "error"  ← ALWAYS DO THIS. Scans one stream set.
+```
+
+The stream selector `{}` with no labels is the Loki equivalent of `SELECT * FROM logs`. It WILL time out at scale.
+
+---
+
+## Part 3: Correlation — Connecting Metrics ↔ Logs ↔ Traces
+
+This is what separates observability from "three separate tools":
+
+```
+Incident: order-svc p99 latency spike
+───────────────────────────────────────
+
+Step 1: METRICS (Prometheus/Grafana)
+  → See p99 spike on Golden Signals dashboard
+  → histogram_quantile(0.99, ...) jumped from 200ms to 5s at 14:32
+  → Annotation shows deployment at 14:30 — suspect!
+  
+Step 2: LOGS (Loki via Grafana)
+  → Click "Split" view, switch to Loki
+  → {app="order-svc", level="error"} | json | duration > 2s
+  → See: "database connection timeout" with traceID=abc123
+  
+Step 3: TRACES (Tempo/Jaeger via Grafana)
+  → Click traceID link → opens trace view
+  → Trace shows: order-svc → db-proxy → RDS
+  → db-proxy span: 4.8s (normally 50ms)
+  → Root cause: RDS failover happened at 14:31, connection pool stale
+  
+Step 4: FIX
+  → Restart connection pool / configure connection validation
+  → Latency recovers at 14:45
+```
+
+**This correlation flow is configured in the datasource config** (shown above in the Grafana section):
+- Prometheus → Loki: via shared labels (`app`, `namespace`)
+- Loki → Tempo: via `derivedFields` (regex extracting traceID from log lines)
+- Tempo → Prometheus: via `tracesToMetrics` (service name mapping)
+
+---
+
+## Part 4: Long-Term Storage — Thanos vs Mimir vs Cortex
+
+### The Problem
+
+Prometheus is **not designed for long-term storage:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Prometheus Limitations for Large-Scale / Long-Term          │
+├─────────────────────────────────────────────────────────────┤
+│ 1. Single-node TSDB — no horizontal scaling                 │
+│ 2. Retention limited by local disk (15d-30d typical)        │
+│ 3. No global query view across multiple Prometheus          │
+│ 4. HA = two independent instances (no dedup at query time)  │
+│ 5. Vertical scaling hits ceiling (~20M active series)       │
+│ 6. Disk fills up, compaction slows, data gaps (Lesson 1 Q4)│
+└─────────────────────────────────────────────────────────────┘
+```
+
+**NovaMart's needs:**
+- 3 clusters × 2 Prometheus instances (HA) = 6 Prometheus servers
+- 90-day retention for capacity planning, SLO reporting
+- Global query: "show me p99 across ALL clusters"
+- Cost-effective: can't afford 90 days on SSD/EBS
+
+### The Three Solutions
+
+```
+┌──────────────────┬─────────────────────┬─────────────────────┬──────────────────┐
+│                  │ Thanos              │ Grafana Mimir       │ Cortex           │
+├──────────────────┼─────────────────────┼─────────────────────┼──────────────────┤
+│ Architecture     │ Sidecar model       │ Fully distributed   │ Fully distributed│
+│                  │ (extends Prometheus)│ microservices       │ microservices    │
+├──────────────────┼─────────────────────┼─────────────────────┼──────────────────┤
+│ How data enters  │ Sidecar uploads     │ Remote write from   │ Remote write from│
+│                  │ blocks from local   │ Prometheus           │ Prometheus       │
+│                  │ Prometheus TSDB     │                     │                  │
+├──────────────────┼─────────────────────┼─────────────────────┼──────────────────┤
+│ Query            │ Thanos Query        │ Query frontend +    │ Query frontend + │
+│                  │ (fan-out to sidecars│ Querier (reads from │ Querier          │
+│                  │ + object storage)   │ ingesters + storage)│                  │
+├──────────────────┼─────────────────────┼─────────────────────┼──────────────────┤
+│ Storage          │ Object storage (S3) │ Object storage (S3) │ Object storage   │
+│                  │ Prometheus format   │ Own block format    │ Same as Thanos   │
+│                  │ blocks              │ (optimized)         │ (forked origin)  │
+├──────────────────┼─────────────────────┼─────────────────────┼──────────────────┤
+│ Multi-tenancy    │ Basic (external     │ Native (built-in,   │ Native           │
+│                  │ labels)             │ per-tenant limits)  │                  │
+├──────────────────┼─────────────────────┼─────────────────────┼──────────────────┤
+│ Deduplication    │ Query-time dedup    │ Write-time dedup    │ Write-time dedup │
+│                  │ (from HA pairs)     │ (replication factor)│                  │
+├──────────────────┼─────────────────────┼─────────────────────┼──────────────────┤
+│ Downsampling     │ Yes (5m, 1h auto)   │ No (not needed —   │ No               │
+│                  │                     │ query optimization)│                  │
+├──────────────────┼─────────────────────┼─────────────────────┼──────────────────┤
+│ Operational      │ Medium (sidecar +   │ Higher (more        │ Highest          │
+│ complexity       │ compactor + store)  │ components)         │ (Mimir supercedes│
+├──────────────────┼─────────────────────┼─────────────────────┼──────────────────┤
+│ Maturity         │ CNCF Incubating     │ Grafana Labs (OSS)  │ Deprecated in    │
+│                  │ Very mature         │ Rapidly maturing    │ favor of Mimir   │
+├──────────────────┼─────────────────────┼─────────────────────┼──────────────────┤
+│ Best for         │ Existing Prometheus │ Greenfield, high    │ Legacy (migrate  │
+│                  │ extending with      │ scale, multi-tenant │ to Mimir)        │
+│                  │ minimal changes     │ platforms           │                  │
+└──────────────────┴─────────────────────┴─────────────────────┴──────────────────┘
+```
+
+**NovaMart choice: Thanos** — because we already have Prometheus deployed, and Thanos extends it with minimal disruption.
+
+### Thanos Architecture (Deep Dive)
+
+```
+Cluster: us-east-1                     Cluster: us-west-2
+┌────────────────────────┐             ┌────────────────────────┐
+│ Prometheus             │             │ Prometheus             │
+│ ┌────────┐ ┌────────┐ │             │ ┌────────┐ ┌────────┐ │
+│ │  TSDB  │ │ Thanos │ │             │ │  TSDB  │ │ Thanos │ │
+│ │  Head  │ │Sidecar │─┼─upload──┐   │ │  Head  │ │Sidecar │─┼─upload──┐
+│ │  Block │ │        │ │   │     │   │ │  Block │ │        │ │   │     │
+│ └────────┘ └───┬────┘ │   │     │   │ └────────┘ └───┬────┘ │   │     │
+│                │       │   │     │   │                │       │   │     │
+└────────────────┼───────┘   │     │   └────────────────┼───────┘   │     │
+                 │StoreAPI   │     │                    │StoreAPI   │     │
+                 │           │     │                    │           │     │
+                 ▼           ▼     │                    ▼           ▼     │
+           ┌──────────────────┐    │              ┌──────────────────┐   │
+           │   S3 Bucket      │◄───┘              │   S3 Bucket      │◄──┘
+           │ (long-term       │                   │ (long-term       │
+           │  metrics)        │                   │  metrics)        │
+           └────────┬─────────┘                   └────────┬─────────┘
+                    │                                      │
+                    └──────────────┬────────────────────────┘
+                                   │
+                    ┌──────────────▼───────────────┐
+                    │       Thanos Query           │ (Global query endpoint)
+                    │  (fan-out to all StoreAPIs)  │
+                    │  ┌─────────────────────────┐ │
+                    │  │ Deduplication            │ │ (removes HA duplicates)
+                    │  │ Partial response         │ │ (query succeeds even if
+                    │  │                          │ │  one sidecar is down)
+                    │  └─────────────────────────┘ │
+                    └──────────────┬───────────────┘
+                                   │
+                    ┌──────────────▼───────────────┐
+                    │    Thanos Query Frontend      │
+                    │  - Query splitting            │
+                    │  - Results caching (memcached) │
+                    │  - Retry / limits             │
+                    └──────────────┬───────────────┘
+                                   │
+                    ┌──────────────▼───────────────┐
+                    │       Grafana                 │
+                    │  (datasource: Thanos Query)   │
+                    └──────────────────────────────┘
+
+BACKGROUND COMPONENTS:
+┌──────────────────────┐  ┌──────────────────────┐
+│   Thanos Compactor   │  │   Thanos Store       │
+│ - Merges blocks in S3│  │   Gateway            │
+│ - Downsamples (5m,1h)│  │ - Serves queries     │
+│ - Retention policy   │  │   from object storage│
+│ - SINGLETON (no HA!) │  │ - Caches index/chunks│
+└──────────────────────┘  └──────────────────────┘
+```
+
+### Thanos Components Explained
+
+**1. Sidecar** — runs alongside each Prometheus
+
+```yaml
+# In Prometheus Operator (kube-prometheus-stack values):
+prometheus:
+  prometheusSpec:
+    thanos:
+      image: quay.io/thanos/thanos:v0.35.0
+      version: v0.35.0
+      objectStorageConfig:
+        existingSecret:
+          name: thanos-objstore-config
+          key: objstore.yml
+      # Sidecar resources
+      resources:
+        requests:
+          cpu: 200m
+          memory: 256Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+    # CRITICAL: disable compaction in Prometheus (Thanos Compactor handles it)
+    disableCompaction: true
+    # External labels for global deduplication
+    externalLabels:
+      cluster: us-east-1
+      replica: $(POD_NAME)  # For HA dedup
+```
+
+The sidecar does two things:
+- **Uploads** completed TSDB blocks (every 2h) to object storage
+- **Serves StoreAPI** for recent data (still in Prometheus head block)
+
+**2. Store Gateway** — serves queries from object storage
+
+```yaml
+# thanos-store.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: thanos-store
+spec:
+  replicas: 2  # HA
+  template:
+    spec:
+      containers:
+        - name: thanos-store
+          image: quay.io/thanos/thanos:v0.35.0
+          args:
+            - store
+            - --data-dir=/var/thanos/store
+            - --objstore.config-file=/etc/thanos/objstore.yml
+            - --index-cache-size=1GB
+            - --chunk-pool-size=4GB
+            # Time-based partitioning for scale
+            - --min-time=-90d
+            - --max-time=-2h  # Recent data from sidecar, not store
+          resources:
+            requests:
+              memory: 4Gi
+              cpu: "1"
+            limits:
+              memory: 8Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/thanos/store
+            - name: objstore-config
+              mountPath: /etc/thanos
+```
+
+**3. Query** — the global query endpoint
+
+```yaml
+# thanos-query deployment
+args:
+  - query
+  - --http-address=0.0.0.0:9090
+  - --grpc-address=0.0.0.0:10901
+  # Connect to all StoreAPI endpoints
+  - --endpoint=dnssrv+_grpc._tcp.thanos-sidecar-us-east-1.monitoring.svc
+  - --endpoint=dnssrv+_grpc._tcp.thanos-sidecar-us-west-2.monitoring.svc
+  - --endpoint=dnssrv+_grpc._tcp.thanos-sidecar-eu-west-1.monitoring.svc
+  - --endpoint=dnssrv+_grpc._tcp.thanos-store.monitoring.svc
+  # HA deduplication
+  - --query.replica-label=replica
+  - --query.replica-label=prometheus_replica
+  # Allow partial responses (don't fail if one cluster is unreachable)
+  - --query.partial-response
+  # Auto-downsampling for long ranges
+  - --query.auto-downsampling
+```
+
+**4. Compactor** — background maintenance on object storage
+
+```yaml
+# thanos-compactor deployment — MUST be a singleton
+args:
+  - compact
+  - --data-dir=/var/thanos/compact
+  - --objstore.config-file=/etc/thanos/objstore.yml
+  # Downsampling (automatic)
+  - --downsampling.disable=false
+  # Retention policies
+  - --retention.resolution-raw=30d      # Full resolution: 30 days
+  - --retention.resolution-5m=90d       # 5-minute downsampled: 90 days
+  - --retention.resolution-1h=365d      # 1-hour downsampled: 1 year
+  # Compaction
+  - --compact.concurrency=4
+  - --compact.cleanup-interval=5m
+  # Wait instead of exit (run as long-lived process)
+  - --wait
+  - --wait-interval=5m
+resources:
+  requests:
+    memory: 2Gi
+    cpu: "1"
+  limits:
+    memory: 4Gi
+```
+
+**⚠️ CRITICAL: Compactor is a SINGLETON.** Never run more than one compactor against the same bucket. Two compactors will corrupt blocks by competing on compaction/deletion operations. This is the #1 Thanos operational mistake.
+
+```
+If compactor dies → blocks accumulate in S3 → queries get slower
+                  → but NO data loss. It's safe to be down temporarily.
+                  → Set an alert for compactor being down > 1 hour.
+```
+
+**5. Query Frontend** — query optimization layer
+
+```yaml
+args:
+  - query-frontend
+  - --http-address=0.0.0.0:9090
+  - --query-frontend.downstream-url=http://thanos-query:9090
+  # Split long-range queries into day-sized chunks
+  - --query-range.split-interval=24h
+  # Cache results in memcached
+  - --query-range.response-cache-config-file=/etc/thanos/cache.yml
+  # Retry failed queries
+  - --query-range.max-retries-per-request=3
+  # Limit query concurrency
+  - --query-frontend.max-body-size=10MB
+```
+
+Cache config:
+
+```yaml
+# cache.yml
+type: MEMCACHED
+config:
+  addresses:
+    - memcached.monitoring.svc:11211
+  timeout: 500ms
+  max_idle_connections: 100
+  max_async_concurrency: 50
+  max_async_buffer_size: 25000
+  max_get_multi_concurrency: 100
+  max_item_size: 1MiB
+  dns_provider_update_interval: 10s
+```
+
+### Object Storage Configuration
+
+```yaml
+# objstore.yml (referenced by sidecar, store, compactor)
+type: S3
+config:
+  bucket: novamart-thanos-metrics
+  endpoint: s3.us-east-1.amazonaws.com
+  region: us-east-1
+  # Use IRSA — no static credentials
+  # AWS SDK auto-discovers from projected service account token
+  sse_config:
+    type: SSE-S3       # Server-side encryption
+  # Cost optimization: set lifecycle rules on the bucket
+  # (Thanos compactor handles retention, but bucket lifecycle
+  #  is a safety net for orphaned blocks)
+```
+
+**S3 bucket policy for cost optimization:**
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "Transition to IA after 30 days",
+      "Status": "Enabled",
+      "Transitions": [
+        {
+          "Days": 30,
+          "StorageClass": "STANDARD_IA"
+        }
+      ]
+    },
+    {
+      "ID": "Transition to Glacier after 180 days",
+      "Status": "Enabled",
+      "Transitions": [
+        {
+          "Days": 180,
+          "StorageClass": "GLACIER_IR"
+        }
+      ],
+      "Filter": {
+        "Prefix": "debug/"
+      }
+    },
+    {
+      "ID": "Abort incomplete multipart uploads",
+      "Status": "Enabled",
+      "AbortIncompleteMultipartUpload": {
+        "DaysAfterInitiation": 7
+      }
+    }
+  ]
+}
+```
+
+**⚠️ DO NOT use Glacier for Thanos blocks.** Thanos Store Gateway needs to read blocks for queries. Glacier retrieval times (minutes to hours) will cause query timeouts. Use `STANDARD_IA` at most. The Glacier rule above is only for a hypothetical debug prefix you'd never query.
+
+### Thanos vs Mimir — When to Choose What
+
+```
+Choose THANOS when:
+────────────────────
+✅ You already have Prometheus deployed
+✅ You want minimal changes to existing setup (just add sidecar)
+✅ You have < 50M active series across all clusters
+✅ Your team is small and wants simpler operations
+✅ You need downsampling for very long retention (>6 months)
+✅ NovaMart's current situation
+
+Choose MIMIR when:
+────────────────────
+✅ Greenfield deployment (no existing Prometheus to preserve)
+✅ Multi-tenant platform (many teams sharing one metrics system)
+✅ > 50M active series (Mimir scales better horizontally)
+✅ You need ingest-time dedup (not query-time like Thanos)
+✅ You want a single system instead of Prometheus + addon
+✅ NovaMart in 2 years when scale grows
+```
+
+### Thanos Failure Modes
+
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
+| Sidecar upload failing | Gaps in long-term data, Store Gateway returns incomplete results | S3 permissions (IRSA misconfigured), bucket doesn't exist, network to S3 blocked | Check sidecar logs, verify IRSA trust policy, check VPC endpoint for S3 |
+| Compactor halted | `thanos_compact_halted == 1`, block count growing in S3 | Overlapping blocks from manual operations, corrupted block metadata | Check compactor logs, use `thanos tools bucket verify`, delete corrupted block |
+| Query returns partial data | Missing metrics from one cluster, Thanos Query logs "partial response" | Sidecar unreachable (network, pod down), StoreAPI timeout | Check all `--endpoint` targets, verify gRPC connectivity, increase timeout |
+| Slow long-range queries | Queries over 7+ days take >30s | No query frontend, no caching, downsampled data not being used | Deploy Query Frontend with memcached, enable `--query.auto-downsampling` |
+| Two compactors running | Block corruption, duplicate blocks, retention not applied | Deployment misconfiguration (replicas > 1) | **Immediately** scale to 1 replica. Run `thanos tools bucket verify --repair` |
+| Store Gateway OOM | Crashes when loading block index | Too many blocks, index cache too small | Increase memory, increase `--index-cache-size`, time-partition store gateways |
+| HA dedup not working | Duplicate series in query results | `external_labels` missing `replica` label, or `--query.replica-label` not set | Add `replica` external label to each Prometheus, configure Query dedup |
+| Sidecar blocks Prometheus | Prometheus can't compact, disk fills | `disableCompaction: true` not set, Prometheus and sidecar both compacting | Set `disableCompaction: true` in Prometheus spec |
+| Stale data in query | Old data appears, recent data missing | Store Gateway cache stale, sidecar hasn't uploaded yet (2h delay) | Sidecar serves recent data via StoreAPI; verify sidecar is in Query endpoints |
+| S3 costs exploding | Unexpected AWS bill spike | No retention policy in compactor, no S3 lifecycle, too many replicas uploading uncompacted blocks | Set retention flags on compactor, add S3 lifecycle rules, verify compactor is running |
+
+### The Full NovaMart Observability Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        DATA COLLECTION                              │
+│                                                                     │
+│  Microservices ──metrics──▶ Prometheus (scraped every 15s)         │
+│  Microservices ──logs────▶ Promtail ──push──▶ Loki                 │
+│  Microservices ──traces──▶ OTel Collector ──push──▶ Tempo          │
+│                                                                     │
+│  node-exporter ──metrics──▶ Prometheus (node hardware)             │
+│  kube-state-metrics ─────▶ Prometheus (K8s object state)           │
+│  kubelet/cAdvisor ───────▶ Prometheus (container resources)        │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────────┐
+│                        SHORT-TERM STORAGE                           │
+│                                                                     │
+│  Prometheus TSDB ──── 15 days local (EBS gp3)                      │
+│  Loki Ingesters ───── few hours in-memory + WAL                    │
+│  Tempo Ingesters ──── few hours in-memory + WAL                    │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────────┐
+│                        LONG-TERM STORAGE                            │
+│                                                                     │
+│  Thanos Sidecar ──upload──▶ S3 (novamart-thanos-metrics)           │
+│  │  Compactor ────── compaction + downsampling + retention          │
+│  │  Store GW ─────── serves old data for queries                   │
+│  │                                                                  │
+│  Loki ────flush───▶ S3 (novamart-loki-chunks)                     │
+│  │  Compactor ────── index compaction + retention                  │
+│  │                                                                  │
+│  Tempo ───flush───▶ S3 (novamart-tempo-traces)                    │
+│  │  Compactor ────── block compaction + retention                  │
+│  │                                                                  │
+│  Retention: Metrics=90d, Logs=30d, Traces=15d                      │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────────┐
+│                        QUERY / VISUALIZATION                        │
+│                                                                     │
+│  Thanos Query ───▶ Grafana (metrics)                               │
+│  Loki Query ─────▶ Grafana (logs)                                  │
+│  Tempo Query ────▶ Grafana (traces)                                │
+│                                                                     │
+│  Correlation: metrics ←→ logs ←→ traces (via labels + traceID)    │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────────┐
+│                        ALERTING                                     │
+│                                                                     │
+│  Prometheus ──rules──▶ Alertmanager ──route──▶ PagerDuty (SEV1)   │
+│                                       ──route──▶ Slack (SEV2-4)    │
+│  Grafana ──log alerts──▶ Alertmanager (contact point)              │
+│  Watchdog ──heartbeat──▶ Dead Man's Switch ──▶ PagerDuty           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Quick Reference Card
+
+```
+GRAFANA
+───────
+Deploy:          kube-prometheus-stack includes it
+HA:              replicas: 2 + PostgreSQL (NOT SQLite)
+Datasources:     Provision as code (YAML), never manual in prod
+Dashboards:      GitOps via ConfigMap + sidecar, editable: false in prod
+Variables:        Chain: cluster → namespace → service
+                 Use $__rate_interval (NOT hardcoded [5m])
+Annotations:     Overlay deploys/incidents on graphs
+Alerting:        Use for Loki-based alerts only; Prometheus rules for metrics
+
+LOKI
+────
+Architecture:    Index labels only, store content in object storage
+Deploy modes:    Monolithic → SimpleScalable → Distributed
+Label rules:     BOUNDED only (app, namespace, level, cluster)
+                 NEVER: user_id, request_id, trace_id, IP
+                 Use structured_metadata for unbounded (Loki 3.0+)
+LogQL order:     {selector} | line_filter | parser | label_filter | format
+Performance:     ALWAYS start with label selector, NEVER bare {}
+Promtail:        DaemonSet, auto-discovers pods, pipeline_stages for parsing
+Metric queries:  count_over_time(), rate(), quantile_over_time(unwrap)
+
+THANOS
+──────
+Components:      Sidecar, Store GW, Query, Query Frontend, Compactor
+Sidecar:         Uploads blocks to S3, serves StoreAPI for recent data
+Compactor:       SINGLETON — never >1 replica. Handles compaction + downsample + retention
+Store GW:        Serves queries from S3, needs memory for index cache
+Query:           Fan-out to all StoreAPIs, dedup via --query.replica-label
+Query Frontend:  Split queries, cache results (memcached)
+Key config:      disableCompaction: true on Prometheus
+                 external_labels: cluster + replica
+Retention:       Set on Compactor (raw=30d, 5m=90d, 1h=365d)
+Cost:            S3 Standard-IA after 30d, NEVER Glacier for queried data
+
+CORRELATION
+───────────
+Metrics → Logs:   Shared labels (app, namespace)
+Logs → Traces:    derivedFields regex on traceID in Loki datasource config
+Traces → Metrics: tracesToMetrics mapping in Tempo datasource config
+```
+
+---
+
+## Retention Questions — Phase 5 Lesson 2
+
+### Q1: Loki Label Cardinality Incident 🔥
+
+**Scenario:** NovaMart's Loki cluster starts returning `429 Too Many Requests` errors. Promtail agents across all nodes are reporting `server returned HTTP status 429 Too Many Requests`. Log ingestion has stopped. You check Loki's distributor metrics and see `loki_distributor_lines_received_total` is flat.
+
+Investigation reveals that the `cart-svc` team deployed a new version 2 hours ago that switched to structured JSON logging. Their new log format includes this in every line:
+
+```json
+{"level":"info","msg":"item added","userID":"u-948271","sessionID":"sess-abc123","cartID":"cart-xyz789","timestamp":"2024-01-15T10:32:01Z"}
+```
+
+Their Promtail pipeline was updated to extract labels:
+
+```yaml
+pipeline_stages:
+  - json:
+      expressions:
+        level: level
+        userID: userID
+        sessionID: sessionID
+        cartID: cartID
+  - labels:
+      level:
+      userID:
+      sessionID:
+      cartID:
+```
+
+**Questions:**
+1. Explain exactly why this causes `429` errors and why it affects **all** services, not just `cart-svc`.
+2. What is your immediate fix (logs are being dropped RIGHT NOW for the entire cluster)?
+3. Write the corrected Promtail pipeline that preserves debuggability without killing Loki.
+4. What Loki metric and alert would you set up to catch this before it becomes an outage next time?
+
+---
+
+### Q2: Thanos Query Returns Incomplete Data 🔥
+
+**Scenario:** It's Wednesday morning. The VP of Engineering asks for a report: "Show me the p99 latency trend for `payment-svc` across all three regions for the past 60 days."
+
+You query Thanos:
+
+```promql
+histogram_quantile(0.99, 
+  sum by (le, cluster) (
+    rate(http_request_duration_seconds_bucket{service="payment-svc"}[1h])
+  )
+)
+```
+
+**Results show:**
+- `us-east-1`: Full 60-day data ✅
+- `us-west-2`: Data only for the last 14 days ❌
+- `eu-west-1`: No data at all ❌
+
+All three clusters have Prometheus running and currently healthy.
+
+**Questions:**
+1. List the **three most likely causes** in order of probability, and for each, give the exact command or metric you'd check to confirm.
+2. For the `eu-west-1` case (no data at all), walk through the full Thanos data path and identify every point where the chain could break.
+3. The VP needs the report TODAY. What is your short-term workaround to get the data while you fix the underlying issue?
+
+---
+
+### Q3: LogQL Under Pressure 🔥
+
+**Scenario:** 3 AM. PagerDuty fires: `PaymentSvcErrorRateHigh`. You open Grafana.
+
+**Write the exact LogQL queries for each investigation step:**
+
+1. Find all error logs from `payment-svc` in the last 15 minutes
+2. Parse the JSON logs and find only errors related to the `/charge` endpoint with duration > 2 seconds
+3. Extract the `traceID` from those slow errors so you can pivot to distributed tracing
+4. Count the error rate per minute for `payment-svc` over the last hour (for a Grafana graph)
+5. Compare the current error count (last 1 hour) against yesterday's error count (same hour) to confirm this is abnormal
+6. **Trap question:** A junior team member runs `{} |= "payment" |= "error"` and says "I'm checking payment errors." Explain why this is dangerous and what will actually happen at NovaMart's scale.
+
+---
+
+### Q4: Grafana Dashboard Debugging 🔥
+
+**Scenario:** The `order-svc` team reports their Grafana dashboard is broken:
+- Two panels show "No data"
+- One panel shows data but the values seem "impossibly low" (order rate showing 0.002 req/s when they know they're handling thousands of requests)
+- The dashboard was working fine yesterday
+- No deployments happened to Grafana itself
+
+**Questions:**
+1. For the "No data" panels — give a systematic debugging checklist (at least 5 steps) with the exact actions you'd take in Grafana.
+2. For the "impossibly low values" panel — what are the three most likely causes? For one of them, explain the exact mechanism of how it produces misleadingly low numbers.
+3. You discover that the issue started when someone changed a template variable default. The dashboard uses chained variables (`cluster` → `namespace` → `service`). How can variable misconfiguration cause "No data" and how do you prevent this from happening again?
+
+---
+
 
