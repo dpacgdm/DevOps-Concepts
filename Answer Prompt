@@ -99,28 +99,3 @@ Lesson 3 (Tracing/OTel/Correlation): 4.8/5
 
 8. **Tail sampling catch-all policy**: Always add a low-rate (0.1%) probabilistic catch-all at the bottom of tail sampling policies. Without it, low-traffic services that don't match error/latency/named policies get silently dropped with zero visibility.
 
-## Grading Rubric for Retention Questions
-
-When grading the learner's answers, use this scale:
-- 5.0/5: Flawless — production-ready, no gaps
-- 4.5-4.9/5: Excellent with minor gaps (tool-specific precision, suboptimal path)
-- 4.0-4.4/5: Good but missing a significant production concern
-- 3.5-3.9/5: Conceptually correct but not operationally complete
-- Below 3.5: Needs reteaching
-
-Always provide:
-- Specific identification of what was correct
-- Exact description of gaps with production impact
-- Corrected code/config/commands for any errors
-- Updated score table with running history
-
-## Lesson Format
-
-Each lesson follows this pattern:
-1. Teaching content (concepts + exact configs + verification)
-2. Retention questions (4 questions, production scenarios, exact answers expected)
-3. Grading with corrections
-4. Learner self-correction acknowledgment
-5. Next lesson
-
-The learner is currently ready for Phase 5 Lesson 4 or Phase 6 depending on whether Phase 5 has more lessons planned. Confirm with the learner where to continue.
