@@ -11125,3 +11125,2842 @@ Compensation:
 # runbook-payment-svc-high-error-rate.md
 
 # Payment Service
+
+Continuing exactly from where I stopped — Part 6: Runbooks, Runbook Structure.
+
+---
+
+```yaml
+# runbook-payment-svc-high-error-rate.md
+
+# Payment Service — High Error Rate
+
+## Metadata
+- **Alert:** PaymentSvcHighBurnRate_Page
+- **Severity:** SEV1/SEV2 (depends on burn rate)
+- **Service:** payment-svc
+- **Team:** Payments (#team-payments)
+- **Escalation:** @payments-oncall → @payments-lead → @vp-engineering
+- **Last updated:** 2024-01-15
+- **Author:** Platform Engineering
+- **Dashboard:** https://grafana.novamart.internal/d/slo-payment
+- **SLO:** 99.95% availability, 99.9% < 2s latency
+
+## Symptoms
+- PagerDuty alert: burn rate > 14.4x (fast burn) or > 6x (moderate burn)
+- Grafana dashboard shows error rate spike on /charge endpoint
+- Customer support receiving "payment failed" complaints
+- Error budget consumption accelerating
+
+## Impact
+- Users cannot complete purchases
+- Revenue loss: ~$50K/minute at peak traffic
+- Customer trust degradation (payment failures are high-impact)
+
+## Quick Assessment (2 minutes)
+
+### 1. Confirm the impact is real
+```bash
+# Current error rate
+curl -s 'http://prometheus:9090/api/v1/query?query=sum(rate(http_requests_total{service="payment-svc",endpoint="/charge",status=~"5.."}[5m]))/sum(rate(http_requests_total{service="payment-svc",endpoint="/charge"}[5m]))' | jq '.data.result[0].value[1]'
+
+# Current burn rate
+curl -s 'http://prometheus:9090/api/v1/query?query=sli:payment_charge_availability:burnrate1h' | jq '.data.result[0].value[1]'
+
+# Error budget remaining
+curl -s 'http://prometheus:9090/api/v1/query?query=sli:payment_charge_availability:error_budget_remaining' | jq '.data.result[0].value[1]'
+```
+
+### 2. Check what changed recently
+```bash
+# Recent deployments
+kubectl -n payments rollout history deployment/payment-svc | tail -5
+
+# Recent config changes
+kubectl -n payments get events --sort-by='.lastTimestamp' | grep -E 'ConfigMap|Secret|Deployment' | tail -10
+
+# ArgoCD sync status
+argocd app get payment-svc --output json | jq '{sync: .status.sync.status, health: .status.health.status, lastSync: .status.operationState.finishedAt}'
+```
+
+### 3. Check error breakdown
+```bash
+# Errors by status code
+curl -s 'http://prometheus:9090/api/v1/query?query=sum+by+(status)(rate(http_requests_total{service="payment-svc",endpoint="/charge",status=~"5.."}[5m]))' | jq '.data.result[] | {status: .metric.status, rate: .value[1]}'
+
+# Errors by downstream dependency
+curl -s 'http://prometheus:9090/api/v1/query?query=sum+by+(upstream_service)(rate(http_requests_total{service="payment-svc",status=~"5.."}[5m]))' | jq '.data.result[]'
+```
+
+## Diagnosis Decision Tree
+
+```
+Error code is 500 (Internal Server Error)?
+├── YES → Application bug or unhandled exception
+│   ├── Check logs: kubectl -n payments logs deploy/payment-svc --tail=200 | grep -i error
+│   ├── Look for stack traces, NPE, OOM
+│   ├── If recent deploy → ROLLBACK (see Mitigation Option 1)
+│   └── If no recent deploy → Check resource exhaustion (memory, connections)
+│
+Error code is 502 (Bad Gateway)?
+├── YES → payment-svc pods are crashing or not responding
+│   ├── Check pod status: kubectl -n payments get pods
+│   ├── Check for OOMKilled: kubectl -n payments describe pods | grep -A3 "Last State"
+│   ├── Check readiness probe: kubectl -n payments describe pods | grep -A5 Readiness
+│   └── If pods are CrashLooping → check logs for startup errors
+│
+Error code is 503 (Service Unavailable)?
+├── YES → Upstream dependency is down or circuit breaker is open
+│   ├── Check Stripe status: https://status.stripe.com
+│   ├── Check internal dependencies:
+│   │   kubectl -n orders get pods (order-svc)
+│   │   kubectl -n inventory get pods (inventory-svc)
+│   │   kubectl -n users get pods (user-svc)
+│   ├── Check circuit breaker state:
+│   │   curl http://payment-svc:8080/actuator/health (Spring Boot)
+│   │   Check Istio circuit breaker:
+│   │   istioctl proxy-config cluster deploy/payment-svc -n payments | grep circuit
+│   └── If Stripe is down → Mitigation Option 3 (queue or failover)
+│
+Error code is 504 (Gateway Timeout)?
+├── YES → Downstream call is too slow
+│   ├── Check latency per dependency:
+│   │   Trace search in Tempo for slow spans
+│   ├── Check database: RDS Performance Insights
+│   ├── Check connection pools:
+│   │   payment_db_connections_active / payment_db_connections_max
+│   └── If database slow → Check for long-running queries, locks
+```
+
+## Mitigation Options
+
+### Option 1: Rollback (if recent deploy caused it)
+```bash
+# Check last deployment
+kubectl -n payments rollout history deployment/payment-svc
+
+# Rollback to previous version
+kubectl -n payments rollout undo deployment/payment-svc
+
+# OR via ArgoCD (preferred — maintains GitOps)
+# Revert the commit in the manifests repo, ArgoCD will sync
+
+# Verify rollback
+kubectl -n payments rollout status deployment/payment-svc
+kubectl -n payments get pods -o wide
+# Wait 2-3 minutes, then check error rate
+```
+
+### Option 2: Restart (if not deployment-related)
+```bash
+# FIRST: Collect evidence
+kubectl -n payments logs deploy/payment-svc --tail=2000 > /tmp/pre-restart-payment-logs.txt
+kubectl -n payments describe pods > /tmp/pre-restart-payment-describe.txt
+kubectl -n payments top pods > /tmp/pre-restart-payment-resources.txt
+
+# Restart with rolling strategy (no downtime)
+kubectl -n payments rollout restart deployment/payment-svc
+
+# Monitor the restart
+kubectl -n payments rollout status deployment/payment-svc --watch
+```
+
+### Option 3: Failover (if regional/AZ issue)
+```bash
+# Check if issue is regional
+# If us-east-1 is affected:
+# Update Route53 health check to failover traffic
+aws route53 update-health-check \
+  --health-check-id <id> \
+  --disabled
+
+# Or adjust weighted routing to shift traffic
+aws route53 change-resource-record-sets \
+  --hosted-zone-id <zone-id> \
+  --change-batch file://failover-to-west.json
+```
+
+### Option 4: Scale (if capacity issue)
+```bash
+# Scale up payment-svc
+kubectl -n payments scale deployment/payment-svc --replicas=10
+
+# If node capacity is insufficient
+# Karpenter will auto-provision, but verify:
+kubectl get nodes --sort-by='.metadata.creationTimestamp' | tail -5
+kubectl get provisioners -o yaml  # Check Karpenter limits
+```
+
+## Verification After Mitigation
+```bash
+# Error rate should be dropping
+watch -n 10 'curl -s "http://prometheus:9090/api/v1/query?query=sum(rate(http_requests_total{service=\"payment-svc\",endpoint=\"/charge\",status=~\"5..\"}[2m]))/sum(rate(http_requests_total{service=\"payment-svc\",endpoint=\"/charge\"}[2m]))" | jq -r ".data.result[0].value[1]" | xargs printf "Error rate: %s\n"'
+
+# Burn rate should be dropping below threshold
+watch -n 10 'curl -s "http://prometheus:9090/api/v1/query?query=sli:payment_charge_availability:burnrate1h" | jq -r ".data.result[0].value[1]" | xargs printf "Burn rate: %sx\n"'
+
+# Monitor for 15 minutes minimum before declaring mitigated
+```
+
+## Escalation
+- If mitigation doesn't work within 15 minutes → page payments tech lead
+- If dependency (Stripe) is confirmed down → page VP Engineering for business decision
+- If data corruption suspected → page database team AND VP Engineering immediately
+```
+
+### Runbook Quality Checklist
+
+```
+Every runbook MUST have:
+  ✅ Alert name it corresponds to (1:1 mapping)
+  ✅ Dashboard link (one click to see the problem)
+  ✅ Copy-paste commands (not "check the pods" — give the exact kubectl)
+  ✅ Decision tree (not just "investigate" — give the logical flow)
+  ✅ Multiple mitigation options (not just "rollback")
+  ✅ Verification steps (how do you KNOW the fix worked?)
+  ✅ Escalation path (who to call if you can't fix it)
+  ✅ Last updated date (stale runbooks are dangerous)
+
+Every runbook MUST NOT have:
+  ❌ Vague instructions ("check if things look normal")
+  ❌ Missing context (assumes tribal knowledge)
+  ❌ Only one mitigation path (what if rollback doesn't work?)
+  ❌ No verification (how do you know you didn't make it worse?)
+
+TESTING RUNBOOKS:
+  A runbook is only as good as its last test.
+  - New engineer test: Can someone who's never seen this service
+    follow the runbook and mitigate the incident?
+  - Game day test: Inject the failure in staging, follow the runbook.
+  - Post-incident update: After every incident, update the runbook
+    with what was actually done vs. what the runbook said.
+```
+
+---
+
+## Part 7: Blameless Postmortems
+
+### Why Blameless?
+
+```
+BLAMEFUL POSTMORTEM:                     BLAMELESS POSTMORTEM:
+────────────────────                     ──────────────────────
+"Bob pushed a bad config"                "A config change was pushed without
+                                          validation because our pipeline
+                                          lacked config linting"
+
+"The DBA should have caught it"          "The review process didn't include
+                                          database impact assessment"
+
+"If Alice had been faster, we'd          "Our detection took 15 minutes
+ have caught it sooner"                   because we lacked an SLI for
+                                          this failure mode"
+
+Result: People hide mistakes             Result: People report freely
+        Information is suppressed                 Real causes are found
+        Same incident repeats                     Systemic fixes are made
+        Culture of fear                           Culture of learning
+```
+
+**The fundamental insight:**
+
+```
+Humans make mistakes. That's a CONSTANT, not a variable.
+
+If a human error caused an outage, the question is NOT "who did it?"
+The question is: "Why did our SYSTEM allow a human error to reach production?"
+
+Every human error in production represents a SYSTEM failure:
+  - Missing validation (linting, tests, policy checks)
+  - Missing guardrails (canary, rollback automation)
+  - Missing review (4-eyes principle, approval gates)
+  - Missing detection (monitoring gap)
+  - Missing training (documentation, runbooks)
+
+Fix the SYSTEM. The human was the trigger, not the cause.
+```
+
+### Postmortem Structure
+
+```markdown
+# Postmortem: Payment Processing Failures — 2024-01-18
+
+## Metadata
+- **Incident ID:** INC-2024-0118-001
+- **Date:** 2024-01-18
+- **Duration:** 70 minutes (02:45 — 03:55 UTC)
+- **Severity:** SEV1
+- **IC:** Alice Chen
+- **Tech Lead:** Bob Kim
+- **Author:** Alice Chen
+- **Reviewers:** Platform team + Payments team
+- **Status:** Action items in progress
+
+## Executive Summary
+On January 18 at 02:45 UTC, payment processing experienced a 70-minute 
+degradation. ~30% of checkout attempts failed during the incident.
+Root cause: a connection pool misconfiguration in payment-svc v2.34.1 
+deployed at 02:47 UTC. Mitigation: rollback to v2.34.0 at 03:12 UTC.
+Estimated revenue impact: $2.1M in failed transactions (most recovered 
+via customer retry).
+
+## Impact
+- **User impact:** 30% of payment attempts returned errors for 70 minutes
+- **Error budget consumed:** 4.2 minutes (of 21.6 min monthly budget)
+- **Revenue impact:** ~$2.1M in initially failed transactions
+- **Recovery:** 85% of affected users retried successfully within 2 hours
+- **Support tickets:** 342 payment-related tickets (vs ~15 baseline)
+- **SLO status:** 99.91% over 30d window (still above 99.95% target due 
+  to remaining budget from clean first 18 days)
+
+## Timeline (ALL TIMES UTC)
+
+| Time  | Event |
+|-------|-------|
+| 02:47 | payment-svc v2.34.1 deployed via ArgoCD auto-sync |
+| 02:49 | Connection pool begins exhausting (new config: max 5 connections, previous: 50) |
+| 02:51 | First 503 errors appear in logs |
+| 02:53 | Error rate exceeds 14.4x burn rate threshold |
+| 02:55 | **ALERT FIRES:** PaymentSvcHighBurnRate_Page |
+| 02:57 | On-call (Alice) acknowledges, opens incident channel |
+| 02:58 | SEV1 declared, Bob paged as Tech Lead |
+| 03:02 | Bob identifies v2.34.1 deployed 15 minutes ago |
+| 03:05 | Bob reviews diff — finds connection pool change (50 → 5) |
+| 03:07 | Decision: rollback to v2.34.0 |
+| 03:08 | Evidence collected (logs, pod describe, connection metrics) |
+| 03:12 | Rollback executed via ArgoCD |
+| 03:15 | New pods passing readiness checks, error rate dropping |
+| 03:25 | Error rate at baseline (0.02%). IC declares MITIGATED |
+| 03:55 | 30 minutes stable. IC declares RESOLVED |
+
+## Root Cause Analysis
+
+### Direct cause:
+payment-svc v2.34.1 included a configuration change that reduced the 
+database connection pool from 50 to 5 connections. At NovaMart's traffic 
+level (~800 req/s to payment-svc), 5 connections are insufficient, 
+causing connection wait timeouts that manifested as 503 errors to callers.
+
+### The configuration change:
+```yaml
+# v2.34.0 (working)
+database:
+  maxOpenConns: 50
+  maxIdleConns: 25
+
+# v2.34.1 (broken)
+database:
+  maxOpenConns: 5    # Changed for "dev environment optimization"
+  maxIdleConns: 2    # Corresponding reduction
+```
+
+### Why the bad config reached production:
+1. The config change was intended for the dev environment only, but was 
+   committed to the shared `values.yaml` instead of `values-dev.yaml`
+2. The PR review did not catch the environment-specific nature of the change
+3. No automated validation exists for connection pool settings
+4. ArgoCD auto-sync deployed it without human approval for production
+
+### Contributing factors:
+- No config validation in CI pipeline (no check for "is maxOpenConns 
+  reasonable for production traffic?")
+- PR review focused on code logic, not configuration values
+- No canary deployment for config-only changes
+- Auto-sync enabled for production (bypasses manual approval)
+
+## Detection Analysis
+- **MTTD:** 8 minutes (02:47 deploy → 02:55 alert)
+  - Could this be faster? The burn rate alert requires 5m of data. 
+    A raw error rate alert would have fired at 02:53 (~6 min)
+  - Connection pool metrics would have shown immediate exhaustion 
+    but we don't alert on pool utilization directly
+- **MTTE:** 2 minutes (02:55 alert → 02:57 acknowledge)
+  - Within SLA. Good.
+- **MTTM:** 30 minutes (02:55 alert → 03:25 mitigated)
+  - Acceptable for SEV1. Could improve with automated rollback.
+
+## What Went Well
+- On-call responded within 2 minutes
+- Root cause identified quickly (deployment correlation)
+- Decision to rollback was made promptly (no "let me debug more" delay)
+- Evidence was collected BEFORE rollback
+- Communication to stakeholders was timely
+- SLO framework correctly identified the severity
+
+## What Went Wrong
+- Dev-targeted config change reached production
+- No config validation in CI
+- Auto-sync bypassed human approval for production changes
+- 8-minute detection time (users experienced errors for 8 minutes 
+  before we knew)
+
+## Where We Got Lucky
+- The on-call engineer had recently worked on payment-svc and immediately 
+  suspected the deploy. A less familiar engineer might have spent 15+ 
+  minutes before checking deployment history.
+- This happened at 3 AM (low traffic). At peak (2 PM), the impact 
+  would have been 5x worse.
+
+## Action Items
+
+| ID | Action | Owner | Priority | Due | Status |
+|----|--------|-------|----------|-----|--------|
+| 1 | Add config linting to CI: validate maxOpenConns >= 20 for production | Bob | P1 | 2024-01-25 | In Progress |
+| 2 | Separate per-environment values files (values-dev.yaml, values-staging.yaml, values-prod.yaml) | Carol | P1 | 2024-01-25 | Not Started |
+| 3 | Disable ArgoCD auto-sync for production; require manual sync or PR-triggered sync | Alice | P1 | 2024-01-22 | Done |
+| 4 | Add connection pool utilization alert (>80% for >2min → warning) | Dave | P2 | 2024-02-01 | Not Started |
+| 5 | Implement automated rollback on error rate spike (Argo Rollouts analysis) | Platform | P2 | 2024-02-15 | Not Started |
+| 6 | Add "Where We Got Lucky" section awareness: create runbook entry for "check recent deploys" as step 1 | Alice | P3 | 2024-01-30 | Not Started |
+
+## Lessons Learned
+1. Configuration changes are as dangerous as code changes — they need 
+   the same level of review and validation
+2. Environment-specific configs must be physically separated, not just 
+   logically separated within a single file
+3. Auto-sync to production without human approval is a loaded gun
+4. "Where We Got Lucky" analysis reveals hidden risks — if luck is 
+   required for success, the system is fragile
+```
+
+### Postmortem Anti-Patterns
+
+```
+ANTI-PATTERN 1: "5 Whys" without stopping
+  Why did payments fail? → Bad config
+  Why was config bad? → Developer mistake
+  Why did developer make a mistake? → Tired
+  Why were they tired? → Overworked
+  Why overworked? → Understaffed
+  
+  This leads to "hire more people" for every postmortem.
+  
+  FIX: Stop at the ACTIONABLE level.
+    "Config validation was missing from CI"
+    → Action: Add config linting
+    This is specific, actionable, and preventive.
+
+ANTI-PATTERN 2: No action items
+  "We discussed the incident and learned from it."
+  → Nothing changes. Same incident repeats.
+  
+  FIX: Every postmortem MUST produce at least one P1 action item
+       with an owner and due date. Track to completion.
+
+ANTI-PATTERN 3: Action items that never get done
+  "Add better monitoring" — assigned to nobody, no due date
+  → Still undone 6 months later
+  
+  FIX: Action items in Jira, tracked in sprint planning, reviewed
+       in monthly SLO meeting. P1 items due within 1 week.
+
+ANTI-PATTERN 4: Blaming the human
+  "Action item: Retrain Bob on configuration management"
+  → Bob feels terrible. Nobody reports future mistakes.
+  → The system that allowed the mistake is unchanged.
+  
+  FIX: "Action item: Add automated config validation so that
+        incorrect connection pool values cannot pass CI."
+  → Fixes the system. Bob is relieved. Everyone reports freely.
+
+ANTI-PATTERN 5: Skipping the postmortem
+  "It was a quick fix, we know what happened, no need to write it up."
+  → The fix addresses the symptom, not the system.
+  → No institutional memory. New team members repeat the same mistakes.
+  
+  FIX: SEV1 and SEV2 postmortems are MANDATORY. No exceptions.
+       SEV3 postmortems are optional but encouraged.
+       Postmortem completion is tracked as a team metric.
+
+ANTI-PATTERN 6: "Where We Got Lucky" is missing
+  Most postmortems cover what went wrong and what went well.
+  Few cover what could have been MUCH worse but wasn't.
+  
+  "Where We Got Lucky" reveals hidden fragilities:
+    - "Lucky it was 3 AM" → What's our plan for peak-hour incidents?
+    - "Lucky the expert was on-call" → Is the runbook good enough 
+       for any engineer?
+    - "Lucky only one service was affected" → What if the blast radius 
+       were larger?
+  
+  These lead to PROACTIVE improvements, not just reactive fixes.
+```
+
+### The Postmortem Meeting
+
+```
+FORMAT: 60 minutes, within 48 hours (SEV1) or 1 week (SEV2)
+
+ATTENDEES:
+  - All incident responders
+  - Service owner/tech lead
+  - Engineering manager
+  - Optional: VP Engineering (for SEV1), affected team leads
+
+AGENDA:
+  00-05: IC presents timeline (facts only, no interpretation)
+  05-15: Walk through the root cause analysis
+  15-25: Open discussion: "What surprised you?"
+  25-35: Review proposed action items
+  35-45: Prioritize and assign action items
+  45-55: "Where We Got Lucky" discussion
+  55-60: Next steps, publication timeline
+
+GROUND RULES:
+  1. No blame. If you hear "Bob should have..." redirect to
+     "What system change would have prevented this?"
+  2. Facts first, opinions second.
+  3. Everyone's perspective is valuable — the person who caused
+     the incident often has the best insight into prevention.
+  4. Action items must be SMART (Specific, Measurable, Assignable,
+     Relevant, Time-bound)
+  5. The postmortem is published team-wide (or company-wide for SEV1)
+     → Transparency builds trust and shares learning
+
+FACILITATION TIPS:
+  - If discussion goes to blame: "I hear a system improvement
+    opportunity. How would we make this impossible to repeat?"
+  - If discussion goes to rabbit holes: "Let's parking-lot this
+    and focus on the action items."
+  - If action items are vague: "Who owns this? By when?
+    How will we know it's done?"
+```
+
+---
+
+## Part 8: Chaos Engineering
+
+### Why Break Things on Purpose?
+
+```
+"Everything fails, all the time." — Werner Vogels, CTO of AWS
+
+You can either:
+  A) Discover failure modes during a 3 AM SEV1 with users screaming
+  B) Discover failure modes during a controlled 2 PM experiment
+
+Chaos engineering is option B.
+
+                    ┌─────────────────────────────┐
+                    │     CONFIDENCE MODEL         │
+                    │                             │
+                    │  Without chaos:             │
+                    │  "We THINK the system is    │
+                    │   resilient"                │
+                    │                             │
+                    │  With chaos:                │
+                    │  "We KNOW the system        │
+                    │   survives [specific        │
+                    │   failure mode]"            │
+                    │  OR                         │
+                    │  "We KNOW the system        │
+                    │   DOESN'T survive [failure] │
+                    │   and here's the fix"       │
+                    └─────────────────────────────┘
+```
+
+### Chaos Engineering Process
+
+```
+Step 1: DEFINE STEADY STATE
+  What does "normal" look like? (SLIs!)
+    - Payment success rate: 99.97%
+    - p99 latency: 400ms
+    - Order throughput: 200 orders/min
+
+Step 2: HYPOTHESIZE
+  "We believe that if [failure occurs], [system behavior]"
+  
+  Example:
+  "We believe that if one payment-svc pod is killed,
+   the remaining pods will absorb the traffic with
+   < 1% increase in error rate and < 200ms increase in p99 latency"
+
+Step 3: INTRODUCE THE FAILURE
+  Kill the pod, partition the network, exhaust the CPU,
+  fail the database, corrupt the cache
+
+Step 4: OBSERVE
+  Did the system behave as hypothesized?
+  Check SLIs, dashboards, alerts, logs
+
+Step 5: LEARN
+  If hypothesis confirmed → increase scope (kill 2 pods, 
+  fail entire AZ, etc.)
+  If hypothesis rejected → FIX THE WEAKNESS, then re-test
+
+CRITICAL RULE: Start small, in staging, during business hours,
+with everyone watching. Graduate to production only after
+staging experiments pass consistently.
+```
+
+### Chaos Tools
+
+```
+┌─────────────────┬──────────────────────────────────────────────────┐
+│ Tool            │ What it does                                      │
+├─────────────────┼──────────────────────────────────────────────────┤
+│ Litmus Chaos    │ K8s-native chaos engineering platform             │
+│                 │ ChaosEngine CRD → injects failures               │
+│                 │ Pod kill, network partition, CPU stress,          │
+│                 │ disk fill, DNS failure                            │
+│                 │ Integrates with Argo Workflows                   │
+│                 │ NovaMart's choice (K8s native, open source)      │
+├─────────────────┼──────────────────────────────────────────────────┤
+│ Chaos Mesh      │ Similar to Litmus, K8s-native                    │
+│                 │ Strong network chaos (partition, delay, loss)    │
+│                 │ Time skew injection (clock manipulation)         │
+│                 │ Good dashboard/UI                                │
+├─────────────────┼──────────────────────────────────────────────────┤
+│ Gremlin         │ Commercial chaos platform                        │
+│                 │ Enterprise features (RBAC, audit, scheduling)   │
+│                 │ Supports K8s, VMs, containers, cloud services   │
+│                 │ "Failure as a Service"                           │
+├─────────────────┼──────────────────────────────────────────────────┤
+│ AWS Fault       │ AWS-native chaos (FIS)                           │
+│ Injection       │ EC2, ECS, EKS, RDS, network                     │
+│ Simulator       │ Integrates with CloudWatch for stop conditions   │
+│                 │ Good for AWS-specific failures (AZ outage sim)  │
+├─────────────────┼──────────────────────────────────────────────────┤
+│ Netflix Chaos   │ The OG — random instance termination             │
+│ Monkey          │ "If your service can't survive a random pod kill │
+│                 │  it's not production-ready"                      │
+│                 │ Concept more important than the specific tool    │
+└─────────────────┴──────────────────────────────────────────────────┘
+```
+
+### Litmus Chaos Example at NovaMart
+
+```yaml
+# Experiment: Kill a payment-svc pod, verify resilience
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: payment-svc-pod-kill
+  namespace: payments
+spec:
+  appinfo:
+    appns: payments
+    applabel: app=payment-svc
+    appkind: deployment
+  engineState: active
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "60"           # Kill pods for 60 seconds
+            - name: CHAOS_INTERVAL
+              value: "10"           # Kill one every 10 seconds
+            - name: FORCE
+              value: "false"        # Graceful termination (SIGTERM first)
+            - name: PODS_AFFECTED_PERC
+              value: "50"           # Kill up to 50% of pods
+        probe:
+          - name: payment-svc-availability
+            type: promProbe
+            mode: Continuous
+            runProperties:
+              probeTimeout: 5
+              retry: 2
+              interval: 5
+              probePollingInterval: 2
+            promProbe/inputs:
+              endpoint: http://prometheus.monitoring:9090
+              query: |
+                sum(rate(http_requests_total{service="payment-svc",
+                  endpoint="/charge", status=~"5.."}[1m]))
+                /
+                sum(rate(http_requests_total{service="payment-svc",
+                  endpoint="/charge"}[1m]))
+              comparator:
+                type: float
+                criteria: "<="
+                value: "0.01"       # Error rate must stay under 1%
+```
+
+```yaml
+# Experiment: Network latency to database
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: payment-svc-network-latency
+  namespace: payments
+spec:
+  appinfo:
+    appns: payments
+    applabel: app=payment-svc
+    appkind: deployment
+  engineState: active
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-network-latency
+      spec:
+        components:
+          env:
+            - name: NETWORK_INTERFACE
+              value: "eth0"
+            - name: TARGET_CONTAINER
+              value: "payment-svc"
+            - name: NETWORK_LATENCY
+              value: "500"          # Add 500ms latency
+            - name: JITTER
+              value: "100"          # ±100ms jitter
+            - name: TOTAL_CHAOS_DURATION
+              value: "120"          # 2 minutes
+            - name: DESTINATION_IPS
+              value: "10.0.3.0/24"  # Database subnet only
+        probe:
+          - name: payment-latency-sli
+            type: promProbe
+            mode: Continuous
+            promProbe/inputs:
+              endpoint: http://prometheus.monitoring:9090
+              query: |
+                histogram_quantile(0.99,
+                  sum by (le) (rate(http_request_duration_seconds_bucket{
+                    service="payment-svc", endpoint="/charge"
+                  }[1m]))
+                )
+              comparator:
+                type: float
+                criteria: "<="
+                value: "3.0"        # p99 must stay under 3s
+```
+
+### Game Day Format at NovaMart
+
+```
+QUARTERLY GAME DAY
+══════════════════
+
+Schedule: First Wednesday of every quarter, 10 AM - 4 PM
+
+Preparation (1 week before):
+  ├── Select 3-5 experiments (escalating severity)
+  ├── Review hypotheses with service owners
+  ├── Verify staging experiments pass
+  ├── Notify customer support (just in case)
+  ├── Prepare abort procedures
+  └── Ensure all participants have dashboard access
+
+Game Day Schedule:
+  10:00  Kickoff — review experiments, assign observers
+  10:30  Experiment 1: Kill 1 pod in payment-svc (warm-up)
+  11:00  Experiment 2: Network latency to database (50ms → 500ms)
+  11:30  Debrief experiments 1-2
+  12:00  Lunch
+  13:00  Experiment 3: Kill entire AZ (drain all nodes in us-east-1a)
+  14:00  Experiment 4: Redis cluster failover simulation
+  14:30  Experiment 5: DNS failure for inventory-svc
+  15:00  Debrief all experiments
+  15:30  Document findings, create action items
+  16:00  Wrap-up, schedule follow-up
+
+Rules:
+  ✅ Start in staging (experiments 1-2), graduate to production (3-5)
+  ✅ IC assigned for each experiment
+  ✅ Abort button ready — halt immediately if unexpected production impact
+  ✅ SLO dashboard visible to everyone at all times
+  ✅ Record everything — screen recordings of debugging sessions
+  ❌ No "gotcha" experiments — everyone knows what's being tested
+  ❌ No experiments during peak traffic (schedule around business hours)
+  ❌ Never target data-layer chaos in production without extensive staging
+     (database kill, storage corruption = potential data loss)
+
+Output:
+  - Experiment results document (hypothesis confirmed/rejected)
+  - New action items for discovered weaknesses
+  - Updated runbooks with newly discovered failure modes
+  - Confidence score per service (% of experiments passed)
+```
+
+---
+
+## Part 9: Putting It All Together — NovaMart Incident Management Maturity
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              INCIDENT MANAGEMENT MATURITY MODEL                          │
+├──────────┬──────────────────────────────────────────────────────────────┤
+│ Level 1  │ REACTIVE                                                      │
+│ (Bad)    │ Customers find issues. No severity levels. No roles.         │
+│          │ No postmortems. Same incidents repeat.                       │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Level 2  │ DEFINED                                                       │
+│ (OK)     │ Severity levels defined. On-call rotation exists.            │
+│          │ Alerts fire for major issues. Postmortems sometimes done.   │
+│          │ Communication is ad-hoc.                                     │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Level 3  │ MANAGED                                                       │
+│ (Good)   │ SLOs drive alerting. IC process is followed. Postmortems    │
+│          │ are mandatory. Runbooks exist for common alerts.             │
+│          │ Communication templates. On-call health tracked.            │
+│          │                                                              │
+│          │ ← NovaMart target (current state: between 2 and 3)         │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Level 4  │ PROACTIVE                                                     │
+│ (Great)  │ Chaos engineering regular. Game days quarterly.              │
+│          │ Automated remediation for known failures. Runbooks tested.  │
+│          │ On-call is sustainable. Postmortem action items tracked     │
+│          │ to completion. Cross-team learning.                         │
+├──────────┼──────────────────────────────────────────────────────────────┤
+│ Level 5  │ OPTIMIZED                                                     │
+│ (Elite)  │ Incident prediction (ML on metrics). Self-healing systems.  │
+│          │ Chaos engineering in production daily. Near-zero toil.      │
+│          │ Incidents are rare AND well-handled when they occur.        │
+│          │ Google/Netflix/Meta level.                                   │
+└──────────┴──────────────────────────────────────────────────────────────┘
+```
+
+### NovaMart's Incident Management Stack
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│                NOVAMART INCIDENT MANAGEMENT FLOW                   │
+│                                                                    │
+│  DETECTION                                                         │
+│  ┌────────────────┐  ┌─────────────────┐  ┌──────────────────┐   │
+│  │ Prometheus/     │  │ Synthetic       │  │ Customer         │   │
+│  │ Grafana Alerts  │  │ Probes          │  │ Reports          │   │
+│  │ (SLO burn rate) │  │ (external check)│  │ (support/social) │   │
+│  └───────┬────────┘  └───────┬─────────┘  └───────┬──────────┘   │
+│          │                   │                     │              │
+│          └───────────┬───────┘─────────────────────┘              │
+│                      ▼                                             │
+│  ROUTING                                                           │
+│  ┌──────────────────────────────┐                                 │
+│  │       PagerDuty              │                                 │
+│  │  ┌──────────────────────┐    │                                 │
+│  │  │ Alertmanager webhook │    │                                 │
+│  │  │ → PagerDuty API      │    │                                 │
+│  │  │ → Escalation policy  │    │                                 │
+│  │  │ → Phone/SMS/Push     │    │                                 │
+│  │  └──────────────────────┘    │                                 │
+│  └──────────────┬───────────────┘                                 │
+│                 ▼                                                   │
+│  RESPONSE                                                          │
+│  ┌──────────────────────────────────────────┐                     │
+│  │              Slack                        │                     │
+│  │  /incident declare                        │                     │
+│  │    → #inc-YYYYMMDD-<name> channel created│                     │
+│  │    → Roles assigned (IC, TL, Comms)      │                     │
+│  │    → Status page updated automatically    │                     │
+│  │    → Jira ticket created                  │                     │
+│  │    → Timeline bot starts recording        │                     │
+│  └──────────────────┬───────────────────────┘                     │
+│                     ▼                                              │
+│  TOOLING DURING INCIDENT                                           │
+│  ┌────────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐   │
+│  │ Grafana    │ │ Tempo    │ │ Loki     │ │ kubectl/argocd   │   │
+│  │ Dashboards │ │ Traces   │ │ Logs     │ │ CLI tools        │   │
+│  └────────────┘ └──────────┘ └──────────┘ └──────────────────┘   │
+│                     ▼                                              │
+│  POST-INCIDENT                                                     │
+│  ┌──────────────────────────────────────────┐                     │
+│  │  Postmortem (Confluence/Google Docs)      │                     │
+│  │    → Template auto-generated              │                     │
+│  │    → Timeline pre-populated from Slack    │                     │
+│  │    → Action items → Jira                  │                     │
+│  │    → Published to #postmortems channel    │                     │
+│  │    → Reviewed in monthly SLO meeting      │                     │
+│  └──────────────────────────────────────────┘                     │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+### PagerDuty Configuration at NovaMart
+
+```yaml
+# PagerDuty service configuration (conceptual — PagerDuty uses UI/API)
+
+service: "Payment Service - Production"
+escalation_policy:
+  rules:
+    - targets:
+        - type: schedule
+          id: "platform-primary-oncall"
+      escalation_delay_in_minutes: 5
+    - targets:
+        - type: schedule
+          id: "platform-secondary-oncall"
+      escalation_delay_in_minutes: 5
+    - targets:
+        - type: user
+          id: "engineering-manager"
+      escalation_delay_in_minutes: 5
+    - targets:
+        - type: user
+          id: "vp-engineering"
+      escalation_delay_in_minutes: 5
+
+# Alertmanager → PagerDuty integration
+# In alertmanager.yml:
+receivers:
+  - name: 'pagerduty-critical'
+    pagerduty_configs:
+      - routing_key: '<pagerduty-integration-key>'
+        severity: '{{ if eq .CommonLabels.severity "critical" }}critical{{ else }}warning{{ end }}'
+        description: '{{ .CommonAnnotations.summary }}'
+        details:
+          firing: '{{ .Alerts.Firing | len }}'
+          dashboard: '{{ .CommonAnnotations.dashboard_url }}'
+          runbook: '{{ .CommonAnnotations.runbook_url }}'
+          slo: '{{ .CommonLabels.slo }}'
+        links:
+          - href: '{{ .CommonAnnotations.dashboard_url }}'
+            text: 'Grafana Dashboard'
+          - href: '{{ .CommonAnnotations.runbook_url }}'
+            text: 'Runbook'
+
+  - name: 'slack-warnings'
+    slack_configs:
+      - api_url: 'https://hooks.slack.com/services/xxx'
+        channel: '#alerts-platform'
+        title: '{{ .CommonAnnotations.summary }}'
+        text: >-
+          *Alert:* {{ .CommonLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          *Service:* {{ .CommonLabels.service }}
+          {{ .CommonAnnotations.description }}
+          <{{ .CommonAnnotations.runbook_url }}|Runbook> |
+          <{{ .CommonAnnotations.dashboard_url }}|Dashboard>
+```
+
+### Incident Metrics Dashboard
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│              INCIDENT MANAGEMENT METRICS (Monthly)                    │
+├─────────────────────┬─────────────┬──────────────────────────────────┤
+│ Metric              │ This Month  │ Trend                            │
+├─────────────────────┼─────────────┼──────────────────────────────────┤
+│ Total incidents     │ 12          │ ████████░░ (↓ from 18 last mo)  │
+│  - SEV1             │ 1           │ ██░░░░░░░░                       │
+│  - SEV2             │ 3           │ ████░░░░░░                       │
+│  - SEV3             │ 8           │ ████████░░                       │
+├─────────────────────┼─────────────┼──────────────────────────────────┤
+│ MTTD (median)       │ 4 min       │ ████░░░░░░ (target: < 5 min)   │
+│ MTTE (median)       │ 3 min       │ ███░░░░░░░ (target: < 5 min)   │
+│ MTTM (median)       │ 22 min      │ ████████░░ (target: < 30 min)  │
+│ MTTR (median)       │ 4.2 hrs     │ ████████░░ (target: < 8 hrs)   │
+├─────────────────────┼─────────────┼──────────────────────────────────┤
+│ Pages per on-call   │ 1.8/week    │ ██░░░░░░░░ (target: < 2)       │
+│ After-hours pages   │ 3 total     │ ███░░░░░░░ (target: < 4)       │
+│ False positive rate │ 8%          │ █░░░░░░░░░ (target: < 10%)     │
+├─────────────────────┼─────────────┼──────────────────────────────────┤
+│ Postmortems written │ 4/4 (100%)  │ ██████████ (target: 100%)      │
+│ Action items done   │ 11/15 (73%) │ ███████░░░ (target: > 80%)     │
+│ Repeat incidents    │ 1 (8%)      │ █░░░░░░░░░ (target: 0%)        │
+├─────────────────────┼─────────────┼──────────────────────────────────┤
+│ On-call satisfaction│ 3.8/5       │ ████████░░ (target: > 3.5)     │
+│ Game days completed │ 1 (quarterly│ ██████████                       │
+│                     │  on track)  │                                  │
+└─────────────────────┴─────────────┴──────────────────────────────────┘
+```
+
+---
+
+## Quick Reference Card
+
+```
+SEVERITY CLASSIFICATION
+───────────────────────
+SEV1: Total outage, data loss, security breach → PAGE → IC → 15min comms → Mandatory postmortem 48h
+SEV2: Major degradation, significant users affected → PAGE → 30min comms → Mandatory postmortem 1wk
+SEV3: Minor degradation, subset of users → TICKET → Business hours → Optional postmortem
+SEV4: Cosmetic, workaround exists → BACKLOG → Sprint planning
+
+WHEN IN DOUBT → ESCALATE UP. Downgrading is free. Late escalation is expensive.
+
+INCIDENT ROLES
+──────────────
+IC: Owns process. Assigns roles. Makes decisions. NOT debugging.
+Tech Lead: Owns investigation. Proposes hypotheses. Directs SMEs.
+Comms: Status page, Slack, executives. Every 15min (SEV1) / 30min (SEV2).
+Ops: Executes commands. Announces before acting. Documents timestamps.
+
+INVESTIGATION FRAMEWORK
+───────────────────────
+1. Scope impact (2 min): What services? What %? Getting worse?
+2. What changed? (3 min): Deploys, configs, infra, traffic, deps
+3. Follow data path (5-10 min): Edge → services → databases. Metrics → traces → logs.
+4. MITIGATE (ASAP): Collect evidence THEN rollback/restart/failover/scale
+5. Verify (15 min): Error rate dropping? SLI recovering? Stable?
+
+⚠️ MITIGATE FIRST. Root cause LATER. $50K/minute.
+
+ON-CALL HEALTH
+──────────────
+< 2 pages/week | < 1 after-hours/week | < 10% false positive
+< 5 min ACK | < 30 min MTTM (SEV1) | > 3.5/5 satisfaction
+
+POSTMORTEM MUST-HAVES
+─────────────────────
+Timeline | Root cause (system, not human) | Impact | Detection analysis
+What went well | What went wrong | WHERE WE GOT LUCKY
+Action items (owner + due date + Jira ticket)
+NO BLAME. Fix the system, not the person.
+
+CHAOS ENGINEERING
+─────────────────
+Steady state → Hypothesize → Inject failure → Observe → Learn
+Start small (1 pod) → Graduate (AZ failure) → Production (quarterly game day)
+Tools: Litmus Chaos (NovaMart), Chaos Mesh, Gremlin, AWS FIS
+```
+---
+
+## Retention Questions — Phase 5 Lesson 5
+
+### Q1: SEV1 Incident Response 🔥
+
+**Scenario:** 2:47 AM. PagerDuty wakes you up:
+
+```
+Alert: PaymentSvcHighBurnRate_Page
+Severity: critical
+Description: "payment-svc /charge burning error budget at 22x rate"
+Burn rate 1h: 22x
+Error budget remaining: 71%
+```
+
+You acknowledge the alert. You're the primary on-call. The secondary on-call is in a different timezone (it's their evening).
+
+**Questions:**
+1. Walk through your **first 10 minutes** step by step. What do you do, in what order, with what exact commands/queries? Include Slack messages you'd post and role assignments.
+2. At minute 8, you discover: error rate is 40% on `/charge`, ALL errors are `502 Bad Gateway`, and payment-svc pods are all `Running` with no restarts. What does this pattern tell you? List your top 3 hypotheses in order of likelihood.
+3. At minute 12, you confirm the root cause: ArgoCD auto-synced a new Istio VirtualService that routes `/charge` traffic to a canary deployment `payment-svc-canary` — but the canary has 0 replicas (it was a skeleton deploy for next week's test). How do you mitigate in under 2 minutes? Give the exact commands.
+4. Write the **"Where We Got Lucky"** section for this incident's postmortem.
+
+---
+
+### Q2: On-Call Process Design 🔥
+
+**Scenario:** You've been at NovaMart for 3 months. The current on-call situation is a mess:
+- 15-25 pages per week (most are noise)
+- No runbooks for 80% of alerts
+- Two engineers refuse to participate in on-call ("I'm a developer, not ops")
+- The same Redis connection timeout alert fires 5x/day and everyone ignores it
+- Last month's SEV1 took 2 hours to mitigate because the on-call couldn't find the right dashboard
+
+**Questions:**
+1. Design a 90-day plan to fix the on-call process. Be specific about what happens in weeks 1-4, 5-8, and 9-12. Include metrics you'll track to prove improvement.
+2. How do you handle the two engineers who refuse on-call? Give the technical argument AND the organizational/cultural argument.
+3. The Redis alert that fires 5x/day — what's your approach? You can't just delete it. Walk through your analysis and resolution.
+4. Propose a specific alert quality scoring system that NovaMart could use to systematically improve alert signal-to-noise ratio.
+
+---
+
+### Q3: Postmortem Under Pressure 🔥
+
+**Scenario:** NovaMart had a SEV1 last week. During the postmortem meeting:
+- The VP of Engineering says: "We need to name who was responsible. The board is asking."
+- The developer who deployed the bad change is visibly anxious and hasn't spoken.
+- The payments tech lead says: "If we had just reviewed the PR properly, none of this would have happened."
+- Two action items from the LAST postmortem (2 months ago) are still not done.
+
+**Questions:**
+1. You're facilitating this postmortem. How do you handle the VP's demand for individual accountability? Give the **exact words** you would say.
+2. How do you redirect the tech lead's comment from blame to system improvement? Give the **exact words** you would say.
+3. The developer who deployed the change — how do you create safety for them to contribute? What specific thing would you say or do?
+4. The undone action items from 2 months ago — how do you address this pattern? What systemic change prevents it from recurring?
+
+---
+
+### Q4: Chaos Engineering Game Day Design 🔥
+
+**Scenario:** You're planning NovaMart's first-ever game day. The VP is nervous: "I don't want you breaking production on purpose." The payments team is resistant: "Our service is fine, we don't need chaos testing." You have one day to convince them and one week to prepare.
+
+**Questions:**
+1. Write the **executive summary** (5 sentences max) you'd send to the VP to get approval. Focus on business value, not technical excitement.
+2. Design 4 experiments for the game day, escalating in severity. For each: state the hypothesis, the injection method, the success criteria (in SLI terms), and the abort condition.
+3. The payments team says "our service is fine." What data would you pull from existing monitoring to prove they have untested assumptions? Give specific queries.
+4. During the game day, Experiment 3 (AZ failure simulation) causes an unexpected cascade: order-svc loses connection to RDS because the RDS primary was in the failed AZ, and RDS failover takes 45 seconds during which ALL orders fail. This wasn't predicted. What do you do in the moment AND what action items come out of this?
+
+# Phase 5, Lesson 5 — SRE Practices Answers
+
+---
+
+## Q1: SEV1 Incident Response
+
+### 1. First 10 Minutes — Step by Step
+
+**Minute 0-1: Acknowledge and Assess**
+
+```
+# Acknowledge the PagerDuty alert (phone or app)
+# This stops escalation to secondary and starts the incident clock
+```
+
+**First action — open laptop, verify the alert is real (not a false positive):**
+
+```promql
+# From phone (Grafana mobile) or laptop — verify burn rate
+sli:payment_charge_availability:burnrate1h
+# Expected: ~22 (confirms alert)
+
+# Quick error rate check
+sum(rate(http_requests_total{service="payment-svc", endpoint="/charge", status=~"5.."}[5m]))
+/
+sum(rate(http_requests_total{service="payment-svc", endpoint="/charge"}[5m]))
+# If this returns > 0.01 (1%), this is real. At 22x burn rate, expect ~1.1% error rate minimum
+```
+
+**Minute 1-2: Declare the incident and open communications**
+
+Post to `#incidents` Slack channel:
+
+```
+🔴 SEV1 DECLARED — Payment /charge errors
+
+Alert: PaymentSvcHighBurnRate_Page — 22x burn rate
+Impact: payment-svc /charge returning errors — customers cannot complete purchases
+Error budget: 71% remaining, burning fast
+Incident Commander: [your name]
+War room: #inc-20240116-payment-charge
+Status page: Investigating
+
+@oncall-secondary I need you online — joining war room
+@payments-team-lead FYI — payment-svc incident, may need your team's context
+```
+
+**Create dedicated incident channel:**
+
+```
+/create-incident Payment /charge errors — 22x burn rate
+# Or manually:
+Slack: Create channel #inc-20240116-payment-charge
+```
+
+**Minute 2-3: Update status page (before deep investigation)**
+
+```bash
+# If using Statuspage.io/Atlassian Statuspage:
+# Set payment processing to "Degraded Performance"
+# This is critical — customers and support need to know IMMEDIATELY
+
+# If using API:
+curl -X POST "https://api.statuspage.io/v1/pages/${PAGE_ID}/incidents" \
+  -H "Authorization: OAuth ${STATUSPAGE_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "incident": {
+      "name": "Payment processing errors",
+      "status": "investigating",
+      "impact_override": "major",
+      "body": "We are investigating elevated error rates on payment processing. Some customers may experience failed checkout attempts. We are actively working on a fix.",
+      "component_ids": ["'${PAYMENT_COMPONENT_ID}'"],
+      "components": {"'${PAYMENT_COMPONENT_ID}'": "degraded_performance"}
+    }
+  }'
+```
+
+**Minute 3-5: Systematic diagnosis — the "what, where, when" triage**
+
+```promql
+# WHAT: What errors exactly?
+sum by (status) (
+  rate(http_requests_total{service="payment-svc", endpoint="/charge", status=~"5.."}[5m])
+)
+# Tells us: are these 500, 502, 503, 504?
+
+# WHERE: All pods or specific pods?
+sum by (pod) (
+  rate(http_requests_total{service="payment-svc", endpoint="/charge", status=~"5.."}[5m])
+)
+# Tells us: localized to one pod or cluster-wide?
+
+# WHEN: When did it start? (look at the step change)
+# Set Grafana to 2-hour view:
+sum(rate(http_requests_total{service="payment-svc", endpoint="/charge", status=~"5.."}[1m]))
+# Look for the inflection point — note exact timestamp
+```
+
+```promql
+# Are pods healthy?
+kube_pod_status_phase{namespace="payments", pod=~"payment-svc.*"}
+kube_pod_container_status_restarts_total{namespace="payments", container="payment-svc"}
+# Check: are pods Running? Any recent restarts?
+
+# Is it a downstream dependency?
+# Check exemplars or trace for a failing request
+# Click an exemplar on the error spike → Tempo trace → see which span fails
+```
+
+```bash
+# Check recent deployments/changes (most incidents are caused by changes)
+kubectl -n payments get events --sort-by='.lastTimestamp' | tail -20
+
+# Check ArgoCD for recent syncs
+argocd app list --output json | jq '.[] | select(.metadata.name | contains("payment")) | {name: .metadata.name, syncStatus: .status.sync.status, health: .status.health.status, lastSync: .status.operationState.finishedAt}'
+
+# Check Istio config changes
+kubectl -n payments get virtualservice,destinationrule --sort-by='.metadata.creationTimestamp' | tail -10
+```
+
+**Minute 5-7: Post initial findings to war room**
+
+```
+📊 STATUS UPDATE — Minute 5
+
+Errors: [X]% of /charge requests failing
+Error type: [status code]
+Scope: [all pods / specific pods / all regions / specific region]
+Start time: ~[HH:MM] UTC (approximately [X] minutes ago)
+Pod health: [Running/CrashLooping/OOM]
+Recent changes: [list any deploys, config changes, ArgoCD syncs]
+
+Current hypothesis: [based on what we see so far]
+Next action: [what I'm checking now]
+
+Budget impact: at 22x burn rate, we consume ~0.73% of budget per minute
+               71% remaining → hits 0% in approximately 97 minutes if unmitigated
+```
+
+**The budget math:**
+
+```
+22x burn rate means consuming budget 22x faster than sustainable
+Sustainable rate exhausts 100% in 30 days
+22x → exhausts 100% in 30/22 = 1.36 days = 32.7 hours
+From 71% remaining: 0.71 × 32.7 hours = 23.2 hours until budget exhaustion
+
+BUT more importantly: at 22x burn rate with 40% error rate,
+NovaMart is losing 40% of payment transactions right now.
+At $50K/min revenue, that's $20K/min in lost transactions.
+Every minute of diagnosis costs $20K.
+```
+
+**Minute 7-10: Deep dive based on findings**
+
+This branches based on what minute 3-5 revealed. Proceeding to the scenario where we discover 502s...
+
+### 2. Minute 8 Diagnosis: 40% Error Rate, All 502s, Pods Running
+
+**Pattern analysis:**
+
+```
+502 Bad Gateway = the request reached the proxy/mesh layer but the
+                  upstream service returned an invalid response or
+                  was unreachable
+
+Pods Running + No restarts = the payment-svc containers are alive
+                             but something between the client and
+                             the pods is broken
+
+40% (not 100%) = some requests succeed, some fail
+                 → partial routing issue, not total outage
+```
+
+**This pattern is CLASSIC for a routing/mesh misconfiguration.** The pods are healthy (they can serve traffic), but some percentage of traffic is being routed to a destination that can't handle it.
+
+**Top 3 hypotheses in order of likelihood:**
+
+**Hypothesis 1 (Most Likely): Traffic routing misconfiguration — traffic split to a bad destination**
+
+```
+Evidence: 
+  - 502 = upstream unreachable (not 500 = app crash)
+  - Pods healthy = the real pods work fine
+  - 40% not 100% = traffic is SPLIT between working and broken destinations
+  - This ratio often maps to a weighted route or canary percentage
+
+Mechanism:
+  Istio VirtualService or Ingress rule changed → some % of /charge traffic
+  routed to a destination with 0 replicas, wrong port, or non-existent service
+  → envoy proxy gets connection refused → returns 502
+
+Check:
+```
+
+```bash
+kubectl -n payments get virtualservice -o yaml | grep -A 20 "/charge"
+kubectl -n payments get destinationrule -o yaml
+kubectl -n payments get deploy -l app=payment-svc
+# Look for: canary deployments, weight-based routing, new destinations
+```
+
+**Hypothesis 2: Downstream dependency failure (Stripe API, database)**
+
+```
+Evidence supporting:
+  - 502 can also mean payment-svc made a call to a downstream that
+    failed, and the error propagated back as 502 through the mesh
+
+Evidence against:
+  - If Stripe was down, we'd expect 504 (timeout) or 503, not 502
+  - 40% failure is unusual for Stripe (usually 100% or 0%)
+  - Pods not restarting means the app isn't crashing from the errors
+
+Check:
+```
+
+```promql
+# Check Stripe call success rate
+sum by (status) (
+  rate(http_client_request_duration_seconds_count{
+    service="payment-svc",
+    remote=~".*stripe.*"
+  }[5m])
+)
+```
+
+**Hypothesis 3: Resource exhaustion — envoy sidecar or connection pool**
+
+```
+Evidence supporting:
+  - 502 from envoy when sidecar can't proxy to the local container
+  - Partial failure (40%) could indicate thread/connection pool saturation
+
+Evidence against:
+  - Usually causes gradual degradation, not step-function failure
+  - Would expect to see increasing latency before errors
+
+Check:
+```
+
+```promql
+# Envoy sidecar metrics
+envoy_cluster_upstream_cx_active{cluster_name="inbound|8080||"}
+envoy_cluster_upstream_cx_overflow{cluster_name="inbound|8080||"}
+```
+
+### 3. Minute 12 Mitigation: VirtualService Routing to 0-Replica Canary
+
+**Root cause confirmed:** ArgoCD auto-synced a VirtualService that routes some percentage of `/charge` traffic to `payment-svc-canary` which has 0 replicas. Envoy tries to route to it, gets no healthy endpoints, returns 502.
+
+**Fix in under 2 minutes — TWO options, do the FASTEST one first:**
+
+**Option A (fastest — ~30 seconds): Delete or patch the VirtualService to remove the canary route:**
+
+```bash
+# FIRST: Check what the VirtualService looks like
+kubectl -n payments get virtualservice payment-svc-vs -o yaml
+
+# You'll see something like:
+# http:
+#   - match:
+#       - uri:
+#           prefix: /charge
+#     route:
+#       - destination:
+#           host: payment-svc
+#           port:
+#             number: 8080
+#         weight: 60
+#       - destination:
+#           host: payment-svc-canary    ← THE PROBLEM
+#           port:
+#             number: 8080
+#         weight: 40                    ← 40% of traffic going here = 40% errors
+
+# FIX: Patch to send 100% to the working service
+kubectl -n payments patch virtualservice payment-svc-vs --type='json' \
+  -p='[
+    {"op":"replace","path":"/spec/http/0/route","value":[
+      {"destination":{"host":"payment-svc","port":{"number":8080}},"weight":100}
+    ]}
+  ]'
+
+# Verify immediately
+kubectl -n payments get virtualservice payment-svc-vs -o jsonpath='{.spec.http[0].route[*].destination.host}'
+# Expected: payment-svc (only one destination, no canary)
+```
+
+**Option B (if ArgoCD will immediately re-sync and revert your fix):**
+
+```bash
+# Disable ArgoCD auto-sync on this app FIRST
+argocd app set payment-svc --sync-policy none
+
+# Verify auto-sync is disabled
+argocd app get payment-svc | grep "Sync Policy"
+# Expected: Sync Policy: <none>
+
+# THEN apply the VirtualService fix
+kubectl -n payments patch virtualservice payment-svc-vs --type='json' \
+  -p='[
+    {"op":"replace","path":"/spec/http/0/route","value":[
+      {"destination":{"host":"payment-svc","port":{"number":8080}},"weight":100}
+    ]}
+  ]'
+```
+
+**⚠️ CRITICAL: If you don't disable ArgoCD auto-sync first, ArgoCD will detect the drift within 3 minutes (default sync interval) and re-apply the broken VirtualService. You'll fix it, it'll break again, you'll fix it, it'll break again — while $20K/min is burning.**
+
+```bash
+# Verify the fix is working (within 30 seconds of applying)
+# Error rate should drop to near-zero almost immediately
+# because Istio applies VirtualService changes within seconds
+
+# Quick check from command line:
+for i in $(seq 1 10); do
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    https://api.novamart.com/charge \
+    -H "Content-Type: application/json" \
+    -d '{"test": true}'
+  sleep 1
+done
+# Should see 200s, not 502s
+
+# Verify in Prometheus (may take 30-60s for rate() to reflect)
+# In Grafana or curl:
+curl -s "http://prometheus:9090/api/v1/query?query=sum(rate(http_requests_total{service=\"payment-svc\",endpoint=\"/charge\",status=~\"5..\"}[1m]))" | jq '.data.result[0].value[1]'
+# Should be dropping toward 0
+```
+
+**Post-mitigation Slack update:**
+
+```
+✅ MITIGATED — Minute 14
+
+Root cause: ArgoCD auto-synced a VirtualService that routed 40% of 
+/charge traffic to payment-svc-canary (0 replicas). Envoy returned 
+502 for all requests to the canary destination.
+
+Fix applied: Patched VirtualService to route 100% to payment-svc.
+ArgoCD auto-sync disabled on payment-svc app to prevent revert.
+
+Error rate: dropping to baseline (confirm in 2 minutes)
+Duration: ~[X] minutes
+Budget impact: approximately [X]% consumed during incident
+
+Status page: updating to "Monitoring"
+Next: confirm recovery, then postmortem scheduling
+
+⚠️ DO NOT re-enable ArgoCD auto-sync until the broken VirtualService 
+is fixed in Git.
+```
+
+```bash
+# Update status page to monitoring
+curl -X PATCH "https://api.statuspage.io/v1/pages/${PAGE_ID}/incidents/${INCIDENT_ID}" \
+  -H "Authorization: OAuth ${STATUSPAGE_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "incident": {
+      "status": "monitoring",
+      "body": "We have identified and resolved the issue causing payment processing errors. We are monitoring the fix. Some customers may have experienced failed checkout attempts between approximately 02:47 and 03:01 UTC."
+    }
+  }'
+```
+
+### 4. "Where We Got Lucky" — Postmortem Section
+
+```markdown
+## Where We Got Lucky
+
+1. **The canary had 0 replicas, not 1 replica with a bug.**
+   If the canary had been running with a partially-functional version 
+   (e.g., accepting requests but charging wrong amounts), we would 
+   have had 40% of payments processed incorrectly instead of 40% 
+   failing. Silent data corruption is infinitely worse than loud 
+   failures. The 502s were immediately visible in metrics and 
+   triggered the burn rate alert within minutes. A canary silently 
+   charging wrong amounts could have run for hours before anyone 
+   noticed — via customer complaints, not monitoring.
+
+2. **The error budget was at 71%, not 15%.**
+   At 22x burn rate, we consumed approximately 0.73% of budget per 
+   minute. The incident lasted ~14 minutes = ~10.2% budget consumed. 
+   If we had been at 15% remaining (which we WERE two months ago 
+   after the last SEV1), this incident would have breached the SLO 
+   and triggered a deployment freeze — during a week with three 
+   planned feature launches. The current budget headroom was 
+   coincidental, not by design.
+
+3. **The on-call engineer knew to check ArgoCD sync history.**
+   Our runbook for 502 errors focuses on pod health and downstream 
+   dependencies. It does NOT include "check for recent Istio config 
+   changes via GitOps." The on-call happened to check ArgoCD based 
+   on personal experience, not because the runbook directed them 
+   there. A less experienced on-call would have spent 20+ additional 
+   minutes investigating pods and Stripe before thinking to check 
+   service mesh routing — consuming another ~15% of error budget.
+
+4. **This happened at 2:47 AM, not 2:47 PM.**
+   NovaMart's peak traffic is 11 AM - 3 PM. At peak, /charge handles 
+   approximately 500 req/s. At 2:47 AM, traffic is approximately 
+   50 req/s. The 40% error rate at 50 req/s = ~20 failed payments/s 
+   = ~$600/min in lost transactions. At peak, the same error rate = 
+   ~200 failed payments/s = ~$6,000/min. We lost approximately 
+   $8,400 in failed transactions. At peak, the same duration would 
+   have cost ~$84,000.
+
+5. **ArgoCD didn't re-sync during mitigation.**
+   ArgoCD's default sync interval is 3 minutes. We patched the 
+   VirtualService AND disabled auto-sync within ~2 minutes. If 
+   ArgoCD had re-synced before we disabled auto-sync, the broken 
+   config would have been re-applied and the incident would have 
+   extended by another investigation cycle. The timing was fortunate.
+```
+
+```markdown
+## Action Items Derived from "Where We Got Lucky"
+
+| # | Action | Owner | Priority | Addresses |
+|---|--------|-------|----------|-----------|
+| 1 | Add "Check recent ArgoCD syncs and Istio config changes" to 502 runbook | SRE | P1 | Lucky #3 |
+| 2 | ArgoCD sync policy for payment-svc: require manual sync for VirtualService/DestinationRule changes | Platform | P1 | Lucky #5 |
+| 3 | Add canary validation webhook: block VirtualService routes pointing to 0-replica deployments | Platform | P1 | Lucky #1 |
+| 4 | SLI for payment correctness (charge amount validation), not just availability | Payments | P2 | Lucky #1 |
+| 5 | Alert on ArgoCD sync events for production namespace with Slack notification | Platform | P2 | Lucky #3, #5 |
+```
+
+---
+
+## Q2: On-Call Process Design
+
+### 1. 90-Day On-Call Improvement Plan
+
+**Weeks 1-4: STOP THE BLEEDING (Reduce noise, build foundation)**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ WEEK 1: Audit and Classify Every Alert                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ Action 1: Export the last 30 days of PagerDuty alerts           │
+│                                                                 │
+│   curl -s "https://api.pagerduty.com/incidents?since=30d_ago    │
+│     &until=now&statuses[]=resolved&statuses[]=acknowledged"     │
+│     -H "Authorization: Token token=${PD_TOKEN}" | jq . > alerts.json │
+│                                                                 │
+│ Action 2: Categorize every alert into one of four buckets:      │
+│                                                                 │
+│   A. ACTIONABLE — Required human intervention, correct to page  │
+│   B. NOISY — Fired but required no action (auto-resolved,       │
+│      false positive, or below customer impact threshold)        │
+│   C. MISSING RUNBOOK — Was actionable but responder didn't      │
+│      know what to do                                            │
+│   D. DUPLICATE — Same root cause triggered multiple alerts      │
+│                                                                 │
+│ Metric: Calculate current Action Rate                           │
+│   Action Rate = (Bucket A) / (Total Alerts)                    │
+│   Target: Currently likely ~20%, goal is >80%                   │
+│                                                                 │
+│ Action 3: Identify the top 5 noisiest alerts by frequency       │
+│   jq '[.incidents[] | .service.summary] | group_by(.) |        │
+│     map({alert: .[0], count: length}) |                         │
+│     sort_by(-.count) | .[0:5]' alerts.json                     │
+│                                                                 │
+│   The Redis alert will be #1 or #2. Address it (see Q2.3)      │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ WEEK 2: Kill the Top 5 Noisy Alerts                             │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ For each of the top 5:                                          │
+│   - If never actionable → DELETE or downgrade to warning/ticket │
+│   - If sometimes actionable → tighten thresholds, add for:     │
+│     duration, or add inhibition rules                           │
+│   - If always actionable but missing runbook → write runbook    │
+│                                                                 │
+│ Specifically for the Redis alert (see Q2.3 for full analysis):  │
+│   - Fix the underlying issue OR adjust the threshold            │
+│   - This single fix eliminates ~5 pages/day = 35/week           │
+│   - That alone drops weekly pages from 15-25 to 10-20           │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ WEEK 3: Runbook Sprint                                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ Remaining actionable alerts need runbooks. For each alert:      │
+│                                                                 │
+│ Template:                                                       │
+│   1. What does this alert mean? (plain English)                 │
+│   2. What is the customer impact?                               │
+│   3. What dashboard do I open FIRST?                            │
+│   4. Decision tree: if X → do Y, if Z → do W                   │
+│   5. Escalation: when do I page the secondary/team lead?        │
+│   6. Mitigation commands (copy-pasteable)                       │
+│   7. Rollback procedure                                        │
+│                                                                 │
+│ Assign: Each service team writes runbooks for their alerts      │
+│ Deadline: End of week 3                                         │
+│ Enforce: Alert without runbook link = alert gets downgraded     │
+│          to ticket until runbook exists                          │
+│                                                                 │
+│ Add runbook_url annotation to every alert:                      │
+│                                                                 │
+│   annotations:                                                  │
+│     runbook: "https://wiki.novamart.internal/runbooks/{{ $labels.alertname }}" │
+│                                                                 │
+│ PagerDuty custom action: "Open Runbook" button in every page    │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ WEEK 4: On-Call Onboarding Kit + Dashboard                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ Build the "On-Call Home Dashboard" in Grafana:                  │
+│   Row 1: SLO status for all services (error budget remaining)   │
+│   Row 2: Active alerts (current firing alerts)                  │
+│   Row 3: Recent deployments (last 24h, all services)            │
+│   Row 4: Key business metrics (orders/min, payments/min)        │
+│                                                                 │
+│ Create on-call onboarding document:                             │
+│   - How to access PagerDuty, Grafana, kubectl, ArgoCD           │
+│   - First 5 minutes of any incident (checklist)                 │
+│   - Escalation matrix (who to call for what)                    │
+│   - VPN/access/credential setup                                 │
+│   - Link to the Home Dashboard                                  │
+│                                                                 │
+│ Shadow rotation: New on-call engineers shadow for 1 full         │
+│ rotation before going primary                                    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Weeks 5-8: BUILD MUSCLE (Process, training, accountability)**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ WEEK 5-6: On-Call Training Program                              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ Wheel of Misfortune sessions (simulated incidents):             │
+│   - Weekly 1-hour session                                       │
+│   - Facilitator injects a scenario, on-call engineer responds   │
+│   - Practice using runbooks, dashboards, escalation             │
+│   - Record common mistakes → improve runbooks                   │
+│                                                                 │
+│ Topics:                                                         │
+│   Week 5: "Payment-svc 502 errors" (use real Q1 scenario)       │
+│   Week 6: "Database failover during peak traffic"               │
+│   Week 7: "Cardinality bomb killing Prometheus"                 │
+│   Week 8: "Certificate expiry causing cascading TLS failures"   │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ WEEK 7-8: Alert Tuning Sprint + On-Call Feedback Loop           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ On-call handoff meeting (30 min, every rotation change):        │
+│   1. Outgoing on-call: "Here's what fired, here's what I did"   │
+│   2. Flag any alerts that were noisy or missing runbooks         │
+│   3. Incoming on-call: "Any ongoing issues I should know about?" │
+│   4. Action items from the rotation get filed as tickets         │
+│                                                                 │
+│ Alert review meeting (monthly, 1 hour):                         │
+│   - Review all alerts from the past month                       │
+│   - Score each alert (see Q2.4 scoring system)                  │
+│   - Delete/tune/improve based on scores                         │
+│   - Track Action Rate trend month-over-month                    │
+│                                                                 │
+│ Implement alert-level feedback in PagerDuty:                    │
+│   - After resolving, engineer rates: "Actionable? Y/N"          │
+│   - "Runbook helpful? Y/N"                                      │
+│   - Free-text: "What would have helped?"                        │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Weeks 9-12: MATURE (Measure, automate, sustain)**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ WEEK 9-10: Automation of Common Remediations                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ Identify the top 3 most frequent ACTIONABLE alerts              │
+│ For each, evaluate: can the mitigation be automated?            │
+│                                                                 │
+│ Example: "Pod OOM-killed" alert                                 │
+│   Manual response: kubectl rollout restart                      │
+│   Automated: Kubernetes handles this natively with restartPolicy│
+│   Fix: Ensure resource limits are set correctly, add VPA        │
+│                                                                 │
+│ Example: "Disk >90%" alert                                      │
+│   Manual response: SSH in, clean up logs/tmp                    │
+│   Automated: Log rotation policy + PVC auto-expansion           │
+│                                                                 │
+│ Goal: Reduce actionable alerts that require HUMAN action        │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ WEEK 11-12: Metrics Review + Process Certification              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ Present to engineering leadership:                              │
+│                                                                 │
+│ Metrics to track and present:                                   │
+│                                                                 │
+│ 1. Pages per week (target: <5 actionable pages)                 │
+│    Week 1 baseline: 15-25                                       │
+│    Week 12 target: 3-7                                          │
+│                                                                 │
+│ 2. Action Rate (target: >80%)                                   │
+│    Week 1 baseline: ~20%                                        │
+│    Week 12 target: >80%                                         │
+│                                                                 │
+│ 3. MTTA — Mean Time to Acknowledge (target: <5 min)             │
+│    Measured from PagerDuty                                      │
+│                                                                 │
+│ 4. MTTR — Mean Time to Resolve (target: <30 min for SEV2)       │
+│    Measured from incident creation to resolution                │
+│                                                                 │
+│ 5. Runbook coverage (target: 100% of paging alerts)             │
+│    Week 1 baseline: ~20%                                        │
+│    Week 12 target: 100%                                         │
+│                                                                 │
+│ 6. On-call satisfaction (quarterly survey, 1-5 scale)           │
+│    "Was on-call manageable this rotation?"                       │
+│    "Did you have the tools/runbooks you needed?"                │
+│    "Did you lose significant sleep?"                            │
+│                                                                 │
+│ 7. Alert quality score (see Q2.4)                               │
+│    Average across all alerts, trending up                       │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 2. Handling Engineers Who Refuse On-Call
+
+**The technical argument:**
+
+"You write the code, you understand it best. When `payment-svc` pages at 2 AM, the person who wrote the retry logic and knows the Stripe integration intimately will resolve the incident in 5 minutes. An SRE who's never seen the code will take 30 minutes — that's 25 minutes of additional customer impact at $50K/min.
+
+On-call isn't 'ops work.' It's the **feedback loop** that makes you a better engineer. Every on-call rotation teaches you what breaks in production, which directly improves the code you write. Engineers who never do on-call write code that's harder to operate, debug, and monitor — because they've never experienced the consequences of their design decisions at 2 AM.
+
+The alternative — a separate ops team that handles all production issues — is the pre-DevOps model. It creates a wall between 'people who write code' and 'people who deal with the consequences.' That wall produces worse software, slower incident response, and higher outage costs."
+
+**The organizational/cultural argument:**
+
+"On-call is shared responsibility across the engineering organization. This is a NovaMart engineering policy, not a request.
+
+That said — I hear you. If on-call feels unreasonable, let's look at why:
+
+1. **If the concern is noise:** We're actively fixing alert quality. By week 4, noisy pages drop by 60%+. On-call should mean 0-2 real pages per week, not 15-25.
+
+2. **If the concern is knowledge:** We have runbooks, shadowing rotations, and training. Nobody goes on primary on-call without a shadow rotation first and passing a Wheel of Misfortune exercise.
+
+3. **If the concern is compensation:** On-call should come with compensation — stipend per rotation, time-off-in-lieu for overnight pages, or equivalent. I'll advocate for this with leadership.
+
+4. **If the concern is fairness:** On-call rotation is shared equally across the team. No one person carries more than others. The schedule is published 6 weeks in advance. Swaps are allowed and encouraged.
+
+What I can't do is exempt individuals. If two engineers don't participate, the remaining team members carry a disproportionate burden — that's unfair AND it burns out the people who ARE participating, which means we lose them.
+
+Let's address your specific concerns. What would make on-call workable for you?"
+
+**If they still refuse after this conversation:**
+
+This becomes a management issue. Escalate to their engineering manager with:
+
+```
+"[Names] have declined to participate in the on-call rotation. 
+I've addressed their concerns about alert noise (we're reducing it), 
+training (we have a shadow program), and compensation (I've proposed 
+a stipend). The remaining concern is that they view production 
+operations as outside their role. 
+
+This is a team policy decision for you to enforce. The impact of 
+their non-participation is that [N] other engineers on the team 
+carry [X]% more on-call burden, which creates burnout and retention 
+risk for the engineers who ARE participating."
+```
+
+### 3. The Redis Alert That Fires 5x/Day
+
+**Step 1: Understand the alert**
+
+```bash
+# Pull the alert definition
+curl -s "http://prometheus:9090/api/v1/rules" | jq '.data.groups[].rules[] | select(.name == "RedisConnectionTimeout") '
+
+# Likely something like:
+# alert: RedisConnectionTimeout
+# expr: redis_connection_errors_total > 0
+# for: 1m
+# labels:
+#   severity: critical
+```
+
+**Step 2: Analyze the pattern**
+
+```promql
+# When does it fire? Look at the last 7 days
+redis_connection_errors_total
+# Or if it's a counter:
+rate(redis_connection_errors_total[5m])
+
+# Correlate with time of day
+# In Grafana: 7-day view, look for pattern
+```
+
+```promql
+# Is it always the same Redis instance?
+sum by (instance) (rate(redis_connection_errors_total[5m]))
+
+# Is it always the same client service?
+sum by (service) (rate(redis_connection_errors_total[5m]))
+
+# What's the actual impact?
+# Connection errors vs total connections:
+rate(redis_connection_errors_total[5m])
+/
+rate(redis_connections_total[5m])
+# If this is 0.001 (0.1%) → the alert threshold is too sensitive
+```
+
+**Step 3: Determine the root cause of the connection timeouts**
+
+```bash
+# Check Redis itself
+kubectl -n data exec -it redis-0 -- redis-cli info clients
+# Look at: connected_clients, blocked_clients, rejected_connections
+
+kubectl -n data exec -it redis-0 -- redis-cli info stats
+# Look at: total_connections_received, rejected_connections
+
+kubectl -n data exec -it redis-0 -- redis-cli info memory
+# Look at: used_memory vs maxmemory — is Redis under memory pressure?
+
+# Check client-side connection pool config
+kubectl -n payments get configmap payment-svc-config -o yaml | grep -i redis
+# Look at: pool size, timeout settings, retry config
+```
+
+**Most likely scenario:** Redis is healthy overall, but brief connection blips occur during:
+- Redis Sentinel failover tests
+- Kubernetes pod scheduling on the Redis node
+- Connection pool recycling
+- Network micro-partitions
+
+The errors are **transient**, the application **retries and succeeds**, and there's **zero customer impact** — but the alert fires on ANY error, so 5 timeouts out of 500,000 connections triggers 5 pages.
+
+**Step 4: Fix — restructure the alert, don't delete it**
+
+```yaml
+# BEFORE (broken): alerts on any error, no rate context, no impact assessment
+- alert: RedisConnectionTimeout
+  expr: redis_connection_errors_total > 0
+  for: 1m
+  labels:
+    severity: critical
+
+# AFTER (correct): alerts on error RATE that indicates real impact
+groups:
+  - name: redis-alerts
+    rules:
+      # Alert only when error rate is meaningful relative to total traffic
+      - alert: RedisConnectionErrorRateHigh
+        expr: |
+          (
+            sum(rate(redis_connection_errors_total[5m]))
+            /
+            sum(rate(redis_connections_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Redis connection error rate {{ $value | humanizePercentage }}"
+          runbook: "https://wiki.novamart.internal/runbooks/redis-connection-errors"
+
+      # Critical only if sustained high error rate (actual Redis outage)
+      - alert: RedisConnectionErrorRateCritical
+        expr: |
+          (
+            sum(rate(redis_connection_errors_total[5m]))
+            /
+            sum(rate(redis_connections_total[5m]))
+          ) > 0.25
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Redis connection error rate {{ $value | humanizePercentage }} — likely Redis outage"
+          runbook: "https://wiki.novamart.internal/runbooks/redis-outage"
+
+      # Also alert if Redis is completely unreachable (up metric)
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Redis instance {{ $labels.instance }} is DOWN"
+```
+
+**This preserves the safety net** (we still alert if Redis has a real problem) while eliminating the noise (5 transient timeouts/day no longer page anyone).
+
+**Step 5: Verify the fix**
+
+```promql
+# After deploying, confirm the error rate stays below 5%
+sum(rate(redis_connection_errors_total[5m]))
+/
+sum(rate(redis_connections_total[5m]))
+# Should be << 0.05, meaning the warning won't fire
+
+# Set up a test: manually trigger a Redis connection error
+# and verify it only fires if the RATE threshold is breached
+```
+
+### 4. Alert Quality Scoring System
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ NOVAMART ALERT QUALITY SCORECARD                                │
+│                                                                 │
+│ Every alert is scored monthly on 5 dimensions (1-5 each)        │
+│ Maximum score: 25/25                                            │
+│ Minimum to remain as a paging alert: 15/25                      │
+│ Below 10/25: Delete or fundamentally redesign                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ DIMENSION 1: ACTIONABILITY (Does it require human action?)      │
+│                                                                 │
+│   5: Every firing requires specific human intervention          │
+│   4: >80% of firings require action                             │
+│   3: 50-80% require action                                      │
+│   2: 20-50% require action (noisy)                              │
+│   1: <20% require action (mostly noise)                         │
+│                                                                 │
+│   Measured by: On-call feedback ("Was this actionable? Y/N")    │
+│                                                                 │
+│ DIMENSION 2: URGENCY (Does it need immediate response?)         │
+│                                                                 │
+│   5: Customer-facing impact if not addressed in <15 minutes     │
+│   4: Customer impact within 1 hour                              │
+│   3: Internal impact within 4 hours                             │
+│   2: Can wait until next business day                           │
+│   1: Can wait until next sprint                                 │
+│                                                                 │
+│   If score ≤ 2: Should be a ticket, not a page                  │
+│                                                                 │
+│ DIMENSION 3: COMPLETENESS (Does responder know what to do?)     │
+│                                                                 │
+│   5: Runbook exists, tested, includes exact commands,           │
+│      escalation path, and rollback procedure                    │
+│   4: Runbook exists but missing some details                    │
+│   3: Runbook exists but is outdated or vague                    │
+│   2: No runbook, but alert description gives some guidance      │
+│   1: No runbook, no description, responder has to guess         │
+│                                                                 │
+│ DIMENSION 4: ACCURACY (Signal-to-noise ratio)                   │
+│                                                                 │
+│   5: Zero false positives in the past month                     │
+│   4: 1-2 false positives per month                              │
+│   3: 1 false positive per week                                  │
+│   2: Multiple false positives per week                          │
+│   1: Fires daily with false positives                           │
+│                                                                 │
+│   Measured by: (True positives) / (Total firings)               │
+│                                                                 │
+│ DIMENSION 5: CUSTOMER CORRELATION (Does it predict impact?)     │
+│                                                                 │
+│   5: Fires if and only if customers are impacted                │
+│   4: Strongly correlated with customer impact                   │
+│   3: Sometimes fires without customer impact (leading indicator)│
+│   2: Weak correlation with customer experience                  │
+│   1: No measurable correlation with customer experience         │
+│                                                                 │
+│   Measured by: correlation between alert and SLI degradation    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Implementation — automated scoring where possible:**
+
+```yaml
+# Recording rules for automated alert quality metrics
+groups:
+  - name: alert-quality-metrics
+    interval: 1m
+    rules:
+      # Track how often each alert fires
+      - record: alert:firing_count:monthly
+        expr: |
+          count_over_time(ALERTS{alertstate="firing"}[30d])
+
+      # Track auto-resolution (likely false positives)
+      - record: alert:auto_resolved_ratio:monthly
+        expr: |
+          count_over_time(ALERTS{alertstate="firing"}[30d] @ end() unless ALERTS{alertstate="firing"}[30d] @ start())
+          /
+          count_over_time(ALERTS{alertstate="firing"}[30d])
+```
+
+**Monthly review process:**
+
+```markdown
+## Alert Quality Review — [Month]
+
+| Alert | Fires/mo | Action Rate | Has Runbook | Avg Score | Action |
+|-------|----------|-------------|-------------|-----------|--------|
+| RedisTimeout | 150 | 5% | No | 6/25 | DELETE, replace with rate-based |
+| PaymentSvcHighBurn | 3 | 100% | Yes | 23/25 | No change |
+| HighMemory | 45 | 30% | Partial | 11/25 | Tune threshold, complete runbook |
+| CertExpiry30d | 2 | 100% | Yes | 20/25 | No change (ticket, not page) |
+
+### Decisions
+- Alerts scoring <10/25: Must be fixed or deleted by next review
+- Alerts scoring 10-14/25: Must have improvement plan filed as ticket
+- Alerts scoring ≥15/25: No action required
+- New alerts must score ≥15/25 at first review or get demoted to ticket
+```
+
+---
+
+## Q3: Postmortem Under Pressure
+
+### 1. Handling the VP's Demand for Individual Accountability
+
+**Exact words:**
+
+"Thank you for raising that, [VP name]. I understand the board wants accountability, and they'll get it — but the most effective form of accountability is fixing the systems that allowed this to happen, not identifying an individual to blame.
+
+Here's why I say that specifically: If we name an individual as responsible, we get two outcomes — both bad. First, that engineer and everyone watching learns to hide mistakes instead of reporting them quickly. Our mean-time-to-detect goes up because people cover their tracks instead of raising their hand. Second, we fix nothing systemic — the same failure mode will recur with a different engineer next quarter.
+
+What I can give the board is something much more valuable: 'Here are the three systemic gaps that allowed this incident, here are the specific fixes with owners and deadlines, and here is the verification plan that proves the fixes work.' That's accountability that actually prevents the next outage.
+
+Can we proceed with identifying those systemic gaps? I think we'll find that the root cause isn't a person — it's a process that let a risky change reach production without the right safeguards."
+
+**If the VP pushes back ("The board specifically asked WHO"):**
+
+"I'd suggest framing it to the board as: 'The change was deployed by a team member following our standard process — the process itself lacked adequate safeguards.' The accountability sits with the engineering organization for not having those safeguards, and here's the plan to fix it. I can help you draft that summary if that would be useful.
+
+Naming an individual to the board creates legal and HR risk as well. [VP name], perhaps we can discuss the board communication separately after this meeting — I want to make sure we get the most out of this postmortem with the full team present."
+
+### 2. Redirecting the Tech Lead's Blame Comment
+
+The tech lead said: *"If we had just reviewed the PR properly, none of this would have happened."*
+
+**Exact words:**
+
+"That's an interesting thread to pull on, [tech lead name]. Let's dig into it — but let's reframe slightly. Instead of 'we should have reviewed the PR properly,' let's ask: **what about our review process made it possible for this to slip through?**
+
+Was the PR review checklist missing a specific check for this type of change? Was the reviewer under time pressure because of sprint commitments? Was the risk not visible in the diff because the dangerous behavior was in a downstream interaction that doesn't show up in a code review?
+
+I'm asking because 'review PRs better' isn't an action item — it's a wish. 'Add automated check X to the CI pipeline that catches this specific pattern' IS an action item. Let's find the specific, implementable fix.
+
+[Developer name who made the change], you have the most context here — can you walk us through what the PR looked like? What did the diff show, and what would have made the risk more visible?"
+
+**What this does:**
+1. Validates the tech lead's concern (doesn't dismiss them)
+2. Redirects from "who failed" to "what systemic gap exists"
+3. Converts a blame statement into an investigation question
+4. Explicitly brings in the developer as a contributor, not a defendant
+
+### 3. Creating Safety for the Developer
+
+**Before the meeting — private Slack DM to the developer:**
+
+```
+Hey [name] — I'm facilitating the postmortem for last week's incident.
+I want you to know: this is a blameless process. You are not in trouble. 
+The code change was the trigger, but the root cause is always systemic — 
+our systems should have caught this before it reached production.
+
+Your perspective is the most valuable in the room because you have the 
+deepest context on what happened. I'll be asking you to walk through the 
+timeline from your point of view. Just describe what happened factually — 
+what you saw, what you did, what you expected to happen.
+
+If at any point the conversation feels like it's becoming personal, I'll 
+redirect it. That's my job as facilitator. You're safe.
+
+See you at 2 PM.
+```
+
+**During the meeting — after the tech lead's comment has been redirected:**
+
+"[Developer name], you're the person with the most context on this change. Can you walk us through the timeline? Start from when you picked up the ticket — what did you build, what was the review process, and what happened when it deployed?
+
+I want to be explicit: we're doing this to understand the sequence of events, not to assign blame. Every person in this room has shipped a change that caused an incident or will in the future — that's normal in complex systems. What matters is what we learn."
+
+**If the developer is still visibly anxious and not contributing:**
+
+"Let me make this easier. [Developer name], I've got the timeline from the logs and metrics. Let me share what I see, and you can correct or add context where I'm wrong."
+
+Then present the factual timeline yourself, pausing at key decision points:
+
+"At this point, the PR was approved and merged. [Developer name], what did the CI pipeline show at this stage? Did it run any checks specific to Istio configurations?"
+
+**This technique:**
+- Removes the burden of self-narration from a stressed person
+- Gives them the role of "fact-checker" instead of "defendant"
+- Uses specific questions that have factual (not judgmental) answers
+- Demonstrates that you've already done the investigation and aren't on a witch hunt
+
+### 4. Undone Action Items from 2 Months Ago
+
+**Address it directly in the postmortem:**
+
+"Before we close, I want to flag something. We have two action items from the October postmortem that are still open. [Read them aloud.] I'm not calling anyone out — but I want us to look at this as a system problem. If action items routinely don't get done, our postmortem process is generating paperwork, not improvement. Every undone action item is a bet that the failure mode won't recur. Sometimes that bet pays off. Sometimes you get today's incident.
+
+Let me ask the group: why didn't these get done? Were they too vague? Too large? Not prioritized by product? Assigned to someone who was pulled to other work?"
+
+**Systemic fix — postmortem action item lifecycle:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ POSTMORTEM ACTION ITEM LIFECYCLE                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ 1. CREATION (during postmortem):                                │
+│    - Every action item gets: Owner, Priority, Due Date          │
+│    - P1 action items: due within 1 week                         │
+│    - P2 action items: due within 1 sprint (2 weeks)             │
+│    - P3 action items: due within 1 month                        │
+│    - Action items without due dates are not action items        │
+│                                                                 │
+│ 2. TRACKING:                                                    │
+│    - Action items are filed as Jira tickets (not just in the    │
+│      postmortem doc — docs get forgotten, tickets get tracked)  │
+│    - Tagged with label: "postmortem-action"                     │
+│    - Linked to the postmortem document                          │
+│                                                                 │
+│ 3. REVIEW:                                                      │
+│    - Weekly SRE standup: review open postmortem action items     │
+│    - Overdue items escalated to team lead, then to eng manager  │
+│    - Monthly leadership report includes:                        │
+│      "X of Y postmortem actions completed on time"              │
+│                                                                 │
+│ 4. CLOSURE:                                                     │
+│    - Action item isn't "done" until it's VERIFIED               │
+│    - "Add alert for X" → done when alert exists AND has fired   │
+│      in a test scenario                                         │
+│    - "Fix deployment pipeline" → done when the same failure     │
+│      mode is tested and confirmed blocked                       │
+│                                                                 │
+│ 5. ESCALATION LADDER:                                           │
+│    - 1 week overdue: Slack reminder to owner                    │
+│    - 2 weeks overdue: Discussed in team standup                 │
+│    - 3 weeks overdue: Escalated to engineering manager          │
+│    - 4+ weeks overdue: Flagged in monthly leadership review     │
+│                                                                 │
+│ 6. MEASUREMENT:                                                 │
+│    - Postmortem Action Completion Rate (target: >90% on time)   │
+│    - Median Time to Complete postmortem actions                  │
+│    - Recurrence Rate: % of incidents where a previous           │
+│      postmortem action would have prevented/mitigated           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Automated tracking:**
+
+```bash
+# Jira JQL to find overdue postmortem actions
+jql = 'labels = "postmortem-action" AND status != Done AND due < now()'
+
+# Weekly Slack report (cron job or Jira automation)
+# Posts to #sre-postmortem-actions every Monday:
+```
+
+```python
+# postmortem_action_tracker.py
+import jira
+import slack_sdk
+
+client = jira.JIRA(server=JIRA_URL, token_auth=JIRA_TOKEN)
+
+overdue = client.search_issues(
+    'labels = "postmortem-action" AND status != Done AND due < now()',
+    maxResults=50
+)
+
+if overdue:
+    blocks = [{
+        "type": "header",
+        "text": {"type": "plain_text", "text": f"⚠️ {len(overdue)} Overdue Postmortem Action Items"}
+    }]
+    for issue in overdue:
+        days_overdue = (datetime.now() - issue.fields.duedate).days
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*<{JIRA_URL}/browse/{issue.key}|{issue.key}>*: {issue.fields.summary}\n"
+                        f"Owner: {issue.fields.assignee.displayName} | "
+                        f"Due: {issue.fields.duedate} | "
+                        f"*{days_overdue} days overdue*"
+            }
+        })
+
+    slack = slack_sdk.WebClient(token=SLACK_TOKEN)
+    slack.chat_postMessage(channel="#sre-postmortem-actions", blocks=blocks)
+```
+
+---
+
+## Q4: Chaos Engineering Game Day Design
+
+### 1. Executive Summary for VP Approval
+
+"NovaMart's payment system generates $72M/month. Our monitoring tells us when things ARE broken — but we have untested assumptions about what happens when infrastructure fails. A controlled game day lets us discover those blind spots on our terms (Wednesday 10 AM with the whole team watching) instead of discovering them on the customer's terms (Saturday 2 AM with one on-call engineer).
+
+We will run four experiments with escalating severity, each with a pre-defined abort condition that rolls back within 60 seconds. The engineering team will be on standby, and we'll start with non-production, moving to production only for experiments where we have high confidence. The business risk is a maximum of 2 minutes of degraded service for a subset of users — versus the 14-minute uncontrolled outage we had last month that cost $84K.
+
+The deliverable is a concrete list of gaps in our resilience — the things we think work but haven't proven. Every FAANG company runs game days; the question isn't whether we'll have failures, it's whether we discover them on our schedule or the customer's."
+
+### 2. Four Experiments — Escalating Severity
+
+**Experiment 1: Single Pod Kill (Low Risk)**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ EXPERIMENT 1: Pod Termination — payment-svc                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ Hypothesis: "If a single payment-svc pod is killed, Kubernetes  │
+│ will reschedule it within 30 seconds and the service will       │
+│ maintain its 99.95% availability SLO with zero customer impact."│
+│                                                                 │
+│ Injection method:                                               │
+│   kubectl -n payments delete pod payment-svc-<hash> --grace-period=0 │
+│                                                                 │
+│ Pre-conditions:                                                 │
+│   - payment-svc has ≥3 replicas running                         │
+│   - PodDisruptionBudget is configured (minAvailable: 2)         │
+│   - Verify current SLI is healthy before starting               │
+│                                                                 │
+│ Success criteria (in SLI terms):                                │
+│   ✅ sli:payment_charge_availability:ratio_rate5m > 0.999       │
+│      (no measurable drop in availability)                       │
+│   ✅ histogram_quantile(0.99, ...) < 2s                         │
+│      (p99 latency stays within SLO)                             │
+│   ✅ New pod reaches Ready within 30 seconds                    │
+│   ✅ Zero 5xx errors during the experiment                      │
+│                                                                 │
+│ Abort condition:                                                │
+│   IF error_rate > 1% for > 30 seconds                           │
+│   OR p99_latency > 5s for > 30 seconds                          │
+│   THEN: Abort (pod is already being replaced by K8s)            │
+│   Recovery: kubectl -n payments scale deploy/payment-svc --replicas=5 │
+│                                                                 │
+│ Blast radius: 1 pod out of 3+ → ~33% capacity reduction         │
+│ Expected duration: 2 minutes observation window                 │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Experiment 2: Dependency Latency Injection (Medium Risk)**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ EXPERIMENT 2: Inject 3-second latency on payment-svc → Stripe   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ Hypothesis: "If Stripe API responses are delayed by 3 seconds,  │
+│ payment-svc's circuit breaker will open after 5 consecutive     │
+│ slow responses, returning a fast-fail to clients within 500ms   │
+│ instead of letting the latency cascade to order-svc."           │
+│                                                                 │
+│ Injection method (Istio fault injection):                       │
+│                                                                 │
+│   apiVersion: networking.istio.io/v1beta1                       │
+│   kind: VirtualService                                          │
+│   metadata:                                                     │
+│     name: stripe-fault-injection                                │
+│     namespace: payments                                         │
+│   spec:                                                         │
+│     hosts:                                                      │
+│       - api.stripe.com                                          │
+│     http:                                                       │
+│       - fault:                                                  │
+│           delay:                                                │
+│             percentage:                                         │
+│               value: 100                                        │
+│             fixedDelay: 3s                                      │
+│         route:                                                  │
+│           - destination:                                        │
+│               host: api.stripe.com                              │
+│                                                                 │
+│ Success criteria:                                               │
+│   ✅ Circuit breaker opens within 30 seconds                    │
+│   ✅ payment-svc returns 503 with retry-after header            │
+│      (fast-fail, not slow-fail)                                 │
+│   ✅ order-svc handles the 503 gracefully (queues the order     │
+│      for retry, doesn't crash)                                  │
+│   ✅ p99 latency of order-svc stays < 5s (doesn't inherit       │
+│      the 3s injection)                                          │
+│                                                                 │
+│ Abort condition:                                                │
+│   IF order-svc error rate > 5% for > 60 seconds                 │
+│   OR payment-svc p99 > 10s for > 60 seconds                     │
+│   OR any service starts crash-looping                           │
+│   THEN:                                                         │
+│     kubectl -n payments delete virtualservice stripe-fault-injection │
+│                                                                 │
+│ Blast radius: All Stripe-bound requests from payment-svc         │
+│ Expected duration: 5 minutes                                     │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Experiment 3: Availability Zone Failure (High Risk)**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ EXPERIMENT 3: Simulate us-east-1a AZ failure                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ Hypothesis: "If AZ us-east-1a becomes unavailable, NovaMart's   │
+│ services will automatically failover to us-east-1b and 1c with  │
+│ <30 seconds of impact. The ALB health checks will drain 1a      │
+│ targets within 15 seconds, RDS Multi-AZ will failover within    │
+│ 30 seconds, and ElastiCache will promote a replica within 20    │
+│ seconds."                                                       │
+│                                                                 │
+│ Injection method:                                               │
+│   # Block all traffic from AZ us-east-1a nodes                  │
+│   # Using AWS FIS (Fault Injection Simulator):                  │
+│                                                                 │
+│   aws fis create-experiment-template \                           │
+│     --description "AZ failure simulation" \                     │
+│     --targets '{                                                │
+│       "az-nodes": {                                             │
+│         "resourceType": "aws:ec2:instance",                     │
+│         "selectionMode": "ALL",                                 │
+│         "resourceTags": {"topology.kubernetes.io/zone": "us-east-1a"}, │
+│         "filters": [{"path":"State.Name","values":["running"]}] │
+│       }                                                         │
+│     }' \                                                        │
+│     --actions '{                                                │
+│       "az-failure": {                                           │
+│         "actionId": "aws:ec2:send-spot-instance-interruptions", │
+│         "parameters": {},                                       │
+│         "targets": {"Instances": "az-nodes"}                    │
+│       }                                                         │
+│     }' \                                                        │
+│     --stop-conditions '[{                                       │
+│       "source": "aws:cloudwatch:alarm",                         │
+│       "value": "arn:aws:cloudwatch:us-east-1:123456789012:alarm:GameDayAbort" │
+│     }]' \                                                       │
+│     --role-arn arn:aws:iam::123456789012:role/FISRole            │
+│                                                                 │
+│   # Or simpler — cordon and drain AZ nodes:                     │
+│   for node in $(kubectl get nodes -l topology.kubernetes.io/zone=us-east-1a -o name); do │
+│     kubectl cordon $node                                        │
+│     kubectl drain $node --grace-period=0 --force --ignore-daemonsets │
+│   done                                                          │
+│                                                                 │
+│ Success criteria:                                               │
+│   ✅ Overall availability > 99.9% during the failover window    │
+│   ✅ RDS failover completes within 30 seconds                   │
+│   ✅ ALB shifts traffic to healthy AZs within 15 seconds        │
+│   ✅ No data loss (all committed transactions preserved)        │
+│   ✅ Pods rescheduled to other AZs within 60 seconds            │
+│                                                                 │
+│ Abort condition:                                                │
+│   IF overall_error_rate > 10% for > 2 minutes                   │
+│   OR any data store reports data loss/corruption                │
+│   OR payment processing completely halted for > 60 seconds      │
+│   THEN:                                                         │
+│     # Uncordon all nodes immediately                            │
+│     for node in $(kubectl get nodes -l topology.kubernetes.io/zone=us-east-1a -o name); do │
+│       kubectl uncordon $node                                    │
+│     done                                                        │
+│     #                                                           |
+│     # Uncordon all nodes immediately                            │
+│     for node in $(kubectl get nodes -l topology.kubernetes.io/zone=us-east-1a -o name); do │
+│       kubectl uncordon $node                                    │
+│     done                                                        │
+│     # Or if using FIS: stop the experiment                      │
+│     aws fis stop-experiment --id <experiment-id>                │
+│                                                                 │
+│ Blast radius: ~33% of compute capacity (1 of 3 AZs)            │
+│ Expected duration: 10 minutes observation after injection       │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Experiment 4: Cascading Failure — Payment Provider Outage During Peak (Highest Risk)**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ EXPERIMENT 4: Complete Stripe API outage + traffic surge        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ Hypothesis: "If Stripe becomes completely unreachable during    │
+│ 2x normal traffic, payment-svc's circuit breaker opens within   │
+│ 10 seconds, order-svc queues affected orders for retry,         │
+│ customer-facing error rate stays below 5%, and the system       │
+│ recovers automatically within 60 seconds of Stripe returning."  │
+│                                                                 │
+│ Injection method (two simultaneous injections):                 │
+│                                                                 │
+│   # Injection A: Block all Stripe traffic via NetworkPolicy     │
+│   apiVersion: networking.k8s.io/v1                              │
+│   kind: NetworkPolicy                                           │
+│   metadata:                                                     │
+│     name: block-stripe-gameday                                  │
+│     namespace: payments                                         │
+│   spec:                                                         │
+│     podSelector:                                                │
+│       matchLabels:                                              │
+│         app: payment-svc                                        │
+│     policyTypes:                                                │
+│       - Egress                                                  │
+│     egress:                                                     │
+│       - to:                                                     │
+│         # Allow everything EXCEPT Stripe's IP ranges            │
+│         - ipBlock:                                              │
+│             cidr: 0.0.0.0/0                                     │
+│             except:                                             │
+│               - 3.18.12.63/32    # Stripe API IPs               │
+│               - 3.130.192.163/32 # (example — verify current)   │
+│               - 13.110.215.0/24                                 │
+│                                                                 │
+│   # Injection B: Generate 2x traffic via load generator         │
+│   # Using k6 or Locust pointed at order-svc /checkout           │
+│   k6 run --vus 200 --duration 5m loadtest-checkout.js           │
+│                                                                 │
+│ Success criteria:                                               │
+│   ✅ Circuit breaker opens within 10 seconds of Stripe block    │
+│   ✅ payment-svc returns fast-fail (503) within 500ms           │
+│      (not hanging for timeout duration)                         │
+│   ✅ order-svc enqueues failed orders to DLQ/retry queue        │
+│   ✅ Customer-facing error message is graceful ("Payment is     │
+│      temporarily unavailable, your order is saved")             │
+│   ✅ No cascading failure to other services (cart-svc,          │
+│      search-svc unaffected)                                     │
+│   ✅ When Stripe is unblocked, system recovers within 60s       │
+│   ✅ Queued orders are retried and processed successfully       │
+│                                                                 │
+│ Abort condition:                                                │
+│   IF any non-payment service error rate > 5% for > 30 seconds   │
+│   OR payment-svc pods start OOM/crash-looping                   │
+│   OR order-svc DLQ depth > 10,000 (runaway queue growth)        │
+│   OR any database connection pool exhaustion detected           │
+│   THEN:                                                         │
+│     kubectl -n payments delete networkpolicy block-stripe-gameday │
+│     # Stop the load generator                                   │
+│     k6 cloud abort <test-run-id>                                │
+│                                                                 │
+│ Blast radius: All payment processing                            │
+│ Expected duration: 5 minutes blocked, 5 minutes recovery        │
+│                                                                 │
+│ ⚠️ RUN THIS IN STAGING FIRST. Only run in production if         │
+│    Experiments 1-3 all passed and team is confident.            │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 3. Proving the Payments Team Has Untested Assumptions
+
+The payments team says "our service is fine." Pull these queries to show them what they **assume** works but have **never tested:**
+
+**Assumption 1: "Our circuit breaker works"**
+
+```promql
+# Has the circuit breaker EVER opened in production?
+sum(increase(circuit_breaker_state_transitions_total{
+  service="payment-svc",
+  to_state="open"
+}[90d]))
+
+# If this returns 0: the circuit breaker has NEVER been tested
+# in production. You're trusting untested code for your most
+# critical failure mode.
+```
+
+```
+If result = 0:
+  "Your circuit breaker has never opened in 90 days. That means 
+  either you've never had a downstream failure (unlikely) or your 
+  circuit breaker thresholds are misconfigured and it will never 
+  open. Do you want to find out which during a real Stripe outage 
+  at 2 AM, or during a controlled test at 10 AM with the team 
+  watching?"
+```
+
+**Assumption 2: "RDS failover is seamless"**
+
+```promql
+# When was the last RDS failover?
+aws rds describe-events \
+  --source-type db-instance \
+  --source-identifier novamart-payment-db \
+  --event-categories failover \
+  --duration 10080  # Last 7 days in minutes
+
+# Check if application handles failover gracefully
+# Look for connection errors during any past failover:
+sum(rate(db_connection_errors_total{service="payment-svc"}[5m]))
+# Overlay with RDS failover events — were there error spikes?
+```
+
+```
+If no recent failovers:
+  "Your RDS hasn't failed over in months. RDS Multi-AZ failover 
+  takes 30-60 seconds. During that time, does payment-svc retry 
+  connections? Does it return 503 or does it hang? Does the 
+  connection pool recover automatically or does it need a pod 
+  restart? You don't know. Let's find out."
+```
+
+**Assumption 3: "We handle pod failures gracefully"**
+
+```promql
+# How are pods distributed across AZs?
+count by (topology_kubernetes_io_zone) (
+  kube_pod_info{namespace="payments", pod=~"payment-svc.*"}
+)
+
+# If all pods are in one AZ:
+# AZ failure = 100% payment outage, not 33%
+```
+
+```promql
+# Is there a PodDisruptionBudget?
+kube_poddisruptionbudget_status_current_healthy{namespace="payments"}
+
+# If no PDB exists:
+# A node drain during maintenance can kill ALL pods simultaneously
+```
+
+```bash
+kubectl -n payments get pdb
+# If empty: "You have no PodDisruptionBudget. During a node 
+# upgrade, Kubernetes can terminate all your pods simultaneously. 
+# That's a payment outage."
+```
+
+**Assumption 4: "Our retry logic works"**
+
+```promql
+# Has retry logic ever triggered successfully?
+sum(increase(http_client_retries_total{service="payment-svc"}[30d]))
+
+# What's the retry success rate when it does trigger?
+sum(rate(http_client_retries_total{service="payment-svc", result="success"}[30d]))
+/
+sum(rate(http_client_retries_total{service="payment-svc"}[30d]))
+
+# If retry count = 0 or retry success rate is unknown:
+# "You've never actually retried in production. Is the retry 
+# code even working? Is it retrying on the right error codes? 
+# Is it using exponential backoff or hammering the downstream?"
+```
+
+**Assumption 5: "Our timeout settings are correct"**
+
+```promql
+# What's the actual p99 latency to Stripe?
+histogram_quantile(0.99,
+  sum by (le) (
+    rate(http_client_request_duration_seconds_bucket{
+      service="payment-svc",
+      remote=~".*stripe.*"
+    }[7d])
+  )
+)
+
+# What's the configured timeout?
+# If p99 = 1.2s and timeout = 30s:
+# "Your timeout is 25x your p99 latency. If Stripe slows down,
+# your threads will be blocked for 30 seconds each before timing
+# out. At 500 req/s, that's 15,000 blocked threads before the
+# first timeout fires. Your pod will OOM before the timeout helps."
+```
+
+**Present all of this as a one-page summary:**
+
+```markdown
+## Payment-svc: Untested Assumptions
+
+| Assumption | Evidence | Risk |
+|---|---|---|
+| Circuit breaker works | Never opened in 90 days | Unknown failure mode during Stripe outage |
+| RDS failover is seamless | No failover in 6 months | 30-60s of unknown behavior |
+| Pod failure is handled | No PDB, pods clustered in 1 AZ | AZ failure = total outage |
+| Retry logic works | Zero retries recorded | Dead code? Wrong error codes? |
+| Timeouts are correct | 30s timeout vs 1.2s p99 | Thread exhaustion before timeout helps |
+
+**Question for the team:** Are you comfortable betting $50K/minute that all five of these work correctly, having never tested any of them?
+```
+
+### 4. Experiment 3 Unexpected Cascade — RDS Failover During AZ Failure
+
+**What happened:**
+
+```
+t=0s     AZ us-east-1a nodes cordoned and drained
+t=2s     Pods in 1a terminating, ALB health checks failing for 1a targets
+t=5s     ALB starts routing traffic only to 1b and 1c targets ✅
+t=5s     RDS PRIMARY was in us-east-1a — connection refused for ALL writes
+t=5-45s  ALL order-svc database writes FAIL (inserts, updates)
+         order-svc returns 500 for every /checkout request
+         payment-svc can't record transactions
+         45 SECONDS OF COMPLETE ORDER PROCESSING FAILURE
+t=45s    RDS Multi-AZ failover completes — new primary in us-east-1b
+t=46s    Application connection pools... DON'T RECONNECT
+         Still pointing at old primary endpoint
+t=46-???s  STILL FAILING — stale connections in pool
+```
+
+**In the moment — what you do:**
+
+**Second 0-30: Observe. This is expected behavior (AZ drain). Monitor.**
+
+```
+War room message:
+"Experiment 3 in progress. AZ us-east-1a draining. 
+Monitoring error rates across all services."
+```
+
+**Second 30-60: Error rate spiking — this is the unexpected cascade.**
+
+```
+War room message:
+"⚠️ Unexpected: order-svc error rate spiking to 100% on /checkout.
+Errors are 500 Internal Server Error, not 502.
+Investigating — this looks like a database issue, not routing."
+```
+
+```promql
+# Confirm database errors
+sum(rate(db_connection_errors_total{service="order-svc"}[1m]))
+
+# Check which database operation is failing
+sum by (operation) (
+  rate(db_query_errors_total{service="order-svc"}[1m])
+)
+```
+
+**Second 60-90: RDS failover completed but connections stale.**
+
+```bash
+# Check RDS failover status
+aws rds describe-events \
+  --source-type db-instance \
+  --source-identifier novamart-order-db \
+  --duration 5
+
+# Expected: "Multi-AZ instance failover started"
+#           "Multi-AZ instance failover completed"
+
+# Check current primary endpoint
+aws rds describe-db-instances \
+  --db-instance-identifier novamart-order-db \
+  --query 'DBInstances[0].Endpoint.Address'
+```
+
+**Second 90: Error rate still elevated. Connection pool stale. Force recovery:**
+
+```bash
+# Option A: Restart order-svc pods to force new connections
+kubectl -n orders rollout restart deploy/order-svc
+kubectl -n orders rollout status deploy/order-svc --timeout=120s
+
+# Option B: If the app supports connection pool refresh without restart
+# (e.g., HikariCP has a refresh endpoint, or send SIGHUP)
+kubectl -n orders exec deploy/order-svc -- curl -X POST localhost:8081/admin/db/reconnect
+```
+
+**Second 120: Evaluate whether to continue or abort.**
+
+```
+War room message:
+"Order-svc recovering after pod restart. Error rate dropping.
+RDS failover took ~45 seconds — during that window, all orders failed.
+Application connection pools did NOT automatically reconnect after failover.
+
+DECISION: Aborting experiment. Uncordoning AZ us-east-1a nodes.
+Reason: Found TWO critical issues that need fixing before we proceed."
+```
+
+```bash
+# Abort — uncordon all nodes
+for node in $(kubectl get nodes -l topology.kubernetes.io/zone=us-east-1a -o name); do
+  kubectl uncordon $node
+done
+
+# Verify nodes are schedulable
+kubectl get nodes -l topology.kubernetes.io/zone=us-east-1a
+# STATUS should show "Ready" (not "Ready,SchedulingDisabled")
+
+# Verify pods are rebalancing
+kubectl -n orders get pods -o wide
+kubectl -n payments get pods -o wide
+```
+
+**Update status page:**
+
+```bash
+curl -X POST "https://api.statuspage.io/v1/pages/${PAGE_ID}/incidents" \
+  -H "Authorization: OAuth ${STATUSPAGE_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "incident": {
+      "name": "Brief order processing interruption — planned testing",
+      "status": "resolved",
+      "impact_override": "minor",
+      "body": "During a planned resilience test, some customers may have experienced brief order processing failures for approximately 90 seconds. All systems are now fully operational. No orders were lost — any failed orders can be retried."
+    }
+  }'
+```
+
+**Action items from this discovery:**
+
+```markdown
+## Game Day Findings — Experiment 3
+
+### Finding 1: RDS failover causes ~45 seconds of complete write unavailability
+**Expected:** 30 seconds (AWS documentation)
+**Actual:** 45 seconds (real-world, under load)
+**Impact:** ALL services depending on this RDS instance lost write capability
+
+Action Items:
+| # | Action | Owner | Priority | Due |
+|---|--------|-------|----------|-----|
+| 1 | Implement RDS Proxy for all production databases — absorbs failover transparently, maintains connection pool across failover | Platform | P1 | 2 weeks |
+| 2 | Add database write failure handling in order-svc: queue to SQS/DLQ instead of returning 500 when DB is unreachable | Orders team | P1 | 2 weeks |
+| 3 | Move to Aurora with read replicas + failover time <15s (vs RDS Multi-AZ ~45s) — evaluate cost/benefit | Platform | P2 | 1 month |
+
+### Finding 2: Application connection pools don't recover after RDS failover
+**Expected:** Connection pool detects dead connections and creates new ones
+**Actual:** Stale connections remain in pool, all queries fail until pod restart
+**Root cause:** Connection validation not configured (no `testOnBorrow` or `validationQuery`)
+
+Action Items:
+| # | Action | Owner | Priority | Due |
+|---|--------|-------|----------|-----|
+| 4 | Configure connection pool validation for ALL services using RDS | All teams | P1 | 1 week |
+```
+
+**Specific connection pool fix:**
+
+```yaml
+# For Spring/HikariCP (Java services):
+spring:
+  datasource:
+    hikari:
+      connection-timeout: 5000
+      validation-timeout: 3000
+      connection-test-query: "SELECT 1"
+      max-lifetime: 600000        # 10 minutes — forces pool refresh
+      idle-timeout: 300000         # 5 minutes
+      minimum-idle: 5
+      maximum-pool-size: 20
+      # CRITICAL: enable leak detection
+      leak-detection-threshold: 30000
+```
+
+```go
+// For Go services using database/sql:
+db.SetMaxOpenConns(20)
+db.SetMaxIdleConns(5)
+db.SetConnMaxLifetime(10 * time.Minute)  // Force connection refresh
+db.SetConnMaxIdleTime(5 * time.Minute)
+
+// Add health check loop
+go func() {
+    ticker := time.NewTicker(30 * time.Second)
+    for range ticker.C {
+        if err := db.Ping(); err != nil {
+            log.Warn("Database ping failed, connections may be stale", "error", err)
+            // The pool will automatically create new connections
+            // on next query, but logging gives us visibility
+        }
+    }
+}()
+```
+
+```yaml
+# RDS Proxy — the architectural fix
+# Terraform:
+resource "aws_db_proxy" "orders" {
+  name                   = "novamart-orders-proxy"
+  debug_logging          = false
+  engine_family          = "POSTGRESQL"
+  idle_client_timeout    = 1800
+  require_tls            = true
+  role_arn               = aws_iam_role.rds_proxy.arn
+  vpc_security_group_ids = [aws_security_group.rds_proxy.id]
+  vpc_subnet_ids         = var.private_subnet_ids
+
+  auth {
+    auth_scheme = "SECRETS"
+    iam_auth    = "REQUIRED"
+    secret_arn  = aws_secretsmanager_secret.db_credentials.arn
+  }
+}
+
+resource "aws_db_proxy_default_target_group" "orders" {
+  db_proxy_name = aws_db_proxy.orders.name
+
+  connection_pool_config {
+    connection_borrow_timeout    = 120
+    max_connections_percent      = 100
+    max_idle_connections_percent = 50
+  }
+}
+
+resource "aws_db_proxy_target" "orders" {
+  db_instance_identifier = aws_db_instance.orders.identifier
+  db_proxy_name          = aws_db_proxy.orders.name
+  target_group_name      = aws_db_proxy_default_target_group.orders.name
+}
+
+# Applications connect to the proxy endpoint instead of RDS directly
+# Proxy handles failover transparently — connections are maintained
+```
+
+**Finding 3: We didn't know RDS primary was in us-east-1a**
+
+```markdown
+### Finding 3: No visibility into which AZ hosts RDS primary
+**Expected:** Team knows which AZ hosts the primary before AZ-level experiments
+**Actual:** Nobody checked; the primary happened to be in the failure AZ
+**Impact:** What should have been a compute-only test became a data-tier test
+
+Action Items:
+| # | Action | Owner | Priority | Due |
+|---|--------|-------|----------|-----|
+| 5 | Add RDS primary AZ to the on-call home dashboard | Platform | P2 | 1 week |
+| 6 | Pre-flight checklist for game days must include "identify all stateful resources in target AZ" | SRE | P1 | Before next game day |
+```
+
+```bash
+# Command to check RDS primary AZ (should have been in pre-flight):
+aws rds describe-db-instances \
+  --db-instance-identifier novamart-order-db \
+  --query 'DBInstances[0].AvailabilityZone'
+# Output: "us-east-1a" ← this should have been a red flag before Experiment 3
+
+# Also check ElastiCache primary AZ:
+aws elasticache describe-replication-groups \
+  --replication-group-id novamart-sessions \
+  --query 'ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint'
+```
+
+---
+
+## Summary
+
+```
+Q1: SEV1 Incident Response
+  First 10 min: Acknowledge → Declare → Status page → Diagnose → Communicate
+  502 + pods healthy = routing/mesh misconfiguration (not app crash)
+  ArgoCD auto-sync + 0-replica canary = the exact failure mode
+  Mitigate: patch VirtualService + disable auto-sync (ORDER MATTERS)
+  "Where We Got Lucky" = the section that drives the best action items
+
+Q2: On-Call Process Design
+  Weeks 1-4: Stop the bleeding (audit, kill top 5 noisy alerts, runbooks)
+  Weeks 5-8: Build muscle (training, handoff meetings, feedback loops)
+  Weeks 9-12: Mature (automate, measure, present to leadership)
+  Refusing on-call: technical argument + organizational argument + escalate
+  Redis alert: don't delete — restructure from absolute threshold to error rate
+  Alert quality: 5-dimension scorecard, minimum 15/25 to remain as page
+
+Q3: Postmortem Under Pressure
+  VP wants names → redirect to systemic accountability
+  Tech lead blames reviewer → redirect to "what about the process"
+  Anxious developer → private safety DM + fact-checker role in meeting
+  Undone action items → Jira tickets + weekly review + escalation ladder
+  
+Q4: Chaos Engineering Game Day
+  Executive pitch: "our schedule or the customer's"
+  4 experiments: pod kill → dependency latency → AZ failure → cascading
+  Prove untested assumptions with existing metrics (circuit breaker, PDB, timeouts)
+  Unexpected cascade: RDS failover + stale connection pools
+  Fix: RDS Proxy + connection pool validation + pre-flight AZ checklist
+```
+
