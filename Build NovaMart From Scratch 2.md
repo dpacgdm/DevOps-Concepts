@@ -187,39 +187,39 @@ I will NOT accept:
 ## 1. Platform Architecture Diagram
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────────────────────┐
-│                              NOVAMART PLATFORM SERVICES LAYER                                 │
-│                                                                                               │
-│  ┌─────────────────────────────────────────────────────────────────────────────────────────┐  │
+┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                              NOVAMART PLATFORM SERVICES LAYER                                  │
+│                                                                                                │
+│  ┌──────────────────────────────────────────────────────────────────────────────────────────┐  │
 │  │                              INGRESS TIER                                                │  │
 │  │                                                                                          │  │
-│  │   Internet → CloudFront → WAF → ALB (AWS LB Controller) → Linkerd Ingress Gateway       │  │
+│  │   Internet → CloudFront → WAF → ALB (AWS LB Controller) → Linkerd Ingress Gateway        │  │
 │  │                                      ↓                                                   │  │
 │  │                           cert-manager (Let's Encrypt + ACM)                             │  │
-│  └─────────────────────────────────────────────────────────────────────────────────────────┘  │
-│                                          │                                                    │
-│  ┌─────────────────────────────────────────────────────────────────────────────────────────┐  │
+│  └──────────────────────────────────────────────────────────────────────────────────────────┘  │
+│                                          │                                                     │
+│  ┌──────────────────────────────────────────────────────────────────────────────────────────┐  │
 │  │                           SERVICE MESH (Linkerd)                                         │  │
 │  │                                                                                          │  │
-│  │   ┌──────────┐   mTLS    ┌──────────┐   mTLS    ┌──────────┐                            │  │
-│  │   │frontend  │ ────────→ │payment   │ ────────→ │ order    │                            │  │
-│  │   │  + proxy │           │  + proxy │           │  + proxy │                            │  │
-│  │   └──────────┘           └──────────┘           └──────────┘                            │  │
+│  │   ┌──────────┐   mTLS    ┌──────────┐   mTLS    ┌──────────┐                             │  │
+│  │   │frontend  │ ────────→ │payment   │ ────────→ │ order    │                             │  │
+│  │   │  + proxy │           │  + proxy │           │  + proxy │                             │  │
+│  │   └──────────┘           └──────────┘           └──────────┘                             │  │
 │  │         │                      │                      │                                  │  │
 │  │         │  Every sidecar emits:                       │                                  │  │
 │  │         │  • RED metrics (rate, errors, duration)     │                                  │  │
 │  │         │  • TCP metrics (connections, bytes)         │                                  │  │
 │  │         │  • mTLS identity (SPIFFE)                   │                                  │  │
-│  └─────────────────────────────────────────────────────────────────────────────────────────┘  │
-│                                          │                                                    │
-│  ┌─────────────────────────────────────────────────────────────────────────────────────────┐  │
+│  └──────────────────────────────────────────────────────────────────────────────────────────┘  │
+│                                          │                                                     │
+│  ┌──────────────────────────────────────────────────────────────────────────────────────────┐  │
 │  │                        OBSERVABILITY PIPELINE                                            │  │
 │  │                                                                                          │  │
 │  │  ┌──────────────────────────────────────────────────────────────┐                        │  │
 │  │  │  METRICS PIPELINE                                            │                        │  │
 │  │  │                                                              │                        │  │
-│  │  │  kube-state-metrics ──┐                                     │                        │  │
-│  │  │  node-exporter ───────┼→ Prometheus ──→ Thanos Sidecar ──→ S3│                       │  │
+│  │  │  kube-state-metrics ──┐                                      │                        │  │
+│  │  │  node-exporter ───────┼→ Prometheus ──→ Thanos Sidecar ──→ S3│                        │  │
 │  │  │  Linkerd metrics ─────┤       │                              │                        │  │
 │  │  │  App /metrics ────────┘       ↓                              │                        │  │
 │  │  │                        Alertmanager ──→ PagerDuty / Slack    │                        │  │
@@ -233,11 +233,11 @@ I will NOT accept:
 │  │  │  Pod stdout/stderr                                           │                        │  │
 │  │  │       ↓                                                      │                        │  │
 │  │  │  Fluent Bit (DaemonSet)                                      │                        │  │
-│  │  │       │  ← Enriches: namespace, pod, labels, trace_id       │                        │  │
-│  │  │       │  ← Parses: JSON, multiline exceptions               │                        │  │
+│  │  │       │  ← Enriches: namespace, pod, labels, trace_id        │                        │  │
+│  │  │       │  ← Parses: JSON, multiline exceptions                │                        │  │
 │  │  │       ├──→ CloudWatch Logs (hot, 30-day, per-namespace)      │                        │  │
-│  │  │       ├──→ S3 (cold, 1-year, Parquet, Athena-queryable)     │                        │  │
-│  │  │       └──→ payments-* → separate CW Log Group (PCI scope)   │                        │  │
+│  │  │       ├──→ S3 (cold, 1-year, Parquet, Athena-queryable)      │                        │  │
+│  │  │       └──→ payments-* → separate CW Log Group (PCI scope)    │                        │  │
 │  │  └──────────────────────────────────────────────────────────────┘                        │  │
 │  │                                                                                          │  │
 │  │  ┌──────────────────────────────────────────────────────────────┐                        │  │
@@ -245,40 +245,40 @@ I will NOT accept:
 │  │  │                                                              │                        │  │
 │  │  │  App (OTel SDK) ──→ OTel Collector (DaemonSet/Agent)         │                        │  │
 │  │  │                          ↓                                   │                        │  │
-│  │  │                     OTel Collector (Deployment/Gateway)       │                        │  │
+│  │  │                     OTel Collector (Deployment/Gateway)      │                        │  │
 │  │  │                          │                                   │                        │  │
 │  │  │                          ├──→ Grafana Tempo (trace storage)  │                        │  │
 │  │  │                          └──→ AWS X-Ray (AWS-native view)    │                        │  │
 │  │  │                                                              │                        │  │
-│  │  │  Sampling: 100% errors, 10% success, 1% health checks       │                        │  │
+│  │  │  Sampling: 100% errors, 10% success, 1% health checks        │                        │  │
 │  │  └──────────────────────────────────────────────────────────────┘                        │  │
-│  └─────────────────────────────────────────────────────────────────────────────────────────┘  │
-│                                                                                               │
-│  ┌─────────────────────────────────────────────────────────────────────────────────────────┐  │
+│  └──────────────────────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                                │
+│  ┌──────────────────────────────────────────────────────────────────────────────────────────┐  │
 │  │                           SECURITY LAYER                                                 │  │
 │  │                                                                                          │  │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                 │  │
+│  │  ┌───────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                 │  │
 │  │  │  External     │  │   Kyverno    │  │   Network    │  │    ECR       │                 │  │
 │  │  │  Secrets      │  │  (Policy     │  │   Policies   │  │  (Image      │                 │  │
 │  │  │  Operator     │  │   Engine)    │  │  (Default    │  │   Scanning)  │                 │  │
-│  │  │              │  │              │  │   Deny)      │  │              │                 │  │
+│  │  │               │  │              │  │   Deny)      │  │              │                 │  │
 │  │  │  AWS Secrets  │  │  No latest   │  │  Namespace   │  │  Block       │                 │  │
-│  │  │  Manager ←──→│  │  No priv     │  │  isolation   │  │  unscanned   │                 │  │
-│  │  │  (IRSA)      │  │  Req limits  │  │  + explicit  │  │  images      │                 │  │
-│  │  │              │  │  Req labels  │  │  allow rules │  │              │                 │  │
-│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘                 │  │
-│  └─────────────────────────────────────────────────────────────────────────────────────────┘  │
-│                                                                                               │
-│  ┌─────────────────────────────────────────────────────────────────────────────────────────┐  │
+│  │  │  Manager ←──→ │  │  No priv     │  │  isolation   │  │  unscanned   │                 │  │
+│  │  │  (IRSA)       │  │  Req limits  │  │  + explicit  │  │  images      │                 │  │
+│  │  │               │  │  Req labels  │  │  allow rules │  │              │                 │  │
+│  │  └───────────────┘  └──────────────┘  └──────────────┘  └──────────────┘                 │  │
+│  └──────────────────────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                                │
+│  ┌──────────────────────────────────────────────────────────────────────────────────────────┐  │
 │  │                           GITOPS (ArgoCD)                                                │  │
 │  │                                                                                          │  │
-│  │  ArgoCD Server (HA) ──→ Git Repo ──→ Kubernetes Apply                                   │  │
+│  │  ArgoCD Server (HA) ──→ Git Repo ──→ Kubernetes Apply                                    │  │
 │  │       │                                                                                  │  │
 │  │       ├─ Project: platform (auto-sync)                                                   │  │
 │  │       ├─ Project: applications (manual-sync in prod)                                     │  │
 │  │       └─ App-of-Apps pattern (declarative app management)                                │  │
-│  └─────────────────────────────────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────────────────────────────┘
+│  └──────────────────────────────────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -6781,29 +6781,29 @@ output "cluster_issuer" {
 # DEPENDENCY GRAPH:
 #
 #   ┌──────────────┐
-#   │  Namespaces   │
+#   │  Namespaces  │
 #   └──────┬───────┘
 #          │
 #   ┌──────▼───────┐
-#   │   Linkerd     │  (mesh must be ready before apps inject sidecars)
+#   │   Linkerd    │  (mesh must be ready before apps inject sidecars)
 #   └──────┬───────┘
 #          │
 #   ┌──────▼───────────────────────────────────────┐
-#   │  Observability (Prometheus, Fluent Bit,       │
-#   │  OTel Collector, Tempo) — parallel OK         │
+#   │  Observability (Prometheus, Fluent Bit,      │
+#   │  OTel Collector, Tempo) — parallel OK        │
 #   └──────┬───────────────────────────────────────┘
 #          │
 #   ┌──────▼───────────────────────────────────────┐
-#   │  Security (ESO, Kyverno, Network Policies,    │
-#   │  ECR) — parallel OK                           │
+#   │  Security (ESO, Kyverno, Network Policies,   │
+#   │  ECR) — parallel OK                          │
 #   └──────┬───────────────────────────────────────┘
 #          │
 #   ┌──────▼───────┐
-#   │   Ingress     │  (cert-manager + ALB Controller)
+#   │   Ingress    │  (cert-manager + ALB Controller)
 #   └──────┬───────┘
 #          │
 #   ┌──────▼───────┐
-#   │   ArgoCD      │  (depends on Ingress for web UI)
+#   │   ArgoCD     │  (depends on Ingress for web UI)
 #   └──────────────┘
 #
 # ESTIMATED TIME: ~15-20 minutes
