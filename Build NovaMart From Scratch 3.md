@@ -8,11 +8,11 @@
 
 ```
 ┌──────────────┐    webhook     ┌──────────────────┐
-│  Bitbucket    │──────────────▶│    Jenkins        │
-│  (Source)     │               │    Controller     │
+│  Bitbucket   │──────────────▶│    Jenkins        │
+│  (Source)    │                │    Controller     │
 │              │◀──────────────│    (EKS Pod)      │
 │  2 repos:    │   status API   │                  │
-│  - app-src   │               └────────┬─────────┘
+│  - app-src   │                └────────┬─────────┘
 │  - app-gitops│                        │ spawns
 └──────────────┘                        │
                                 ┌───────▼──────────┐
@@ -64,14 +64,14 @@
                                │    + Argo Rollout│
                                └────────┬─────────┘
                                         │
-                          ┌─────────────▼──────────────┐
+                          ┌─────────────▼───────────────┐
                           │     EKS Cluster             │
                           │                             │
                           │  ┌─────────────────────┐    │
                           │  │  Argo Rollouts      │    │
                           │  │  (Canary/Blue-Green)│    │
                           │  │                     │    │
-                          │  │  10% → 30% → 60% → │    │
+                          │  │  10% → 30% → 60% →  │    │
                           │  │  100% with analysis │    │
                           │  └─────────────────────┘    │
                           └─────────────────────────────┘
@@ -3248,102 +3248,102 @@ spec:
 │        │                           │    ns → increase or clean up    │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
 │ Build  │ OOM during compilation    │ Agent resource limit too low    │
-│        │ (Java mvn, Go CGO)        │ → Use 'large' agent size or    │
-│        │                           │   increase limit in pod YAML   │
+│        │ (Java mvn, Go CGO)        │ → Use 'large' agent size or     │
+│        │                           │   increase limit in pod YAML    │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Build  │ Go module download slow   │ No module cache → add PVC or   │
+│ Build  │ Go module download slow   │ No module cache → add PVC or    │
 │        │ / timeout                 │ Go proxy: GOPROXY=https://      │
 │        │                           │ proxy.golang.org,direct         │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Test   │ Flaky tests fail randomly │ NOT a CI/CD problem. Do NOT    │
+│ Test   │ Flaky tests fail randomly │ NOT a CI/CD problem. Do NOT     │
 │        │                           │ retry. Fix the test or quarant- │
 │        │                           │ ine it. Retrying masks bugs.    │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Sonar  │ Quality gate timeout      │ SonarQube processing backlog   │
+│ Sonar  │ Quality gate timeout      │ SonarQube processing backlog    │
 │        │                           │ → Check SonarQube pod resources │
 │        │                           │   and DB connection pool        │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Sonar  │ "Not enough memory" in    │ JVM heap too small → increase  │
-│        │ SonarQube analysis        │ jvmOpts or agent memory limit  │
+│ Sonar  │ "Not enough memory" in    │ JVM heap too small → increase   │
+│        │ SonarQube analysis        │ jvmOpts or agent memory limit   │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
 │ Kaniko │ "Unauthorized" push to    │ ECR token expired (12h lifetime)│
-│        │ ECR                       │ → IRSA should auto-refresh.    │
-│        │                           │   Check SA annotation matches  │
-│        │                           │   the IAM role ARN             │
+│        │ ECR                       │ → IRSA should auto-refresh.     │
+│        │                           │   Check SA annotation matches   │
+│        │                           │   the IAM role ARN              │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Kaniko │ Build slow / no cache     │ 1. --cache=true missing        │
-│        │                           │ 2. Cache repo not created in   │
-│        │                           │    ECR → create /cache repo    │
-│        │                           │ 3. Dockerfile layer order wrong│
-│        │                           │    → COPY deps before code     │
+│ Kaniko │ Build slow / no cache     │ 1. --cache=true missing         │
+│        │                           │ 2. Cache repo not created in    │
+│        │                           │    ECR → create /cache repo     │
+│        │                           │ 3. Dockerfile layer order wrong │
+│        │                           │    → COPY deps before code      │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Kaniko │ "Cannot run as root"      │ Kaniko REQUIRES root. Pod spec │
-│        │ policy violation          │ needs Kyverno PolicyException  │
-│        │                           │ for kaniko container in jenkins│
-│        │                           │ ns. Or use Buildah rootless.   │
+│ Kaniko │ "Cannot run as root"      │ Kaniko REQUIRES root. Pod spec  │
+│        │ policy violation          │ needs Kyverno PolicyException   │
+│        │                           │ for kaniko container in jenkins │
+│        │                           │ ns. Or use Buildah rootless.    │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Trivy  │ "CRITICAL vulnerability   │ 1. Check if fixable (--ignore- │
-│        │ found" blocks pipeline    │    unfixed filters unfixed)    │
-│        │                           │ 2. If in base image, update    │
-│        │                           │    base image                  │
-│        │                           │ 3. If false positive, add to   │
-│        │                           │    .trivyignore with ticket #  │
+│ Trivy  │ "CRITICAL vulnerability   │ 1. Check if fixable (--ignore-  │
+│        │ found" blocks pipeline    │    unfixed filters unfixed)     │
+│        │                           │ 2. If in base image, update     │
+│        │                           │    base image                   │
+│        │                           │ 3. If false positive, add to    │
+│        │                           │    .trivyignore with ticket #   │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Cosign │ Signing fails             │ 1. IRSA not configured for     │
-│        │                           │    Sigstore OIDC federation    │
-│        │                           │ 2. Cosign version mismatch     │
-│        │                           │ 3. ECR image not found (race)  │
-│        │                           │    → Add retry after push      │
+│ Cosign │ Signing fails             │ 1. IRSA not configured for      │
+│        │                           │    Sigstore OIDC federation     │
+│        │                           │ 2. Cosign version mismatch      │
+│        │                           │ 3. ECR image not found (race)   │
+│        │                           │    → Add retry after push       │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ GitOps │ "Merge conflict" on git   │ Two pipelines updating same    │
-│        │ push to gitops repo       │ overlay simultaneously.        │
-│        │                           │ → Add retry with rebase:       │
-│        │                           │   git pull --rebase && push    │
-│        │                           │ → Or use per-service branches  │
+│ GitOps │ "Merge conflict" on git   │ Two pipelines updating same     │
+│        │ push to gitops repo       │ overlay simultaneously.         │
+│        │                           │ → Add retry with rebase:        │
+│        │                           │   git pull --rebase && push     │
+│        │                           │ → Or use per-service branches   │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ GitOps │ ArgoCD shows OutOfSync    │ 1. Image tag updated but       │
-│        │ but won't sync            │    kustomize build fails       │
-│        │                           │    → Validate: kustomize build │
-│        │                           │ 2. Sync window blocking        │
-│        │                           │    → Manual sync (always ok)   │
-│        │                           │ 3. Resource diff on Rollout    │
-│        │                           │    → Check ignoreDifferences   │
+│ GitOps │ ArgoCD shows OutOfSync    │ 1. Image tag updated but        │
+│        │ but won't sync            │    kustomize build fails        │
+│        │                           │    → Validate: kustomize build  │
+│        │                           │ 2. Sync window blocking         │
+│        │                           │    → Manual sync (always ok)    │
+│        │                           │ 3. Resource diff on Rollout     │
+│        │                           │    → Check ignoreDifferences    │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Canary │ Analysis fails → rollback │ WORKING AS INTENDED. Check:    │
-│        │                           │ 1. Which metric failed (Argo   │
-│        │                           │    Rollouts dashboard)         │
-│        │                           │ 2. Is it the new code or       │
-│        │                           │    environmental noise?        │
-│        │                           │ 3. Adjust thresholds if too    │
+│ Canary │ Analysis fails → rollback │ WORKING AS INTENDED. Check:     │
+│        │                           │ 1. Which metric failed (Argo    │
+│        │                           │    Rollouts dashboard)          │
+│        │                           │ 2. Is it the new code or        │
+│        │                           │    environmental noise?         │
+│        │                           │ 3. Adjust thresholds if too     │
 │        │                           │    sensitive (but carefully)    │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Canary │ Analysis passes but users │ Canary traffic % too low to    │
-│        │ report errors post-100%   │ catch issue. OR: analysis      │
-│        │                           │ queries wrong metric. Verify   │
-│        │                           │ rollouts_pod_template_hash     │
-│        │                           │ label is present on metrics.   │
+│ Canary │ Analysis passes but users │ Canary traffic % too low to     │
+│        │ report errors post-100%   │ catch issue. OR: analysis       │
+│        │                           │ queries wrong metric. Verify    │
+│        │                           │ rollouts_pod_template_hash      │
+│        │                           │ label is present on metrics.    │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Canary │ Canary stuck (not         │ 1. Analysis never completes    │
-│        │ progressing)              │    → Prometheus unreachable    │
-│        │                           │    from analysis controller    │
-│        │                           │ 2. No traffic to canary pods   │
-│        │                           │    → Linkerd TrafficSplit not  │
-│        │                           │    applied (check CRD)         │
-│        │                           │ 3. progressDeadlineSeconds     │
-│        │                           │    reached → Rollout aborts    │
+│ Canary │ Canary stuck (not         │ 1. Analysis never completes     │
+│        │ progressing)              │    → Prometheus unreachable     │
+│        │                           │    from analysis controller     │
+│        │                           │ 2. No traffic to canary pods    │
+│        │                           │    → Linkerd TrafficSplit not   │
+│        │                           │    applied (check CRD)          │
+│        │                           │ 3. progressDeadlineSeconds      │
+│        │                           │    reached → Rollout aborts     │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Full   │ Pipeline succeeds but app │ 1. ExternalSecret not synced   │
-│        │ CrashLoops after deploy   │    → Secret missing in env     │
-│        │                           │ 2. ConfigMap wrong for env     │
-│        │                           │ 3. DB migration not run        │
-│        │                           │ 4. Resource limits too tight   │
-│        │                           │ 5. Network policy blocks new   │
-│        │                           │    dependency                  │
+│ Full   │ Pipeline succeeds but app │ 1. ExternalSecret not synced    │
+│        │ CrashLoops after deploy   │    → Secret missing in env      │
+│        │                           │ 2. ConfigMap wrong for env      │
+│        │                           │ 3. DB migration not run         │
+│        │                           │ 4. Resource limits too tight    │
+│        │                           │ 5. Network policy blocks new    │
+│        │                           │    dependency                   │
 ├────────┼───────────────────────────┼─────────────────────────────────┤
-│ Full   │ "concurrent build         │ disableConcurrentBuilds        │
-│        │ aborted"                  │ (abortPrevious:true) killed    │
-│        │                           │ older build. Expected behavior │
-│        │                           │ for rapid pushes. No fix.      │
+│ Full   │ "concurrent build         │ disableConcurrentBuilds         │
+│        │ aborted"                  │ (abortPrevious:true) killed     │
+│        │                           │ older build. Expected behavior  │
+│        │                           │ for rapid pushes. No fix.       │
 └────────┴───────────────────────────┴─────────────────────────────────┘
 ```
 
@@ -3811,8 +3811,8 @@ fi
  Developer pushes to main branch
            │
            ▼
- ┌──────────────────┐     webhook (POST)      ┌─────────────────────┐
- │   Bitbucket      │ ───────────────────────▶ │  Jenkins Controller │
+ ┌──────────────────┐     webhook (POST)       ┌─────────────────────┐
+ │   Bitbucket      │ ──────────────────────▶ │  Jenkins Controller │
  │   (app-src repo) │                          │  (EKS pod)          │
  └──────────────────┘                          └──────────┬──────────┘
                                                           │
@@ -3821,7 +3821,7 @@ fi
                                                           │
                                                           ▼
                                                ┌──────────────────────┐
-                                               │   Jenkins Agent Pod   │
+                                               │   Jenkins Agent Pod  │
                                                │                      │
                                                │  1. git clone        │
                                                │  2. go build / mvn   │
@@ -3850,13 +3850,13 @@ fi
                                                │      tests vs dev    │
                                                │                      │
                                                │  14. kustomize edit  │
-                                               │      (staging overlay)│
+                                               │     (staging overlay)│
                                                │  15. git push        │──────▶ app-gitops repo
                                                │                      │
                                                │  [STAGING DEPLOYED]  │
                                                │                      │
                                                │  16. Wait 5min soak  │
-                                               │  17. Query Prometheus │
+                                               │  17. Query Prometheus│
                                                │      error_rate < 1% │
                                                │                      │
                                                │  18. Slack: "Ready   │──────▶ Slack
@@ -3938,9 +3938,9 @@ fi
 ## 📋 QUICK REFERENCE CARD
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────────────┐
 │                 NOVAMART CI/CD QUICK REFERENCE                   │
-├─────────────────────────────────────────────────────────────────┤
+├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  URLS:                                                           │
 │    Jenkins:    https://jenkins.internal.novamart.com             │
@@ -3950,40 +3950,40 @@ fi
 │                                                                  │
 │  REPOS:                                                          │
 │    Source:     bitbucket.org/novamart/<service-name>             │
-│    GitOps:     bitbucket.org/novamart/app-gitops                │
+│    GitOps:     bitbucket.org/novamart/app-gitops                 │
 │    Library:    bitbucket.org/novamart/jenkins-shared-library     │
 │                                                                  │
 │  IMAGE TAGS:                                                     │
-│    Format:     sha-<8-char-commit-hash>                         │
-│    Release:    v<version>-<8-char-hash>                         │
-│    ECR:        <account>.dkr.ecr.us-east-1.amazonaws.com/       │
+│    Format:     sha-<8-char-commit-hash>                          │
+│    Release:    v<version>-<8-char-hash>                          │
+│    ECR:        <account>.dkr.ecr.us-east-1.amazonaws.com/        │
 │                novamart/<service>:<tag>                          │
 │                                                                  │
 │  ROLLOUT COMMANDS:                                               │
-│    Status:     kubectl argo rollouts status <name> -n <ns>      │
-│    Promote:    kubectl argo rollouts promote <name> -n <ns>     │
-│    Abort:      kubectl argo rollouts abort <name> -n <ns>       │
-│    Rollback:   kubectl argo rollouts undo <name> -n <ns>        │
+│    Status:     kubectl argo rollouts status <name> -n <ns>       │
+│    Promote:    kubectl argo rollouts promote <name> -n <ns>      │
+│    Abort:      kubectl argo rollouts abort <name> -n <ns>        │
+│    Rollback:   kubectl argo rollouts undo <name> -n <ns>         │
 │    Dashboard:  kubectl argo rollouts dashboard                   │
 │                                                                  │
 │  EMERGENCY ROLLBACK (fastest to slowest):                        │
-│    1. kubectl argo rollouts undo <name> -n <ns>     (instant)   │
-│    2. kubectl argo rollouts abort <name> -n <ns>    (in-flight) │
-│    3. git revert in app-gitops + ArgoCD sync        (30-60s)    │
+│    1. kubectl argo rollouts undo <name> -n <ns>     (instant)    │
+│    2. kubectl argo rollouts abort <name> -n <ns>    (in-flight)  │
+│    3. git revert in app-gitops + ArgoCD sync        (30-60s)     │
 │    4. kubectl set image rollout/<name> ...           (manual)    │
 │                                                                  │
 │  PIPELINE TROUBLESHOOTING:                                       │
 │    Agent stuck:    kubectl get pods -n jenkins -l jenkins-agent  │
-│    Build logs:     Jenkins UI → Build → Console Output          │
-│    Canary status:  kubectl argo rollouts get <name> -n <ns>     │
-│    Analysis:       kubectl get analysisrun -n <ns>              │
-│    ArgoCD sync:    argocd app get <app-name>                    │
+│    Build logs:     Jenkins UI → Build → Console Output           │
+│    Canary status:  kubectl argo rollouts get <name> -n <ns>      │
+│    Analysis:       kubectl get analysisrun -n <ns>               │
+│    ArgoCD sync:    argocd app get <app-name>                     │
 │                                                                  │
 │  CONTACT:                                                        │
-│    Platform team:  #platform-eng (Slack)                        │
-│    CI/CD issues:   JIRA: PLAT project, component: ci-cd        │
+│    Platform team:  #platform-eng (Slack)                         │
+│    CI/CD issues:   JIRA: PLAT project, component: ci-cd          │
 │                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 
