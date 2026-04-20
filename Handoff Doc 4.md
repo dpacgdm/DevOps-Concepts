@@ -937,41 +937,6 @@ Phase 7 Lesson 2 (Platform Services): BUILT, REVIEW PENDING
 1. **Review Phase 7 Lesson 2** — Same brutal review format as Lesson 1 (Critical/Significant/Minor issues, applause, completeness scorecard, priority action items)
 2. After review, proceed to **Phase 7 Lesson 3: CI/CD Pipeline**
 
-**Outstanding items from earlier phases (can be addressed later or skipped):**
-- Phase 5 Lesson 4 retention questions still unanswered
-- Phase 5 Lesson 5 (Incident Management) not delivered
-- Phase 6 (Security, Compliance, AWS) not started
-- User jumped ahead to Phase 7 Build — this is acceptable as the build phase integrates Phase 5-6 concepts practically
-
-**The 4 retention questions for Phase 5 Lesson 4 (still pending, reproduce if user wants to answer):**
-
-### Q1: SLO Design Under Constraints 🔥
-VP of Product demands 99.999% availability for payment service. Current: 99.97% over 90 days.
-1. Calculate error budget for 99.999% over 30-day window (minutes of downtime)
-2. Explain to VP (non-technical) why 99.999% is wrong — three specific technical constraints
-3. What SLO would you recommend? Justify with current data and NovaMart architecture
-4. Write exact Prometheus recording rules for availability SLI and latency SLI (99.9% < 2s)
-
-### Q2: Burn Rate Alert Investigation 🔥
-Monday 9 AM ticket: OrderServiceSlowBurnRate_Ticket — 1x burn rate for 3 days, error budget at 38%.
-1. Is this actionable? Justify
-2. PromQL queries to find WHERE budget is consumed (endpoints, error codes, time periods)
-3. Error rate 0.12% vs 0.1% budget, all 503s from inventory-svc, bursts every 4 hours — root cause?
-4. Immediate and permanent fix
-
-### Q3: SLI Measurement Trap 🔥
-search-svc reports 99.95% availability (above 99.9% target), but users complain search returns empty results. 200 OK with empty results.
-1. Why is the SLI lying? What principle is violated?
-2. Design corrected SLIs (at least 3 dimensions) with Prometheus implementation
-3. Search team says "can't add correctness SLI" — two practical approaches
-4. PromQL for proportion of searches returning ≥1 result, excluding non-existent products
-
-### Q4: Error Budget Policy Enforcement 🔥
-Day 18 of 30-day window, payment-svc budget: 3.8 of 4.32 min consumed (12% remaining). Critical feature launch tomorrow, CEO committed to partner.
-1. What should happen per error budget policy?
-2. Three counter-arguments to "it's been tested in staging, low risk"
-3. Compromise proposal respecting both policy and business commitment
-4. VP overrides policy and orders deploy — what do you do?
 
 **Phase 7 remaining lessons:**
 ```
