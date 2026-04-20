@@ -11,37 +11,37 @@
 │                    HOW THIS WORKS                           │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  1. I am NovaMart. I am Slack. I am PagerDuty.             │
-│     I am your teammates, your manager, your stakeholders.  │
-│     I am the infrastructure breaking at 3 AM.              │
+│  1. I am NovaMart. I am Slack. I am PagerDuty.              │
+│     I am your teammates, your manager, your stakeholders.   │
+│     I am the infrastructure breaking at 3 AM.               │
 │                                                             │
 │  2. You respond as YOU — Senior DevOps/Platform Engineer.   │
-│     Write what you'd actually DO, SAY, TYPE, RUN.          │
+│     Write what you'd actually DO, SAY, TYPE, RUN.           │
 │     Not essays. Actions.                                    │
 │                                                             │
 │  3. Time moves when you act. If you investigate correctly,  │
 │     you get results. If you run the wrong command, you get  │
-│     the wrong output. If you miss something, it escalates. │
+│     the wrong output. If you miss something, it escalates.  │
 │                                                             │
-│  4. Incidents don't wait. If you're mid-project and a      │
-│     SEV1 fires, you drop everything. Just like real life.  │
+│  4. Incidents don't wait. If you're mid-project and a       │
+│     SEV1 fires, you drop everything. Just like real life.   │
 │                                                             │
 │  5. I will grade your responses on:                         │
-│     - Triage speed and accuracy                            │
-│     - Communication quality (who you notify, how, when)    │
-│     - Technical correctness                                │
-│     - Prioritization under pressure                        │
-│     - Follow-through (postmortems, action items)           │
+│     - Triage speed and accuracy                             │
+│     - Communication quality (who you notify, how, when)     │
+│     - Technical correctness                                 │
+│     - Prioritization under pressure                         │
+│     - Follow-through (postmortems, action items)            │
 │                                                             │
-│  6. Phase 6 topics (Security, Compliance, AWS deep dives)  │
-│     WILL appear organically. A security incident is worth  │
+│  6. Phase 6 topics (Security, Compliance, AWS deep dives)   │
+│     WILL appear organically. A security incident is worth   │
 │     more than a security lecture.                           │
 │                                                             │
 │  7. Format for your responses:                              │
 │     🔧 ACTIONS — commands you run, things you click        │
-│     💬 COMMS — Slack messages, emails, meeting statements   │
+│     💬 COMMS — Slack messages, emails, meeting statements  │
 │     🧠 THINKING — your internal reasoning (I need this     │
-│        to grade your decision-making process)              │
+│        to grade your decision-making process)               │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -1512,3 +1512,864 @@ Nothing is screaming. Nothing is obviously broken. Classic "something feels off 
 
 **What do you do?**
 
+---
+
+# SIMULATION RESPONSE — The Breadcrumbs Get Interesting
+
+---
+
+## 📊 Baseline Comparisons
+
+### Redis Cache Hit Rate — 7-Day History
+
+```
+CloudWatch ElastiCache — CacheHitRate (daily at 11:30 AM):
+
+  Last Monday:     94.2%
+  Tuesday:         94.5%
+  Wednesday:       93.8%
+  Thursday:        94.1%
+  Friday:          93.9%
+  Saturday:        95.1%
+  Sunday:          95.3%
+  TODAY (Monday):  87.1%  ← 7 point drop
+  
+  ▲
+96│ ── ── ── ── ── ── ──
+94│─────────────────────╮
+92│                      ╲
+90│                       ╲
+88│                        ╲
+86│                         ╰── 87.1% (today)
+  └──────────────────────────────▶
+  Mon Tue Wed Thu Fri Sat Sun Mon
+```
+
+**87% is NOT normal. Baseline is 93-95%.** This dropped.
+
+### Redis Evictions — 7-Day History
+
+```promql
+rate(redis_evicted_keys_total[5m])
+
+  Last Monday (same time):  ~5/min
+  TODAY:                     42/min  ← 8x increase
+```
+
+```
+  ▲
+50│                              ╭── 42/min
+40│                         ╭────╯
+30│                    ╭────╯
+20│               ╭────╯
+10│          ╭────╯
+ 5│──────────╯
+ 0│
+  └──────────────────────────────────▶
+  Sun 18:00  Sun 22:00  Mon 02:00  Mon 06:00  Mon 10:00
+                  ▲
+            Evictions started climbing ~Sun 22:00
+```
+
+**Evictions started climbing Sunday night around 10 PM.** Not Monday morning.
+
+### Redis Memory
+
+```promql
+redis_memory_used_bytes
+→ 4.82 GB
+
+# MaxMemory setting (from parameter group)
+→ 5.2 GB (r6g.large = 6.38 GB RAM, maxmemory set to ~80%)
+
+# Usage: 92.7% of maxmemory
+# Dashboard showed 71% — that's percentage of TOTAL node RAM, not maxmemory
+```
+
+**Redis is at 92.7% of maxmemory. Eviction policy is kicking in hard.**
+
+```promql
+# Fragmentation ratio
+redis_mem_fragmentation_ratio
+→ 1.12  (healthy — not the problem)
+
+# Connected clients
+redis_connected_clients
+→ 340 (stable, same as last week)
+```
+
+### Catalog Service Latency — Historical
+
+```promql
+histogram_quantile(0.99, sum by (le) (rate(
+  http_request_duration_seconds_bucket{service="catalog-service"}[5m])))
+
+  Last Monday 11:30 AM:  0.45s
+  TODAY 11:30 AM:         1.2s   ← nearly 3x
+```
+
+```promql
+# Error breakdown
+sum by (code) (rate(http_requests_total{service="catalog-service", code=~"5.."}[5m]))
+
+{code="504"} → 0.31 req/s
+{code="500"} → 0.02 req/s
+```
+
+Small number of 504s — catalog service timing out on... something. Likely the DB fallback when cache misses.
+
+---
+
+## 💬 Slack — Ryan Mitchell Responds (11:34 AM)
+
+**Ryan Mitchell:**
+> 1. Mostly category listing pages and search results. Product detail pages seem fine actually.
+> 2. No catalog-service deploys since last Thursday. 
+> 3. Yeah, roughly 10-10:30 AM is when users started complaining. But honestly it might have started earlier — our team only noticed when traffic picked up.
+> 
+> One thing that might be relevant — the merchandising team did a big product catalog refresh last night. Loaded ~180K new SKUs for the Q1 spring collection. They do this quarterly. Tagging @jenny.wu from merchandising if you need details.
+
+---
+
+## 💬 Slack — Jenny Wu (Merchandising) — 11:36 AM
+
+**Jenny Wu:**
+> Hi! Yes we loaded 182,000 new products last night via the bulk import pipeline (Airflow DAG `catalog_quarterly_refresh`). Started at 9 PM, finished at 1:30 AM. This is our standard quarterly process — we did the same thing in October with ~150K products and didn't have issues. Happy to help if something went wrong!
+
+---
+
+## 📊 One More Data Point
+
+```
+Redis INFO keyspace:
+
+  db0: keys=2,847,291  (current)
+  
+  Historical (from weekly Monday snapshots in your monitoring):
+  Last Monday:    keys=2,412,088
+  Post-October load: keys=2,430,000 (grew ~18K)
+  
+  This load added ~435K keys (products + derived cache entries like 
+  category aggregations, search facets, etc.)
+  
+  182K products → ~435K cache keys (products + 1.4 derived entries each)
+```
+
+---
+
+## The Picture at 11:37 AM
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  WHAT HAPPENED:                                                 │
+│                                                                 │
+│  Sunday 9 PM — Quarterly catalog refresh: 182K new products     │
+│  Sunday 1:30 AM — Import complete. ~435K new cache keys.        │
+│  Sunday 10 PM — Evictions start climbing (working set > memory) │
+│  Monday AM — Traffic ramps, more unique products accessed,      │
+│              cache thrashing intensifies                        │
+│                                                                 │
+│  NUMBERS:                                                       │
+│  • Redis: 2.85M keys in 5.2 GB maxmemory (was 2.41M in same)    │
+│  • 18% more keys in same memory = evictions + lower hit rate    │
+│  • Cache hit rate: 94% → 87%                                    │
+│  • Evictions: 5/min → 42/min                                    │
+│  • Every cache miss = DB query = slow response                  │
+│  • Catalog p99: 0.45s → 1.2s                                    │
+│  • Intermittent because it depends on WHICH products are        │
+│    requested — popular products stay cached, long-tail evicted  │
+│                                                                 │
+│  SEVERITY:                                                      │
+│  • No alerts firing (thresholds not set for cache hit rate)     │
+│  • Not SEV2 — site works, just slow for some pages              │
+│  • But: getting worse as more unique products are browsed       │
+│  • Monday peak hasn't hit yet                                   │
+│  • October load was 150K products (18K net keys). This was      │
+│    182K products (435K net keys) — 2.4x more cache entries      │
+│    because derived entries (category aggs, facets) scale        │
+│    super-linearly with product count                            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**It's 11:37 AM. Lunch is in 23 minutes. You have the diagnosis.**
+
+**What's your play?**
+
+
+
+
+# Monday 11:37 AM — Redis Cache Pressure
+
+---
+
+## 🧠 THINKING — Severity + Options (20 seconds)
+
+```
+ASSESSMENT:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+This isn't a fire — it's a slow flood. No one's paging, but:
+- 87% hit rate → every 8th request hits the DB instead of cache
+- Catalog p99 tripled (0.45s → 1.2s) 
+- Monday peak hasn't hit yet — more unique SKUs browsed = more 
+  thrashing = worse through the afternoon
+- Category/search pages affected = browsing experience = 
+  conversion funnel impact. Not as acute as order creation 
+  failure, but real business impact.
+
+This is a capacity problem, not a bug. Redis simply doesn't have 
+enough memory for the new working set.
+
+OPTIONS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Option A: Scale up Redis node (r6g.large → r6g.xlarge)
+  - Doubles memory (~13 GB total, ~10.4 GB maxmemory)
+  - Proper fix, handles growth
+  - ElastiCache resize = maintenance window, brief failover
+  - NOT something I do at 11:37 AM before lunch on live prod
+  - This is the right answer but needs a change window
+
+Option B: Increase maxmemory on current node
+  - Currently 80% of 6.38 GB = 5.2 GB
+  - Could bump to 90% = 5.74 GB (+540 MB)
+  - Buys some breathing room immediately
+  - Parameter group change — applies dynamically, no restart
+  - Risk: less headroom for fragmentation/overhead, but frag 
+    ratio is 1.12 (healthy), so 90% is acceptable SHORT TERM
+
+Option C: Reduce TTLs on derived cache entries
+  - Would need catalog-service code change or config change
+  - Slower to implement, needs Order/Catalog team involvement
+  - Right long-term optimization, wrong time to do it
+
+Option D: Purge stale cache entries
+  - If old seasonal products from Q4 are still cached but 
+    rarely accessed, eviction policy should handle it
+  - allkeys-lru SHOULD be doing this... but 42 evictions/min 
+    means it IS evicting, just not fast enough for the access 
+    pattern
+
+DECISION: 
+  Immediate: Option B — bump maxmemory to 90%. Buys ~540 MB 
+  headroom right now, no downtime, reduces eviction pressure.
+  Today/Tomorrow: Option A — plan the node upgrade for a 
+  maintenance window (tonight or tomorrow early AM).
+  Follow-up: Option C — TTL review with catalog team.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+---
+
+## 💬 COMMS 1 — #engineering-general (11:38 AM)
+
+```
+@ryan.mitchell Found it. Quick summary:
+
+Merchandising loaded 182K new products last night (quarterly refresh). 
+This created ~435K new cache keys. Redis is now at 92.7% of its memory 
+limit — evictions jumped 8x and cache hit rate dropped from 94% → 87%. 
+Every cache miss hits the DB, which is why category/search pages are 
+slow (product detail pages are fine because popular products stay cached).
+
+Applying an immediate fix now to ease the pressure. Planning a node 
+scale-up for tonight. Your team shouldn't need to do anything — will 
+update when it's resolved.
+```
+
+## 💬 COMMS 2 — #platform-engineering (11:39 AM)
+
+```
+Heads up — found the root cause of Ryan's catalog slowness.
+
+Quarterly catalog refresh (182K products last night) pushed Redis to 
+92.7% maxmemory. Cache hit rate dropped 94% → 87%, evictions 8x 
+above baseline. Catalog p99 tripled.
+
+Immediate: bumping maxmemory from 80% → 90% via parameter group 
+(dynamic, no restart). Buys ~540 MB.
+
+Tonight/Tomorrow AM: need to scale Redis r6g.large → r6g.xlarge. 
+Will create change request. @marcus.webb — have we done ElastiCache 
+node type changes before? Want to confirm our failover procedure 
+for the replication group.
+
+Follow-up tickets coming for: cache TTL review, alerting on cache 
+hit rate, quarterly refresh capacity planning.
+```
+
+---
+
+## 🔧 ACTION 1 — Bump maxmemory immediately (11:40 AM)
+
+### 🧠 THINKING
+Parameter group change. Need to check if we use a custom parameter group or default. Default can't be modified — need custom.
+
+```bash
+# Check current parameter group
+aws elasticache describe-cache-clusters \
+  --cache-cluster-id novamart-redis-001 \
+  --query 'CacheClusters[0].CacheParameterGroup'
+```
+
+```bash
+# Assuming custom parameter group exists (we set this up in Phase 7):
+aws elasticache modify-cache-parameter-group \
+  --cache-parameter-group-name novamart-redis-params \
+  --parameter-name-values "ParameterName=maxmemory-percent,ParameterValue=90"
+```
+
+Verify the change is applied:
+```bash
+aws elasticache describe-cache-parameters \
+  --cache-parameter-group-name novamart-redis-params \
+  --query 'Parameters[?ParameterName==`maxmemory-percent`]'
+```
+
+### 🧠 THINKING — Wait. This should be in Terraform.
+
+```
+I should NOT be making this change via CLI and leaving it as drift.
+But this is an active degradation getting worse with traffic. 
+
+Correct sequence:
+1. Apply via CLI NOW (stop the bleeding)
+2. Update Terraform IMMEDIATELY after to match
+3. Note the drift in the change record
+
+This is the right tradeoff. "Infrastructure as Code purity" 
+doesn't trump "users experiencing degraded service right now."
+```
+
+### 🔧 ACTION 2 — Update Terraform to match (11:42 AM)
+
+```bash
+cd ~/repos/novamart-infrastructure
+
+# Edit the Redis parameter group in the data tier module
+vim environments/production/data-tier/main.tf
+```
+
+```hcl
+# Update parameter group
+resource "aws_elasticache_parameter_group" "redis" {
+  family = "redis7"
+  name   = "novamart-redis-params"
+
+  parameter {
+    name  = "maxmemory-policy"
+    value = "allkeys-lru"
+  }
+
+  parameter {
+    name  = "maxmemory-percent"
+    value = "90"  # Was 80 — bumped for Q1 catalog refresh capacity. 
+                  # TODO: Scale node type r6g.large→r6g.xlarge (PLAT-XXX)
+  }
+}
+```
+
+```bash
+git checkout -b fix/redis-maxmemory-bump
+git add environments/production/data-tier/main.tf
+git commit -m "Redis: bump maxmemory 80%→90% for catalog refresh capacity
+
+Quarterly catalog refresh added 435K cache keys. Redis at 92.7% 
+maxmemory, evictions 8x baseline, cache hit rate dropped 94%→87%.
+
+Interim fix: increase maxmemory headroom.
+Node scale-up planned separately (PLAT-918).
+
+Applied via CLI first during active degradation, 
+Terraform updated to match."
+
+git push origin fix/redis-maxmemory-bump
+```
+
+Create PR, get it queued for review.
+
+---
+
+## 🔧 ACTION 3 — Create tickets (11:44 AM)
+
+**Ticket 1: Immediate scale-up**
+```
+PLAT-918 [High] — Scale Redis r6g.large → r6g.xlarge
+  Priority: High
+  Target: Tonight/Tomorrow AM maintenance window
+  Description:
+    Quarterly catalog refresh grew working set beyond r6g.large capacity.
+    Currently at 90% maxmemory after emergency bump from 80%.
+    r6g.xlarge doubles available memory, handles Q1 catalog + growth.
+    
+  Procedure:
+    - ElastiCache modify-replication-group --cache-node-type r6g.xlarge
+    - Rolling failover — test failover procedure first in staging
+    - Update Terraform after
+    - Estimated cost impact: ~$X/month increase (to be calculated)
+    
+  Change window: Tue 2:00-4:00 AM EST (lowest traffic)
+```
+
+**Ticket 2: Alerting gap**
+```
+PLAT-919 [Medium] — Add Redis cache hit rate alert
+  Description:
+    No alert fired during 7-point cache hit rate drop. Need:
+    - Alert: CacheHitRate < 90% for 15m → #platform-engineering
+    - Alert: CacheHitRate < 85% for 10m → PagerDuty (SEV3)
+    - Alert: Redis memory > 85% maxmemory → #platform-engineering
+    - Alert: Evictions > 20/min sustained 10m → #platform-engineering
+    
+    These should be PrometheusRules or CloudWatch alarms.
+```
+
+**Ticket 3: Process gap**
+```
+PLAT-920 [Medium] — Quarterly catalog refresh: add capacity planning gate
+  Description:
+    Merchandising quarterly refresh should trigger capacity review 
+    BEFORE load. Process:
+    - Estimate new key count (products × derived entry multiplier)
+    - Compare to current Redis memory headroom
+    - If projected usage > 80% maxmemory, scale Redis FIRST
+    - Add to quarterly refresh Airflow DAG as pre-check step or 
+      documented SOP for merchandising team
+    
+    October load: 150K products → 18K net keys (no issue)
+    January load: 182K products → 435K net keys (super-linear 
+    derived entries — need to understand the multiplier better)
+    
+  cc: @jenny.wu @nina.petrov
+```
+
+---
+
+## 🔧 ACTION 4 — Monitor the maxmemory bump effect (11:46 AM)
+
+```promql
+# Eviction rate should drop
+rate(redis_evicted_keys_total[1m])
+
+# Hit rate should start recovering (will take a few minutes 
+# as cache warms into the new headroom)
+redis_keyspace_hits_total / (redis_keyspace_hits_total + redis_keyspace_misses_total)
+
+# Memory usage against new ceiling
+redis_memory_used_bytes / (6.38 * 1024 * 1024 * 1024 * 0.90)
+```
+
+---
+
+## 💬 COMMS 3 — Reply to Jenny Wu (11:47 AM)
+
+```
+@jenny.wu Thanks for the context! The load itself ran fine — the issue 
+is that the new product count pushed our Redis cache past its memory 
+limit. We're fixing it now (short-term memory bump, node upgrade 
+tonight).
+
+One thing for next quarter: the derived cache entries (category 
+aggregations, search facets) scaled super-linearly — 182K products 
+created 435K cache keys (~2.4x multiplier vs October's ~1.12x). 
+I'll create a process so we do a capacity check before the next 
+quarterly load. I'll loop you in on that ticket (PLAT-920).
+
+No action needed from your side — just wanted to close the loop.
+```
+
+---
+
+## 11:48 AM — Pre-lunch Status
+
+### 🧠 THINKING
+
+```
+Maxmemory bump is applied. Should see eviction rate drop within 
+minutes. Cache hit rate recovery will be gradual as the working 
+set fills into the new headroom.
+
+Node upgrade tonight is the real fix — 90% maxmemory on r6g.large 
+is buying time, not solving the problem.
+
+Everything else is ticketed. Ryan knows what's happening. Jenny 
+knows what's happening. Team knows what's happening.
+
+I can eat lunch. Phone stays on for on-call.
+
+Noon peak check: inventory p99 (for the order service timeout) 
+and Redis hit rate recovery. Will glance at dashboards when I 
+sit down with food.
+```
+
+---
+
+## 11:50 AM — Quick noon-peak monitoring plan before lunch
+
+```bash
+# Set a 30-min reminder to check these at 12:20 PM:
+# 1. Inventory p99 at peak traffic (order service safety)
+# 2. Redis eviction rate (should be dropping)
+# 3. Cache hit rate (should be climbing back)
+# 4. Catalog p99 (should be improving)
+```
+
+---
+
+**Heading to lunch at 12:00. What's waiting when I check at 12:20?**
+
+---
+
+# SIMULATION RESPONSE — Lunch Check + Afternoon Begins
+
+---
+
+## 📊 12:20 PM Dashboard Check (Phone at Lunch)
+
+### Inventory Service — Holding at Peak
+
+```
+Traffic:        10,100 rpm (at Monday peak)
+Inventory p99:  1.48s
+Order error rate: 0.14%
+Burn rate (1h):  0.9x
+```
+
+Lisa's 1500ms alert has NOT fired. You're 52ms under threshold at peak. Tight, but the retry safety net means even occasional >2000ms calls get a second chance. **Holding.**
+
+### Redis — Improving But Not Solved
+
+```
+BEFORE bump (11:30 AM):
+  Evictions:    42/min
+  Hit rate:     87.1%
+  Memory used:  92.7% of maxmemory (5.2 GB ceiling)
+
+AFTER bump (12:20 PM, 40 min later):
+  Evictions:    18/min  (down 57% — good, but not baseline 5/min)
+  Hit rate:     89.4%   (improving — was 87.1%, baseline 94%)
+  Memory used:  86.3% of maxmemory (5.74 GB ceiling)
+  Catalog p99:  0.82s   (improving — was 1.2s, baseline 0.45s)
+```
+
+```
+INTERPRETATION:
+  ✓ Evictions cut by more than half — headroom helping
+  ✓ Hit rate climbing — cache warming into new space
+  ✗ Still 5 points below baseline — r6g.large simply can't 
+    hold the full working set. Tonight's upgrade is necessary.
+  ✓ Catalog p99 dropped from 1.2s → 0.82s. Not baseline but 
+    meaningful improvement. Users should notice.
+```
+
+### Everything Else — Quiet
+
+```
+No new PagerDuty alerts.
+No new Slack fires.
+Order service stable through peak.
+```
+
+**Lunch: uneventful.** Exactly how you want on-call lunches.
+
+---
+
+## 💬 Slack — While You Were Eating
+
+### #platform-engineering — 12:05 PM
+
+**Marcus Webb:**
+> @[you] Re: ElastiCache node type change — yes, we've done it once before (last June, went from r6g.medium to r6g.large). It's a rolling replacement on the replication group. Primary fails over to replica, old primary gets replaced, then replica gets replaced. Total time was ~15 min. Experienced about 2-3 seconds of connection hiccups during failover — apps reconnected automatically.
+> 
+> One gotcha: make sure the application connection pools handle the DNS change gracefully. Last time the catalog-service had a stale connection pool that held onto the old primary endpoint for about 60 seconds after failover. We had to add `tcp-keepalive 60` to the Redis parameter group after that. Should already be set from that incident.
+
+### #engineering-general — 12:12 PM
+
+**Ryan Mitchell:**
+> @[you] Category pages are noticeably snappier since about noon. Still not 100% but way better than this morning. Thanks for the quick turnaround. Let us know when the full fix is in.
+
+### #platform-engineering — 12:30 PM
+
+**Lisa Park:**
+> Inventory p99 peaked at 1.48s around 12:10 PM, now at 1.41s and declining with traffic. Looks like we cleared the peak without hitting the 1500ms threshold. I'll leave the alert in place through the week.
+> 
+> Also — for the postmortem, I pulled the error budget impact numbers:
+> ```
+> Order Service Error Budget:
+>   Start of day:     74.0%
+>   Post-incident:    65.2%  (8.8% burned)
+>   Current (12:30):  64.9%  (minor continued burn from baseline errors)
+>   
+>   At current baseline error rate (0.1%), budget recovers to 
+>   ~74% over the next 7 days. No velocity tier change needed.
+> ```
+
+---
+
+## 1:00 PM — Back at Desk
+
+**Your afternoon plate:**
+
+```
+1:00 PM — Sarah's Q1 priorities email (15 min)
+1:30 PM — Priya's Linkerd PR #347 review
+2:00 PM — Circuit breaker design meeting (Order team)
+3:00 PM — EKS upgrade runbook (continue)
+4:00 PM — Postmortem draft
+4:30 PM — Daily wrap-up
+```
+
+---
+
+## 📧 Sarah's Email — Q1 Priorities
+
+For reference, her proposed list:
+```
+1. EKS upgrade 1.28 → 1.29 (overdue)
+2. Migrate remaining ELK → Loki
+3. Implement cost optimization recommendations
+4. Self-service namespace provisioning for dev teams
+
+Also: PCI Phase 2 audit next month — Aisha needs our help
+```
+
+**She wants your opinions by Wednesday standup.**
+
+---
+
+Let's keep this moving. I want to see how you handle the mix of **strategic work** (Sarah's email, PR review) alongside **reactive work** (incident follow-through).
+
+**You've got two hours before the 2 PM meeting. What do you do with them?**
+
+
+
+# Monday 1:00 PM — Afternoon Block
+
+---
+
+## 1:00 PM — Sarah's Q1 Priorities (15 min)
+
+### 🧠 THINKING
+
+```
+Sarah's list is reasonable but I have opinions on ordering and 
+one glaring omission. Let me think through this:
+
+1. EKS 1.28→1.29 — Yes, overdue. K8s version skew policy means 
+   1.28 falls out of support soon. This is non-negotiable. Already 
+   working on the runbook (PLAT-892). Priority 1 — agreed.
+
+2. ELK→Loki migration — Yes, we're running dual logging stacks. 
+   ELK is expensive (compute + license), Loki is already handling 
+   primary workloads. This is cost + operational simplification. 
+   But it's a multi-sprint effort with team coordination. 
+   Priority 2-3 range.
+
+3. Cost optimization — GP3 migration (PLAT-910) is low-hanging 
+   fruit. But "cost optimization" is broad. Need to scope it.
+   Medium priority, can run in parallel.
+
+4. Self-service namespace provisioning — Big quality-of-life for 
+   dev teams, reduces our ticket load. But it's a PROJECT — needs 
+   RBAC, quotas, network policies, Kyverno policies, ArgoCD 
+   AppProject auto-creation. Not a 1-sprint thing. Important 
+   but lower urgency than the others.
+
+WHAT'S MISSING FROM HER LIST:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- PCI Phase 2 audit prep. She mentions it as an aside but this 
+  should be ON the priority list. Audits have hard deadlines. 
+  If we don't prep controls documentation, we fail the audit.
+  
+- Observability gaps — TODAY exposed two:
+  a) No Redis cache hit rate alerting (PLAT-919)
+  b) Canary analysis doesn't account for traffic volume (PLAT-916)
+  These aren't Q1 epics but should be called out as tactical debt.
+
+- Today's incident also exposed: quarterly data loads need capacity 
+  planning gates. Process debt.
+
+ORDERING (my recommendation):
+  1. EKS upgrade (overdue, support deadline, ~2-3 weeks)
+  2. PCI Phase 2 prep (hard deadline, compliance risk)
+  3. ELK→Loki migration (cost savings, operational simplification)
+  4. Cost optimization (GP3 + right-sizing, can parallel with others)
+  5. Self-service namespaces (important but can start Q1, finish Q2)
+```
+
+### 🔧 ACTION — Draft reply to Sarah
+
+```
+From: [me]
+To: Sarah Chen
+Subject: Re: Q1 Platform Priorities — Review Before Wednesday Standup
+
+Sarah,
+
+Reviewed the list. Agree with all four items. My take on ordering 
+and one addition:
+
+RECOMMENDED PRIORITY ORDER:
+
+1. EKS 1.28→1.29 (agree — non-negotiable)
+   Already building the runbook (PLAT-892, due Friday). Target 
+   execution: Week 2-3 of Q1. Need a maintenance window.
+
+2. PCI Phase 2 audit prep (suggest adding explicitly)
+   You mentioned Aisha needs our help — I'd put this on the 
+   official list since audit has a hard deadline. Controls 
+   documentation, evidence collection, and any gaps Aisha 
+   identifies will eat real capacity. Rather scope it now than 
+   scramble later.
+
+3. ELK→Loki migration
+   Dual-stack is costing us compute + operational overhead. 
+   Loki is handling primary workloads already. Main effort is 
+   migrating the remaining teams still querying Kibana and 
+   decommissioning the ELK cluster. Multi-sprint, but high ROI.
+
+4. Cost optimization
+   GP3 migration (PLAT-910) is quick wins. I'd also include 
+   the Redis right-sizing from today's incident (PLAT-918) and 
+   any Karpenter consolidation tuning. Can run in parallel.
+
+5. Self-service namespace provisioning
+   Start design in Q1, deliver Q2. Needs RBAC model, quotas, 
+   network policies, ArgoCD integration. Worth doing right 
+   rather than rushing.
+
+TACTICAL DEBT (not epics, but should be on our radar):
+- Canary analysis traffic-volume gate (PLAT-916, from today's 
+  incident)
+- Redis/cache alerting gaps (PLAT-919)
+- Quarterly data load capacity planning process (PLAT-920)
+
+Happy to walk through any of this Wednesday. Also — today's 
+incidents would make a good case study for why #2 and the 
+tactical items matter if James needs justification.
+
+— [me]
+```
+
+---
+
+## 1:20 PM — Priya's Linkerd PR #347 Review
+
+### 🔧 ACTION — Open PR #347
+
+### 🧠 THINKING
+
+```
+Priya mentioned this does two things:
+1. Linkerd version upgrade
+2. Trust anchor cert validity 365d→3650d + cert-manager auto-rotation
+
+Item 2 is the fix we identified as critical in Phase 7 Lesson 2 — 
+the 365-day certificate time bomb. This is important to get right.
+
+I need to check:
+- What Linkerd version are we going FROM and TO?
+- Changelog for breaking changes between versions
+- cert-manager issuer configuration — is the trust anchor managed 
+  correctly? (CA cert → cert-manager, issuer cert rotated 
+  automatically 30d before expiry)
+- Is the identity issuer cert ALSO managed, or just the trust anchor?
+- PDB on Linkerd control plane during upgrade?
+- Proxy injection — will existing pods need restart?
+- Helm values diff — anything unexpected?
+```
+
+### 🔧 ACTION — Review the PR diff
+
+Checking for:
+
+**1. Version bump — breaking changes?**
+```
+# What versions?
+# Check the Chart.yaml or values change
+```
+
+**2. Certificate chain correctness:**
+```yaml
+# MUST have this structure:
+# Trust anchor CA (3650d, cert-manager managed)
+#   └── Identity issuer cert (48h, auto-rotated by cert-manager)
+#        └── Proxy leaf certs (24h, auto-rotated by Linkerd)
+
+# Need to verify:
+# - cert-manager Certificate resource for trust anchor
+# - cert-manager Issuer/ClusterIssuer for identity issuer
+# - Linkerd Helm values reference the cert-manager-managed secrets
+# - renewBefore is set (should be 30d for anchor, 25h for issuer)
+```
+
+**3. Upgrade safety:**
+```
+# - CRD updates included? (Linkerd CRDs need to be applied 
+#   before the control plane upgrade)
+# - Proxy auto-inject means existing pods keep old proxy until 
+#   restart. Need a rollout restart plan or documentation.
+# - Data plane (proxy) version skew — how many versions back 
+#   is supported?
+```
+
+**4. What I'm looking for in the review:**
+
+```
+GREEN FLAGS:
+  ✓ CRD update step documented/automated
+  ✓ cert-manager Certificate + Issuer resources for both 
+    trust anchor and identity issuer
+  ✓ renewBefore set appropriately
+  ✓ Trust anchor stored in K8s Secret referenced by Linkerd 
+    Helm values (identityTrustAnchorsPEM from secret)
+  ✓ Rollout restart plan for existing meshed pods
+  ✓ PDB respected during control plane upgrade
+
+RED FLAGS:
+  ✗ Trust anchor cert generated manually and pasted into values
+  ✗ No CRD update step
+  ✗ Missing renewBefore
+  ✗ Identity issuer cert not managed by cert-manager
+  ✗ No rollout restart strategy for data plane proxies
+  ✗ Version jump skips a minor version (may need stepping stones)
+```
+
+**What does the PR diff show me?**
+
+---
+
+## 💬 COMMS — Quick acknowledgments
+
+### Reply to Marcus (1:25 PM) — #platform-engineering
+
+```
+@marcus.webb Thanks — that's exactly the context I needed for 
+tonight's Redis upgrade. Good call on the tcp-keepalive and stale 
+connection pool. I'll verify tcp-keepalive 60 is set in our 
+current parameter group before the change window, and test the 
+failover in staging first this afternoon if I get time.
+
+Will write up the change request for tonight's window after the 
+2 PM meeting.
+```
+
+### Reply to Lisa (1:26 PM) — #platform-engineering
+
+```
+@lisa.park Perfect — thanks for the budget numbers. Using those 
+in the postmortem. And good call leaving the inventory p99 alert 
+through the week — want to see how it behaves as the 2000ms 
+interim timeout settles in.
+```
+
+### Reply to Ryan (1:26 PM) — #engineering-general
+
+```
+@ryan.mitchell Glad it's improving. We bumped Redis memory as a 
+quick fix — full fix is a node upgrade tonight during maintenance 
+window. Should be back to baseline by tomorrow morning. I'll 
+post confirmation in the morning.
+```
+
+---
+
+**Waiting on the PR diff, then heading into the 2 PM meeting. What does Priya's PR look like?**
