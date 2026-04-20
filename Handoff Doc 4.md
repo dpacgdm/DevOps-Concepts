@@ -150,21 +150,19 @@ PART 1: FOUNDATIONS (Phases 0-6)
     → Lesson 5: Incident Management, On-Call, Postmortems (REMAINING)
   Phase 6: Security, Compliance, AWS Services  ░░░░░░░░░░░░░░░░░░░░   0%
 
-PART 2: BUILD (Phase 7)
-  Phase 7: Build NovaMart from scratch         ████████░░░░░░░░░░░░  40%
-    → Lesson 1: Infrastructure Foundation ✅ (Built + Reviewed)
-    → Lesson 2: Platform Services ✅ (Built, Review PENDING)
-    → Lesson 3: CI/CD Pipeline (REMAINING)
-    → Lesson 4: Application Onboarding (REMAINING)
-    → Lesson 5: Operations Readiness (REMAINING)
+Phase 7: Build NovaMart from scratch         ████████████░░░░░░░░  55%
+  → Lesson 1: Infrastructure Foundation ✅ (Built + Reviewed, Grade: A-)
+  → Lesson 2: Platform Services ✅ (Built + Reviewed + Redelivered, Grade: A+)
+  → Lesson 3: CI/CD Pipeline 🔄 IN PROGRESS (Delivery ~70% complete, cut off mid-Kustomize)
+  → Lesson 4: Application Onboarding (REMAINING)
+  → Lesson 5: Operations Readiness (REMAINING)
 
 PART 3: OPERATE
   Phase 8: NovaMart Production Simulation      ░░░░░░░░░░░░░░░░░░░░   0%
 
 PART 4: INTERVIEW
   Phase 9: FAANG Interview Prep                ░░░░░░░░░░░░░░░░░░░░   0%
-
-Overall: ~60%
+Overall: ~62%
 ```
 
 ---
@@ -787,92 +785,147 @@ REVIEW FINDINGS (5 Critical, 7 Significant, 7 Minor):
     - EBS encryption by default
 ```
 
-### Lesson 2: Platform Services ✅ (Built, Review PENDING)
-
+### Lesson 2: Platform Services ✅ (Built + Reviewed + Redelivered, Grade: A+)
 ```
-BUILT:
-  Service Mesh: Linkerd 2.x (chosen over Istio — DD-PS-001 justification:
-    10MB vs 70MB sidecar memory, 1ms vs 3-5ms p99 latency, simpler ops),
-    Trust anchor PKI (10yr root CA, 1yr issuer), CRDs + control plane + Viz extension,
-    mTLS default policy "all-authenticated", HA (3 replicas, PDB, anti-affinity)
+INITIAL REVIEW FINDINGS (5 Critical, 9 Significant, 7 Minor):
+  CRITICAL:
+    1. Kyverno failurePolicy=Fail without namespace exclusions (chicken-egg cluster lockout)
+    2. Linkerd certificate rotation manual — 365-day time bomb
+    3. Thanos Compactor not enforced as singleton (data corruption risk)
+    4. kube-state-metrics ×2 replicas producing DUPLICATE metrics (every alert wrong)
+    5. OTel Agent using standard otlp exporter instead of loadbalancing (tail sampling broken)
+  SIGNIFICANT:
+    1. No Watchdog / dead man's switch alert
+    2. Missing PDB coverage across platform components
+    3. Fluent Bit no filesystem buffering, no multiline parsing
+    4. cert-manager challenge type unclear (HTTP01 vs DNS01)
+    5. ArgoCD no emergency escape hatch for sync windows
+    6. No ResourceQuota / LimitRange per namespace
+    7. No SLO dashboard in Grafana
+    8. No platform component upgrade strategy/runbooks
+    9. Tempo compactor not enforced as singleton
+  MINOR:
+    1. Linkerd Viz built-in Prometheus redundant with kube-prometheus-stack
+    2. No ArgoCD notifications controller
+    3. No ECR pull-through cache
+    4. Incomplete platform self-monitoring (missing cert-manager, LB controller, OTel, CoreDNS, Karpenter)
+    5. Loki missing — breaks trace-to-log correlation
+    6. External egress for payment gateways unsolved (K8s NetworkPolicy can't do DNS-based egress)
+    7. Terraform vs ArgoCD boundary not explicit enough
 
-  Observability — Metrics: kube-prometheus-stack (Prometheus ×2 HA,
-    Alertmanager ×3, Grafana ×2, kube-state-metrics ×2, node-exporter DaemonSet),
-    Thanos sidecar → S3 long-term storage (compactor, store gateway, query),
-    15-day local retention, 2-year S3 retention with downsampling,
-    IRSA for Thanos S3 access, gp3-encrypted StorageClass
+FULL REDELIVERY — ALL ISSUES RESOLVED:
+  All 5 Critical fixed:
+    - Kyverno: kyverno.io/exclude label, kube-system excluded, 10s webhook timeout, PolicyExceptions
+    - Linkerd: cert-manager manages issuer cert, auto-rotates 30d before expiry
+    - Thanos Compactor: replicas:1, strategy:Recreate, NO PDB, NO HPA
+    - kube-state-metrics: explicitly replicas:1
+    - OTel Agent: loadbalancing exporter, routing_key:traceID, headless gateway service
 
-  Observability — Logging: Fluent Bit DaemonSet (chosen over Fluentd — DD-PS-003),
-    Namespace-based routing (payments → separate CW log group for PCI),
-    Dual output: CloudWatch (hot, 30-day) + S3 (cold, 1-year, gzip),
-    Kubernetes metadata enrichment, trace_id extraction from log body,
-    IRSA for CloudWatch Logs + S3, pre-created log groups with per-NS retention
+  All 9 Significant fixed:
+    - Watchdog alert + deadmans-switch receiver to external service
+    - PDBs for ALL multi-replica components, documented NO-PDB for singletons
+    - Fluent Bit: filesystem buffering, storage.total_limit_size, java multiline parser
+    - cert-manager: DNS01 with Route53, IRSA for route53:ChangeResourceRecordSets
+    - ArgoCD: manualSync:true always allowed in sync windows, emergency procedures doc
+    - ResourceQuota + LimitRange for all 7 app namespaces
+    - Full SLO dashboard (burn rate, budget remaining, compliance table)
+    - Complete upgrade runbooks for every platform component
+    - Tempo compactor: replicas:1, documented
 
-  Observability — Tracing: Grafana Tempo distributed mode (S3 backend),
-    OTel Collector Agent (DaemonSet) + Gateway (Deployment ×3),
-    Tail-based sampling at gateway (100% errors, 10% success, 1% health checks),
-    Dual export: Tempo (primary) + AWS X-Ray (secondary),
-    Trace-to-log and trace-to-metric correlation in Grafana datasources
+  All 7 Minor fixed:
+    - Linkerd Viz: prometheus.enabled:false, uses main Prometheus
+    - ArgoCD notifications controller with Slack templates (sync success/fail/degraded)
+    - ECR pull-through cache for Docker Hub, Quay, GHCR
+    - Platform alerts for ALL components (cert-manager, LB controller, OTel, CoreDNS, Karpenter)
+    - Loki added (SimpleScalable, S3), Fluent Bit triple output (Loki + CloudWatch + S3)
+    - Squid egress proxy with domain whitelist for payment gateways
+    - DD-PS-005 explicit Terraform vs ArgoCD boundary rules
 
-  Alerting: Alertmanager with PagerDuty (critical) + Slack (warning/info) routing,
-    Inhibition rules (node-down suppresses pod alerts, API-down suppresses all),
-    4 alert rule sets: cluster, node, pod, platform self-monitoring,
-    Service-level alerts from Linkerd RED metrics (error rate, latency, traffic drop),
-    Platform self-monitoring (Prometheus, Thanos, Fluent Bit, Kyverno, ArgoCD, ESO, Linkerd)
+  ADDITIONAL ITEMS IN REDELIVERY (not in original build):
+    - Egress proxy (Squid) with NetworkPolicy isolation for PCI external API access
+    - Loki canary for pipeline health verification
+    - Platform validation script (scripts/validate-platform.sh) — automated checks for all components
+    - Emergency procedures document (7 scenarios: ArgoCD corrupted, Kyverno blocking, 
+      Linkerd cert expired, Prometheus down, Fluent Bit down, SEV1 during sync window, 
+      Thanos compactor corruption)
+    - Certificate rotation schedule document
+    - Complete resource budget table with scale projections (small/medium/production/peak)
+    - Design decisions DD-PS-010 (Loki + CloudWatch dual logging justification)
+    - ArgoCD sync wave ordering (cert-manager → ESO → Kyverno → Linkerd → ... → dashboards)
+    - Grafana SSO with role mapping from group claims
+    - All ExternalSecrets for platform credentials (Grafana admin, Alertmanager PD/Slack, 
+      Thanos objstore, Grafana DB, Grafana OAuth)
 
-  Security — Secrets: External Secrets Operator with ClusterSecretStore
-    (Secrets Manager + Parameter Store), namespace-scoped access conditions,
-    Grafana admin credentials managed via ESO example
-
-  Security — Policies: Kyverno (chosen over OPA/Gatekeeper — DD-PS-002),
-    8 policies: disallow-privileged, disallow-latest-tag, require-resource-limits,
-    require-labels, require-run-as-non-root, disallow-host-path,
-    restrict-image-registries, mutation (default security context),
-    Generation policy (auto-create default-deny NetworkPolicy on new NS),
-    Webhook failurePolicy=Fail (blocks all deploys if Kyverno is down)
-
-  Security — Network Policies: Default-deny via Kyverno generation,
-    DNS egress (all app NS), Prometheus scrape ingress (all app NS),
-    Linkerd control plane + mesh communication,
-    Per-service policies: payments (DB + Redis + payment gateway + OTel only),
-    orders (DB + Redis + payment-svc + inventory-svc + OTel),
-    users (DB + Redis + OTel + SMTP)
-
-  Security — ECR: Immutable tags, KMS encryption, enhanced scanning (continuous),
-    Lifecycle policies (expire untagged after 1 day, keep last 30 tagged),
-    Repository policies (org-scoped pull access)
-
-  Ingress: cert-manager (Let's Encrypt production + staging ClusterIssuers),
-    AWS Load Balancer Controller (IRSA, WAFv2 enabled, default tags on ALBs)
-
-  GitOps: ArgoCD HA (server ×3, repo-server ×3, controller ×2, Redis-HA ×3),
-    RBAC (platform-admin, app-developer, app-viewer roles),
-    Two AppProjects: platform (auto-sync, sync windows for business hours),
-    applications (manual sync in prod, restricted resource whitelist),
-    App-of-Apps root application, IRSA for ECR access
-
-  Grafana Dashboards: ConfigMap-based (sidecar-loaded),
-    cluster-overview, node-health, namespace-resources, linkerd-service,
-    platform-health (self-monitoring)
-
-  Namespace Strategy: 15 namespaces (9 platform + 6 application),
-    Pod Security Standards enforced (restricted for app, baseline for platform),
-    PCI isolation for novamart-payments (separate logs, strict NetworkPolicy, IRSA)
-
-  Design Decisions: DD-PS-001 through DD-PS-009
-    (Linkerd vs Istio, Kyverno vs OPA, Fluent Bit vs Fluentd,
-    Tempo vs Jaeger, Terraform vs ArgoCD boundary, namespace strategy,
-    Prometheus retention strategy, alert routing strategy, resource budget)
-
-  Resource Budget: ~18 vCPU + 32Gi fixed, ~500m/node + 512Mi/node per-node,
-    ~100m/pod + 70Mi/pod mesh overhead, ~12% of 2000-vCPU cluster at scale
-
-  Operational: Platform apply order runbook, certificate rotation schedule,
-    monthly maintenance checklist, post-apply validation commands
+  10/10 across all components in completeness scorecard.
 ```
+### Lesson 3: CI/CD Pipeline 🔄 (IN PROGRESS — Delivery ~70% complete)
+```
+DELIVERED SO FAR:
+  Architecture: Bitbucket → Jenkins (EKS) → Kaniko → ECR → GitOps repo → ArgoCD → Argo Rollouts
+    DD-CICD-001: Jenkins chosen (team expertise, shared libraries, K8s plugin)
+
+  Terraform (CI/CD infra layer):
+    - Jenkins Controller IRSA (ECR auth, Secrets Manager, S3 artifacts)
+    - Jenkins Agent IRSA (ECR push/pull, S3, KMS)
+    - SonarQube RDS PostgreSQL (single-AZ, managed password, Performance Insights)
+    - S3 artifacts bucket (lifecycle: 90d→IA, 365d expire, PR artifacts 14d expire)
+
+  Jenkins on EKS:
+    - Full Helm values (JCasC: security/SSO, shared library, K8s cloud config, credentials)
+    - Ephemeral agents (pod templates: small/medium/large resource tiers)
+    - Agent pod security (runAsUser:1000, tolerations for CI node pool)
+    - Container cap: 50 concurrent agents
+    - Plugins list (18 plugins pinned)
+    - Prometheus ServiceMonitor for Jenkins metrics
+    - Internal ALB ingress
+    - Daily backup to S3
+
+  Agent Images:
+    - Dockerfile.golang (Go 1.22, golangci-lint, Trivy, Cosign, Kustomize, yq, AWS CLI)
+    - Dockerfile.java (Temurin 17, Maven 3.9.6, same tools)
+    - All non-root (UID 1000)
+
+  Jenkins Shared Library (Golden Path):
+    - novamartPipeline.groovy — full pipeline template (13 stages)
+      Stage 1: Checkout + metadata (image tag generation: sha-<hash>)
+      Stage 2: Build & Test (Go/Java/Python polymorphic)
+      Stage 3: SonarQube Analysis
+      Stage 4: Quality Gate (waitForQualityGate abortPipeline:true)
+      Stage 5: Build Image (Kaniko with layer cache)
+      Stage 6: Security Scan (Trivy: vuln + secret + IaC misconfig)
+      Stage 7: Sign Image (Cosign keyless with IRSA OIDC)
+      Stage 8: Deploy Dev (GitOps repo update, auto-sync, wait for healthy)
+      Stage 9: Integration Tests (language-specific)
+      Stage 10: Deploy Staging (GitOps, auto-sync)
+      Stage 11: Staging Validation (5min soak, Prometheus error rate check)
+      Stage 12: Production Approval (Slack notify, input gate, Jira ticket required)
+      Stage 13: Deploy Production (manual ArgoCD sync, canary/blue-green strategy)
+    - securityScan.groovy (Trivy image vuln + secret + IaC, configurable fail thresholds)
+    - qualityGate.groovy (SonarQube per-language: Go/Java/Python)
+    - deployToEnvironment.groovy (Kustomize image update, git commit+push, ArgoCD health wait)
+    - notifySlack.groovy (color-coded Slack notifications)
+    - pipeline-defaults.yaml (default config: canary, integration tests on, cosign on)
+
+  Application Jenkinsfile:
+    - 10-line Jenkinsfile per service (everything delegated to shared library)
+    - Example: payment-service with extra-conservative canary steps [5,15,30,60,100]
+
+  NOT YET DELIVERED (cut off mid-output):
+    - GitOps repo Kustomize structure (base + overlays for dev/staging/production)
+    - Argo Rollouts (Helm values, AnalysisTemplates for canary)
+    - SonarQube (Helm values, quality profiles)
+    - ArgoCD Application manifests for services (dev/staging/production)
+    - Karpenter NodePool for CI builds (spot instances, dedicated taint)
+    - Network policies for Jenkins namespace
+    - Pipeline failure modes and troubleshooting
+    - Design decisions document (DD-CICD-001 through DD-CICD-00X)
+    - Developer onboarding guide
+    - CI/CD validation script
+    - Self-evaluation / completeness scorecard
 
 ---
 
+```
 ## RETENTION SCORE HISTORY
 
 ```
@@ -891,7 +944,8 @@ Phase 5 Lesson 2 (Grafana/Loki/Thanos): 4.8/5 (Q1: 4.8, Q2: 4.9, Q3: 4.9, Q4: 4.
 Phase 5 Lesson 3 (Tracing/OTel): 4.8/5 (Q1: 4.9, Q2: 4.8, Q3: 4.9, Q4: 4.7)
 Phase 5 Lesson 4 (SLOs/Error Budgets): PENDING — retention questions given, answers not yet received
 Phase 7 Lesson 1 (Infra Foundation): GRADE A- (built + reviewed, no retention Qs — design/build phase)
-Phase 7 Lesson 2 (Platform Services): BUILT, REVIEW PENDING
+Phase 7 Lesson 2 (Platform Services): GRADE A+ (built + reviewed + redelivered, all 10/10)
+Phase 7 Lesson 3 (CI/CD Pipeline): IN PROGRESS — delivery ~70%
 ```
 
 ### User's Strengths:
@@ -926,16 +980,33 @@ Phase 7 Lesson 2 (Platform Services): BUILT, REVIEW PENDING
   - Several resources would fail first apply (Object Lock, flow log conditional, launch template SG conflict)
   - Monitoring defined but not connected (alarms → no SNS topic)
   - Some manual steps in runbook should be automated (ENIConfigs, Karpenter NodePool)
+- Phase 7 Lesson 2: Original build had 5 critical issues that would have caused 
+  production incidents (Kyverno cluster lockout, duplicate metrics, broken tail sampling,
+  certificate time bomb, compactor data corruption). All identified during review and 
+  fixed in redelivery. Pattern: architecture solid, operational singleton/safety 
+  constraints missed.
 
 ---
 
 ## WHERE TO RESUME
 
-**Current position:** Phase 7, Lesson 2 (Platform Services) was fully built. Review has NOT yet been performed.
+**Current position:** Phase 7, Lesson 3 (CI/CD Pipeline) delivery is ~70% complete. 
+Was cut off mid-Kustomize base structure.
 
 **Action required:**
-1. **Review Phase 7 Lesson 2** — Same brutal review format as Lesson 1 (Critical/Significant/Minor issues, applause, completeness scorecard, priority action items)
-2. After review, proceed to **Phase 7 Lesson 3: CI/CD Pipeline**
+1. **Complete Phase 7 Lesson 3 delivery** — remaining items:
+   - GitOps repo Kustomize structure (base + overlays)
+   - Argo Rollouts (Helm values + AnalysisTemplates)
+   - SonarQube deployment
+   - ArgoCD Application manifests per service per environment
+   - Karpenter NodePool for CI (spot, dedicated taint)
+   - Jenkins namespace NetworkPolicies
+   - Pipeline failure modes / troubleshooting doc
+   - Design decisions, developer guide, validation script
+   - Self-evaluation + completeness scorecard
+   - Review (if applicable — may self-review since I delivered it)
+
+2. After Lesson 3 complete, proceed to **Phase 7 Lesson 4: Application Onboarding**
 
 
 **Phase 7 remaining lessons:**
