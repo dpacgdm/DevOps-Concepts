@@ -7,32 +7,32 @@ We covered K8s networking in Phase 1. Now we go deeper into the control plane, h
 ### The Control Plane — What Runs Kubernetes
 
 ```
-┌─────────────────────── CONTROL PLANE ───────────────────────┐
-│                                                             │
-│  ┌──────────────┐  ┌───────────────┐  ┌──────────────────┐  │
-│  │  API Server   │  │   Scheduler   │  │ Controller      │  │
+┌─────────────────────── CONTROL PLANE ────────────────────────┐
+│                                                              │
+│  ┌───────────────┐  ┌───────────────┐  ┌──────────────────┐  │
+│  │  API Server   │  │   Scheduler   │  │ Controller       │  │
 │  │  (kube-apiserver)│ (kube-scheduler)│ │ Manager         │  │
 │  │               │  │               │  │ (kube-controller │  │
 │  │ THE gatekeeper│  │ WHERE does    │  │  -manager)       │  │
 │  │ ALL traffic   │  │ this pod go?  │  │                  │  │
 │  │ goes through  │  │               │  │ Reconciliation   │  │
 │  │ here. Period. │  │               │  │ loops. Desired   │  │
-│  └──────┬───────┘  └───────────────┘  │ vs actual state.  │  │
+│  └──────┬────────┘  └───────────────┘  │ vs actual state. │  │
 │         │                              └──────────────────┘  │
 │         │                                                    │
-│  ┌──────▼───────┐  ┌───────────────────────────────────┐     │
-│  │    etcd       │  │  Cloud Controller Manager         │     │
-│  │               │  │  (cloud-specific: AWS, GCP, Azure)│     │
-│  │ The database. │  │  Manages: LBs, nodes, routes      │     │
-│  │ All cluster   │  │  EKS: runs as AWS-managed service │     │
-│  │ state lives   │  └───────────────────────────────────┘     │
+│  ┌──────▼────────┐  ┌───────────────────────────────────┐    │
+│  │    etcd       │  │  Cloud Controller Manager         │    │
+│  │               │  │  (cloud-specific: AWS, GCP, Azure)│    │
+│  │ The database. │  │  Manages: LBs, nodes, routes      │    │
+│  │ All cluster   │  │  EKS: runs as AWS-managed service │    │
+│  │ state lives   │  └───────────────────────────────────┘    │
 │  │ here.         │                                           │
-│  └──────────────┘                                            │
+│  └───────────────┘                                           │
 └──────────────────────────────────────────────────────────────┘
 
-┌─────────────────────── WORKER NODE ─────────────────────────┐
-│                                                             │
-│  ┌──────────────┐  ┌───────────────┐  ┌──────────────────┐  │
+┌─────────────────────── WORKER NODE ──────────────────────────┐
+│                                                              │
+│  ┌───────────────┐  ┌───────────────┐  ┌──────────────────┐  │
 │  │   kubelet     │  │  kube-proxy   │  │  Container       │  │
 │  │               │  │               │  │  Runtime         │  │
 │  │ Agent on each │  │ Network rules │  │  (containerd)    │  │
@@ -40,7 +40,7 @@ We covered K8s networking in Phase 1. Now we go deeper into the control plane, h
 │  │ to API server.│  │ for Services  │  │  Actually runs   │  │
 │  │ Ensures pods  │  │               │  │  containers      │  │
 │  │ are running.  │  │               │  │                  │  │
-│  └──────────────┘  └───────────────┘  └──────────────────┘   │
+│  └───────────────┘  └───────────────┘  └──────────────────┘  │
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐    │
 │  │  Pods    [ container ] [ container ] [ container ]   │    │
@@ -2653,34 +2653,34 @@ and control plane, not just "it does mTLS."
 
 CONTROL PLANE (istiod):
 ┌──────────────────────────────────────────┐
-│                 istiod                    │
-│  ┌──────────┐ ┌─────────┐ ┌───────────┐ │
+│                 istiod                   │
+│  ┌───────────┐ ┌─────────┐ ┌───────────┐ │
 │  │  Pilot    │ │ Citadel │ │  Galley   │ │
-│  │          │ │         │ │           │ │
+│  │           │ │         │ │           │ │
 │  │ Service   │ │ Cert    │ │ Config    │ │
 │  │ discovery │ │ mgmt    │ │ validation│ │
 │  │ + config  │ │ + mTLS  │ │           │ │
 │  │ push to   │ │ rotation│ │           │ │
 │  │ Envoy     │ │         │ │           │ │
-│  └──────────┘ └─────────┘ └───────────┘ │
+│  └───────────┘ └─────────┘ └───────────┘ │
 └──────────────────┬───────────────────────┘
                    │ xDS API (pushes config to every Envoy)
                    │
 DATA PLANE (Envoy sidecars):
-┌──────────────────▼───────────────────────┐
+┌──────────────────▼────────────────────────┐
 │  Pod                                      │
-│  ┌────────────┐    ┌──────────────────┐  │
-│  │    App     │◄──►│  Envoy Proxy     │  │
-│  │ Container  │    │  (sidecar)       │  │
-│  │            │    │                  │  │
-│  │ Thinks it's│    │ - mTLS           │  │
+│  ┌────────────┐    ┌───────────────────┐  │
+│  │    App     │◄──►│  Envoy Proxy      │  │
+│  │ Container  │    │  (sidecar)        │  │
+│  │            │    │                   │  │
+│  │ Thinks it's│    │ - mTLS            │  │
 │  │ talking    │    │ - Load balancing  │  │
 │  │ directly   │    │ - Retries         │  │
 │  │ to other   │    │ - Circuit breaking│  │
 │  │ services   │    │ - Observability   │  │
 │  │            │    │ - Rate limiting   │  │
-│  └────────────┘    └──────────────────┘  │
-└──────────────────────────────────────────┘
+│  └────────────┘    └───────────────────┘  │
+└───────────────────────────────────────────┘
 
 # HOW TRAFFIC FLOWS:
 # App A sends request to App B (http://service-b:8080/api)
@@ -2879,10 +2879,10 @@ GITOPS PRINCIPLE:
   An automated process ensures the cluster matches Git.
   No manual kubectl apply. Ever.
 
-┌──────────┐    push     ┌──────────┐
-│Developer │────────────►│   Git    │
+┌──────────┐    push     ┌─────────────┐
+│Developer │────────────►│   Git       │
 │          │             │  (Bitbucket)│
-└──────────┘             └─────┬────┘
+└──────────┘             └─────┬───────┘
                                │ watch
                          ┌─────▼─────┐
                          │  ArgoCD   │
