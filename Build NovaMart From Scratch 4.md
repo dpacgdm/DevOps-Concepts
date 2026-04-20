@@ -13,18 +13,18 @@ This is the moment of truth. Every layer you've built gets exercised. If somethi
 Not random. Payment-service is the hardest onboarding because it touches **everything**:
 
 ```
-┌─────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────┐
 │                  payment-service (Go)                     │
 │                                                           │
-│  INBOUND:   API Gateway → (Linkerd mTLS) → payment-svc   │
+│  INBOUND:   API Gateway → (Linkerd mTLS) → payment-svc    │
 │  OUTBOUND:  RDS Postgres (payments DB)                    │
 │             Redis (idempotency cache)                     │
 │             SQS (order-events queue)                      │
 │             External: Stripe/Adyen via egress proxy       │
 │  SECRETS:   DB creds, API keys, signing keys              │
 │  COMPLIANCE: PCI-DSS scope, audit logging mandatory       │
-│  SLO:       99.95% availability, p99 < 500ms             │
-└─────────────────────────────────────────────────────────┘
+│  SLO:       99.95% availability, p99 < 500ms              │
+└───────────────────────────────────────────────────────────┘
 ```
 
 If you can onboard payment-service correctly, every other service is a simplified subset.
@@ -228,49 +228,49 @@ Go build. Commit to your repo. Tell me when it's ready for review.
                     ┌──────────────────────────────────────────────────────────┐
                     │                    TRAFFIC FLOW                          │
                     │                                                          │
-                    │   Client → ALB → Linkerd → api-gateway → payment-svc    │
+                    │   Client → ALB → Linkerd → api-gateway → payment-svc     │
                     │                                                          │
                     └──────────────────────────────────────────────────────────┘
 
-    ┌─────────────────────────────────────────────────────────────────────────────┐
-    │                         payment-service Pod                                 │
-    │                                                                             │
-    │  ┌──────────────────┐  ┌──────────────────────────────────────────────┐     │
-    │  │  linkerd-proxy    │  │  payment-service (Go)                       │     │
-    │  │  (sidecar, auto)  │  │                                            │     │
-    │  │  - mTLS           │  │  :8080  → HTTP API (app traffic)           │     │
-    │  │  - L7 metrics     │  │  :9090  → /metrics (Prometheus)            │     │
-    │  │  - retries        │  │  :8080/healthz → liveness probe            │     │
-    │  └──────────────────┘  │  :8080/readyz  → readiness probe            │     │
-    │                        │  :8080/startupz → startup probe             │     │
-    │  ┌──────────────────┐  │                                            │     │
-    │  │  init: dep-check  │  │  Structured JSON logs → stdout             │     │
-    │  │  (verify DB,Redis)│  │  OTel traces → manual SDK → Collector     │     │
-    │  └──────────────────┘  └──────────────────────────────────────────────┘     │
-    └─────────────────────────────────────────────────────────────────────────────┘
+    ┌──────────────────────────────────────────────────────────────────────────────┐
+    │                         payment-service Pod                                  │
+    │                                                                              │
+    │  ┌───────────────────┐  ┌──────────────────────────────────────────────┐     │
+    │  │  linkerd-proxy    │  │  payment-service (Go)                        │     │
+    │  │  (sidecar, auto)  │  │                                              │     │
+    │  │  - mTLS           │  │  :8080  → HTTP API (app traffic)             │     │
+    │  │  - L7 metrics     │  │  :9090  → /metrics (Prometheus)              │     │
+    │  │  - retries        │  │  :8080/healthz → liveness probe              │     │
+    │  └───────────────────┘  │  :8080/readyz  → readiness probe             │     │
+    │                         │  :8080/startupz → startup probe              │     │
+    │  ┌───────────────────┐  │                                              │     │
+    │  │  init: dep-check  │  │  Structured JSON logs → stdout               │     │
+    │  │  (verify DB,Redis)│  │  OTel traces → manual SDK → Collector        │     │
+    │  └───────────────────┘  └──────────────────────────────────────────────┘     │
+    └──────────────────────────────────────────────────────────────────────────────┘
                     │                    │              │            │
          ┌──────────┘          ┌─────────┘     ┌───────┘     ┌──────┘
          ▼                     ▼               ▼              ▼
-    ┌──────────┐     ┌──────────────┐   ┌──────────┐   ┌──────────────┐
+    ┌───────────┐     ┌──────────────┐   ┌──────────┐   ┌──────────────┐
     │ RDS Proxy │     │    Redis     │   │   SQS    │   │ Squid Egress │
     │ :5432     │     │ ElastiCache  │   │ order-   │   │ Proxy        │
     │     │     │     │ :6379        │   │ events   │   │ :3128        │
     │     ▼     │     └──────────────┘   │ + DLQ    │   │     │        │
     │ RDS PG    │                        └──────────┘   │     ▼        │
     │ payments  │                                       │ Stripe API   │
-    └──────────┘                                        │ Adyen API    │
+    └───────────┘                                       │ Adyen API    │
                                                         └──────────────┘
 
     ┌─────────────────────────────────────────────────────────────────────┐
-    │                     OBSERVABILITY FLOW                               │
+    │                     OBSERVABILITY FLOW                              │
     │                                                                     │
     │  App metrics (:9090) ──── ServiceMonitor ───→ Prometheus            │
     │  Linkerd metrics ──────── auto-scraped ─────→ Prometheus            │
-    │  App logs (stdout) ─────── Fluent Bit ──────→ Loki + CloudWatch    │
-    │  Audit logs (stdout) ──── Fluent Bit filter → S3 (Object Lock)     │
-    │  OTel traces (OTLP) ───── OTel Agent ───────→ OTel GW → Tempo     │
+    │  App logs (stdout) ─────── Fluent Bit ──────→ Loki + CloudWatch     │
+    │  Audit logs (stdout) ──── Fluent Bit filter → S3 (Object Lock)      │
+    │  OTel traces (OTLP) ───── OTel Agent ───────→ OTel GW → Tempo       │
     │                                                                     │
-    │  SLO burn rate alerts ──→ Alertmanager ──→ PagerDuty + Slack       │
+    │  SLO burn rate alerts ──→ Alertmanager ──→ PagerDuty + Slack        │
     └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -5817,7 +5817,7 @@ If someone added BOTH a migration init container AND a dependency-check init con
 
 ```
 ╔══════════════════════════════════════════════════════════════════════╗
-║           PAYMENT-SERVICE ONBOARDING — QUICK REFERENCE              ║
+║           PAYMENT-SERVICE ONBOARDING — QUICK REFERENCE               ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║                                                                      ║
 ║  NAMESPACE:     payments                                             ║
