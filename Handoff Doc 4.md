@@ -150,19 +150,21 @@ PART 1: FOUNDATIONS (Phases 0-6)
     → Lesson 5: Incident Management, On-Call, Postmortems (REMAINING)
   Phase 6: Security, Compliance, AWS Services  ░░░░░░░░░░░░░░░░░░░░   0%
 
-Phase 7: Build NovaMart from scratch         ████████████░░░░░░░░  55%
-  → Lesson 1: Infrastructure Foundation ✅ (Built + Reviewed, Grade: A-)
-  → Lesson 2: Platform Services ✅ (Built + Reviewed + Redelivered, Grade: A+)
-  → Lesson 3: CI/CD Pipeline 🔄 IN PROGRESS (Delivery ~70% complete, cut off mid-Kustomize)
-  → Lesson 4: Application Onboarding (REMAINING)
-  → Lesson 5: Operations Readiness (REMAINING)
+PART 2: BUILD
+  Phase 7: Build NovaMart from scratch         ████████████████░░░░  80%
+    → Lesson 1: Infrastructure Foundation ✅ (Built + Reviewed, Grade: A-)
+    → Lesson 2: Platform Services ✅ (Built + Reviewed + Redelivered, Grade: A+)
+    → Lesson 3: CI/CD Pipeline ✅ (Built + Reviewed, Grade: A)
+    → Lesson 4: Application Onboarding ✅ (Delivered, Pending Review/Grade)
+    → Lesson 5: Operations Readiness (REMAINING)
 
 PART 3: OPERATE
   Phase 8: NovaMart Production Simulation      ░░░░░░░░░░░░░░░░░░░░   0%
 
 PART 4: INTERVIEW
   Phase 9: FAANG Interview Prep                ░░░░░░░░░░░░░░░░░░░░   0%
-Overall: ~62%
+
+Overall: ~75%
 ```
 
 ---
@@ -988,43 +990,32 @@ Phase 7 Lesson 3 (CI/CD Pipeline): IN PROGRESS — delivery ~70%
 
 ---
 
+---
+
 ## WHERE TO RESUME
 
-**Current position:** Phase 7, Lesson 3 (CI/CD Pipeline) delivery is ~70% complete. 
-Was cut off mid-Kustomize base structure.
+**Current position:** Phase 7, Lesson 4 (Application Onboarding) has been fully delivered. Pending review/grading.
 
 **Action required:**
-1. **Complete Phase 7 Lesson 3 delivery** — remaining items:
-   - GitOps repo Kustomize structure (base + overlays)
-   - Argo Rollouts (Helm values + AnalysisTemplates)
-   - SonarQube deployment
-   - ArgoCD Application manifests per service per environment
-   - Karpenter NodePool for CI (spot, dedicated taint)
-   - Jenkins namespace NetworkPolicies
-   - Pipeline failure modes / troubleshooting doc
-   - Design decisions, developer guide, validation script
-   - Self-evaluation + completeness scorecard
-   - Review (if applicable — may self-review since I delivered it)
+1. **Review Phase 7 Lesson 4 delivery** — grade against criteria:
+   - Correctness (30%): Will it work on first apply?
+   - Security (25%): PCI-appropriate isolation, least privilege, audit trail
+   - Observability (20%): Detect payment failures within 2 minutes, end-to-end trace
+   - Operability (15%): Canary safety, rollback, migration safety, connection management
+   - Documentation (10%): Onboarding template reusable, design decisions clear
+   - All 8 traps addressed (Go OTel, connection pool math, NetworkPolicy DNS, canary low-traffic, secret rotation, migration ordering, PCI audit, init container ordering)
 
-2. After Lesson 3 complete, proceed to **Phase 7 Lesson 4: Application Onboarding**
+2. After review complete, proceed to **Phase 7 Lesson 5: Operations Readiness**
 
-
-**Phase 7 remaining lessons:**
+**Phase 7 remaining:**
 ```
-Lesson 3: CI/CD Pipeline
-          End-to-end from commit to production
-          (The deployment machinery)
-
-Lesson 4: Application Onboarding
-          Deploy payment-svc with full security + observability
-          (Prove the platform works)
-
 Lesson 5: Operations Readiness
-          SLOs, alerting, runbooks, DR, documentation
+          SLOs in practice, full runbooks, DR exercises,
+          chaos engineering, on-call handoff documentation
           (Prove you can operate what you built)
 ```
 
-Then continue: Phase 8 (Operate NovaMart) → Phase 9 (Interview Prep).
+Then continue: Phase 8 (Operate NovaMart — Production Simulation) → Phase 9 (FAANG Interview Prep).
 
 ---
 
