@@ -2373,3 +2373,990 @@ post confirmation in the morning.
 ---
 
 **Waiting on the PR diff, then heading into the 2 PM meeting. What does Priya's PR look like?**
+
+---
+
+# SIMULATION RESPONSE — PR #347 + Afternoon Continues
+
+**Quick note on your Sarah email: that's an A+ response. Reordering with justification, flagging the PCI omission, connecting today's incidents to priority rationale — that's how you influence upward. Moving on.**
+
+---
+
+## 📋 PR #347 — Linkerd Upgrade + Certificate Rotation
+
+**Author:** Priya Sharma
+**Branch:** `feat/linkerd-upgrade-cert-rotation`
+**Files changed:** 14 files
+**Description:**
+
+> Upgrades Linkerd from 2.14.7 → 2.14.10 (patch release, no minor version skip).
+> Switches trust anchor + identity issuer certificates to cert-manager auto-rotation.
+> Addresses the 365-day certificate time bomb identified in platform review.
+
+---
+
+### File 1: `platform/linkerd/Chart.yaml`
+
+```diff
+ dependencies:
+   - name: linkerd-crds
+-    version: 1.8.7
++    version: 1.8.10
+     repository: https://helm.linkerd.io/edge
+   - name: linkerd-control-plane
+-    version: 1.16.7
++    version: 1.16.10
+     repository: https://helm.linkerd.io/edge
+```
+
+### File 2: `platform/linkerd/values-production.yaml`
+
+```diff
+ linkerd-control-plane:
+   identity:
+-    issuer:
+-      tls:
+-        crtPEM: |
+-          -----BEGIN CERTIFICATE-----
+-          MIIBqDCCAU... (hardcoded issuer cert)
+-          -----END CERTIFICATE-----
+-        keyPEM: |
+-          -----BEGIN EC PRIVATE KEY-----
+-          MHQCAQEEIGz... (hardcoded issuer key)
+-          -----END EC PRIVATE KEY-----
++    externalCA: true
++    issuer:
++      scheme: kubernetes.io/tls
++
+   identityTrustAnchorsPEM: |
+-    -----BEGIN CERTIFICATE-----
+-    MIIBpTCCAUq... (hardcoded trust anchor)
+-    -----END CERTIFICATE-----
++    # Managed by cert-manager — injected via trust-manager
++    # See platform/linkerd/certificates.yaml
+
+   proxy:
+     resources:
+       cpu:
+         request: 100m
++        limit: 500m
+       memory:
+         request: 128Mi
++        limit: 256Mi
++
++  # Upgrade safety
++  podDisruptionBudget:
++    maxUnavailable: 1
+```
+
+### File 3: `platform/linkerd/certificates.yaml` (NEW)
+
+```yaml
+---
+# Trust Anchor CA — root of the Linkerd identity chain
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: linkerd-trust-anchor
+  namespace: linkerd
+spec:
+  isCA: true
+  commonName: root.linkerd.cluster.local
+  secretName: linkerd-trust-anchor
+  duration: 87600h    # 3650 days (~10 years)
+  renewBefore: 720h   # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: linkerd-self-signed-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# Self-signed ClusterIssuer for the trust anchor
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: linkerd-self-signed-issuer
+spec:
+  selfSigned: {}
+---
+# CA Issuer using the trust anchor
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: linkerd-identity-issuer
+  namespace: linkerd
+spec:
+  ca:
+    secretName: linkerd-trust-anchor
+---
+# Identity Issuer Certificate — signs proxy certs
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: linkerd-identity-issuer
+  namespace: linkerd
+spec:
+  isCA: true
+  commonName: identity.linkerd.cluster.local
+  secretName: linkerd-identity-issuer
+  duration: 48h
+  renewBefore: 25h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: linkerd-identity-issuer
+    kind: Issuer
+    group: cert-manager.io
+```
+
+### File 4: `platform/linkerd/trust-manager.yaml` (NEW)
+
+```yaml
+---
+# trust-manager Bundle to distribute trust anchor to all namespaces
+apiVersion: trust.cert-manager.io/v1alpha1
+kind: Bundle
+metadata:
+  name: linkerd-identity-trust-roots
+spec:
+  sources:
+    - secret:
+        name: "linkerd-trust-anchor"
+        key: "ca.crt"
+  target:
+    configMap:
+      key: "ca-bundle.crt"
+    namespaceSelector:
+      matchLabels:
+        linkerd.io/inject: enabled
+```
+
+### File 5: `platform/linkerd/upgrade-runbook.md` (NEW)
+
+```markdown
+# Linkerd 2.14.7 → 2.14.10 Upgrade Runbook
+
+## Pre-upgrade
+1. Verify cert-manager is healthy: `kubectl get pods -n cert-manager`
+2. Verify current Linkerd health: `linkerd check`
+3. Verify CRD versions: `kubectl get crds | grep linkerd`
+
+## Upgrade Steps
+1. Apply CRD updates: `helm upgrade linkerd-crds ...`
+2. Apply control plane: `helm upgrade linkerd-control-plane ...`
+3. Verify: `linkerd check`
+
+## Post-upgrade
+1. Verify certificate chain:
+   `linkerd identity`
+2. Restart meshed workloads to pick up new proxy:
+   `kubectl rollout restart deploy -n <namespace>`
+
+## Rollback
+1. `helm rollback linkerd-control-plane`
+2. `helm rollback linkerd-crds`
+```
+
+### File 6-9: Kyverno policy updates
+
+```yaml
+# File 6: platform/kyverno/policies/require-linkerd-injection.yaml
+# (No changes — existing policy, just reformatted)
+
+# File 7: platform/kyverno/policies/restrict-linkerd-admin.yaml (NEW)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-linkerd-namespace
+spec:
+  validationFailureAction: Enforce
+  rules:
+    - name: block-linkerd-modifications
+      match:
+        any:
+          - resources:
+              namespaces:
+                - linkerd
+              operations:
+                - CREATE
+                - UPDATE
+                - DELETE
+      exclude:
+        any:
+          - clusterRoles:
+              - cluster-admin
+              - platform-admin
+      validate:
+        message: "Only platform-admin can modify resources in linkerd namespace"
+        deny: {}
+```
+
+### File 10: `platform/argocd/applications/linkerd.yaml`
+
+```diff
+ spec:
+   source:
+     targetRevision: main
+     path: platform/linkerd
++  syncPolicy:
++    syncOptions:
++      - RespectIgnoreDifferences=true
++    automated:
++      prune: true
++      selfHeal: true
+   ignoreDifferences:
+     - group: ""
+       kind: Secret
+       name: linkerd-identity-issuer
+       jsonPointers:
+         - /data
+```
+
+### Files 11-14: Test/CI files
+
+```yaml
+# File 11: tests/linkerd-cert-test.yaml
+# cert-manager Certificate readiness test
+apiVersion: v1
+kind: Pod
+metadata:
+  name: linkerd-cert-test
+  annotations:
+    helm.sh/hook: test
+spec:
+  containers:
+    - name: test
+      image: bitnami/kubectl:latest
+      command:
+        - /bin/sh
+        - -c
+        - |
+          kubectl get certificate linkerd-trust-anchor -n linkerd -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' | grep -q "True"
+          kubectl get certificate linkerd-identity-issuer -n linkerd -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' | grep -q "True"
+  restartPolicy: Never
+
+# File 12: Updated CHANGELOG.md
+# File 13: Updated platform/README.md with cert rotation docs
+# File 14: .github/CODEOWNERS — added @platform-team for linkerd/
+```
+
+---
+
+## ℹ️ Priya's PR Comment
+
+**Priya Sharma** (PR description):
+> Tested in staging cluster last week. `linkerd check` passes. Certificate rotation tested by manually deleting the identity issuer secret — cert-manager recreated it within 30 seconds, Linkerd picked it up automatically.
+> 
+> I didn't do a rolling restart of all meshed workloads in staging after the upgrade — just tested with a fresh deploy of the test app. Existing pods continued working with the old proxy version.
+> 
+> The trust-manager bundle distributes the trust anchor CA to all namespaces with `linkerd.io/inject: enabled` label. This is how the Linkerd docs recommend handling trust anchor distribution.
+>
+> Let me know if I missed anything!
+
+---
+
+**It's 1:30 PM. You're reviewing this PR.**
+
+**What's your review? Approve, request changes, or approve with comments?**
+
+
+
+# PR #347 Review — Linkerd Upgrade + Certificate Rotation
+
+---
+
+## 🧠 THINKING — Review Pass (5 minutes)
+
+```
+OVERALL: This is strong work from Priya. cert-manager chain is 
+correct, trust-manager distribution is the right pattern, upgrade 
+runbook exists, Kyverno protection, ArgoCD ignoreDifferences for 
+the cert-manager-managed secret. She clearly did her homework.
+
+But I see issues. Let me go file by file.
+```
+
+---
+
+## 🔧 ACTION — PR Review: **Request Changes** (2 blocking, 5 non-blocking)
+
+### 🔴 BLOCKING — Must Fix Before Merge
+
+**BLOCKING 1: `certificates.yaml` — Identity issuer references wrong issuer**
+
+```yaml
+# CURRENT (line 43-46):
+spec:
+  issuerRef:
+    name: linkerd-identity-issuer    # ← THIS IS THE ISSUER, NOT THE CA
+    kind: Issuer
+
+# PROBLEM: The identity issuer Certificate references itself as its 
+# own issuer. This is circular. The identity issuer cert needs to be 
+# signed BY the trust anchor CA, not by itself.
+#
+# SHOULD BE:
+spec:
+  issuerRef:
+    name: linkerd-identity-issuer    # This Issuer uses the trust anchor 
+    kind: Issuer                     # CA secret as its signing cert — 
+                                     # which IS correct in the Issuer 
+                                     # definition (ca.secretName: 
+                                     # linkerd-trust-anchor)
+```
+
+```
+Wait — let me re-read this more carefully.
+
+Certificate "linkerd-identity-issuer" → issuerRef → Issuer 
+"linkerd-identity-issuer" → ca.secretName → "linkerd-trust-anchor"
+
+The Issuer "linkerd-identity-issuer" signs using the trust anchor 
+secret. The Certificate "linkerd-identity-issuer" asks that Issuer 
+to issue it. So the chain is:
+
+  SelfSigned ClusterIssuer 
+    → signs → Trust Anchor Certificate (stores in linkerd-trust-anchor secret)
+  
+  Issuer "linkerd-identity-issuer" (uses linkerd-trust-anchor as CA)
+    → signs → Identity Issuer Certificate
+
+Actually... that's correct. The naming is confusing because the 
+Issuer and the Certificate have the same name, but the chain is 
+right. Let me NOT flag this as blocking. I'll add a comment about 
+the naming confusion instead.
+
+ACTUALLY — wait. Re-reading the Issuer:
+
+  name: linkerd-identity-issuer
+  spec.ca.secretName: linkerd-trust-anchor
+
+And the Certificate:
+  name: linkerd-identity-issuer
+  issuerRef.name: linkerd-identity-issuer (the Issuer above)
+  secretName: linkerd-identity-issuer
+
+So the Issuer uses trust-anchor to sign → issues the identity 
+cert → stores in secret "linkerd-identity-issuer". Chain is valid.
+
+OK, not blocking. Moving on.
+```
+
+**BLOCKING 1 (actual): `certificates.yaml` — Trust anchor renewal creates a NEW CA key**
+
+```
+When cert-manager renews the trust anchor Certificate (every 
+~10 years minus 30 days), it generates a NEW private key by 
+default. This means a new CA. Every identity issuer cert and 
+every proxy cert in the mesh becomes untrusted instantly.
+
+The entire mesh breaks.
+
+For a trust anchor CA, you need trust anchor ROTATION, not 
+replacement. Linkerd supports trust bundle with multiple CAs 
+during rotation, but cert-manager's default renewal will swap 
+the key atomically.
+
+FIX: For a 10-year CA this isn't urgent, but the renewBefore: 720h 
+means cert-manager WILL try to renew it. Either:
+  a) Set renewBefore to something very small (like 24h) so it 
+     only kicks in right before actual expiry, and document 
+     that trust anchor rotation is a MANUAL operational procedure
+  b) Or add a runbook section for trust anchor rotation that 
+     follows Linkerd's bundle rotation procedure (add new CA to 
+     bundle → re-issue identity issuer → remove old CA)
+
+This needs to be addressed. If cert-manager auto-renews the 
+trust anchor and swaps the key, the mesh goes down.
+```
+
+**BLOCKING 2: `upgrade-runbook.md` — Missing rollout restart scope and ordering**
+
+```
+The runbook says:
+  "Restart meshed workloads to pick up new proxy"
+  `kubectl rollout restart deploy -n <namespace>`
+
+Problems:
+1. No namespace list. Which namespaces have meshed workloads? 
+   This needs to enumerate them or use a discovery command:
+   kubectl get ns -l linkerd.io/inject=enabled
+   
+2. No ordering. Payment service should be restarted LAST (most 
+   critical). Start with least-critical namespaces.
+
+3. No PDB verification before mass restart. If you blindly 
+   restart all deploys in a namespace simultaneously, you could 
+   violate availability.
+
+4. Priya's own comment says she DIDN'T test this in staging — 
+   "just tested with a fresh deploy." The proxy version skew 
+   between old and new pods needs to be validated.
+
+5. No rollback verification. How do you confirm the rollback 
+   actually worked? What does "linkerd check" output look like 
+   after a failed upgrade?
+
+FIX: Add a phased restart procedure:
+  a) List meshed namespaces by criticality
+  b) Restart one low-risk namespace first, validate
+  c) Proceed namespace by namespace
+  d) Monitor error rates between each batch
+  e) Document: old proxy version is compatible with new control 
+     plane for at least N versions (check Linkerd skew policy)
+```
+
+---
+
+### 🟡 NON-BLOCKING — Should Fix, Won't Block Merge
+
+**NB-1: `values-production.yaml` — Proxy CPU limit added**
+
+```yaml
+proxy:
+  resources:
+    cpu:
+      request: 100m
++     limit: 500m     # ← CAREFUL
+```
+
+```
+CPU limits on sidecar proxies are contentious. Linkerd proxies 
+are latency-sensitive — CPU throttling on a proxy adds latency 
+to EVERY request through the mesh. The Linkerd docs explicitly 
+recommend NOT setting CPU limits on proxies.
+
+I'd remove the CPU limit and keep only the request. Memory limit 
+is fine (proxies should have bounded memory).
+
+Not blocking because 500m is generous enough to rarely throttle, 
+but under heavy traffic on a hot pod, you could see CFS throttling.
+
+Recommendation: remove cpu.limit, keep memory.limit.
+```
+
+**NB-2: `trust-manager.yaml` — namespaceSelector is label-based**
+
+```yaml
+target:
+  namespaceSelector:
+    matchLabels:
+      linkerd.io/inject: enabled
+```
+
+```
+This only distributes the trust anchor to namespaces with 
+linkerd.io/inject: enabled. If a NEW namespace is created and 
+someone forgets the label, meshed pods in that namespace won't 
+have the trust anchor.
+
+Not blocking because our Kyverno policies should enforce this 
+label for any namespace that gets injection. But worth adding a 
+comment explaining the dependency, and ideally a validation check 
+in the runbook: "verify all meshed namespaces have the 
+linkerd.io/inject=enabled label."
+```
+
+**NB-3: `restrict-linkerd-admin.yaml` — Kyverno policy blocks ArgoCD**
+
+```yaml
+exclude:
+  any:
+    - clusterRoles:
+        - cluster-admin
+        - platform-admin
+```
+
+```
+ArgoCD's application controller manages resources in the linkerd 
+namespace (it's how we deploy Linkerd). Unless ArgoCD's service 
+account has cluster-admin or platform-admin ClusterRole, this 
+policy will block ArgoCD from syncing Linkerd resources.
+
+Check: does ArgoCD's SA have one of these roles? If it uses a 
+scoped role (which it should for least privilege), this policy 
+breaks ArgoCD sync.
+
+FIX: Add ArgoCD's service account to the exclusion list, or 
+exclude by service account name/namespace.
+```
+
+**NB-4: `linkerd-cert-test.yaml` — Test pod uses `latest` tag**
+
+```yaml
+image: bitnami/kubectl:latest    # ← Never :latest
+```
+
+```
+Pin the image version. We enforce this everywhere else.
+Also: this test pod doesn't have a security context (non-root, 
+read-only, drop capabilities). Not critical for a test hook 
+but we should lead by example.
+```
+
+**NB-5: Staged rollout not in ArgoCD sync policy**
+
+```
+The ArgoCD Application has automated sync with selfHeal: true.
+This means as soon as the PR merges, ArgoCD will auto-sync the 
+Linkerd upgrade.
+
+For infrastructure components like Linkerd, I'd prefer a manual 
+sync trigger (at least for the upgrade — can re-enable auto after).
+This gives us control over WHEN the upgrade happens. A mesh 
+control plane upgrade during peak traffic is risky.
+
+Recommendation: Set automated: false for this sync, add a comment 
+that auto-sync should be re-enabled post-upgrade validation. Or 
+use a sync window that restricts to maintenance hours.
+```
+
+---
+
+## 🔧 ACTION — Submit PR Review
+
+### 💬 PR Comment:
+
+```
+@priya.sharma Strong work. The cert-manager chain architecture is 
+correct, trust-manager distribution is the right pattern, and the 
+Kyverno protection is a nice touch. Testing by deleting the issuer 
+secret was a good validation.
+
+Requesting changes on 2 blocking items:
+
+🔴 BLOCKING:
+
+1. Trust anchor renewal — cert-manager will generate a new CA key 
+   on renewal by default. For a trust anchor, this breaks every 
+   proxy cert in the mesh simultaneously. We need to either treat 
+   trust anchor rotation as a manual procedure (reduce renewBefore) 
+   or document the Linkerd trust bundle rotation procedure. This is 
+   the most critical item.
+
+2. Upgrade runbook restart procedure — needs namespace ordering by 
+   criticality, PDB verification before restarts, phased approach 
+   (one namespace → validate → next), and proxy version skew 
+   documentation. You noted you didn't test this in staging — let's 
+   make sure the runbook covers it properly so whoever executes this 
+   does it safely.
+
+🟡 NON-BLOCKING (fix before or after merge):
+
+NB-1: Remove proxy CPU limit (Linkerd docs recommend against it — 
+      CFS throttling adds mesh latency). Keep memory limit.
+NB-2: Add comment on trust-manager namespaceSelector dependency 
+      on linkerd.io/inject label.
+NB-3: Kyverno policy may block ArgoCD sync — verify ArgoCD SA 
+      has excluded role, or add explicit SA exclusion.
+NB-4: Pin kubectl image version, add security context to test pod.
+NB-5: Consider manual ArgoCD sync for the upgrade itself — auto-sync 
+      means this deploys immediately on merge. Mesh upgrades should 
+      be scheduled during low-traffic windows.
+
+Happy to pair on the trust anchor rotation piece if you want — 
+it's a subtle problem. Overall this is solid — close to merge.
+```
+
+---
+
+## 🧠 THINKING — Post Review
+
+```
+Good work from Priya for 8 months in. The cert-manager chain 
+architecture was correct — she understood the problem and the 
+solution pattern. The trust anchor renewal issue is subtle and 
+I wouldn't expect a mid-level engineer to catch it. The runbook 
+gap is more about operational experience.
+
+The ArgoCD auto-sync issue (NB-5) is actually the one that scares 
+me most practically — if she merges and ArgoCD auto-syncs a mesh 
+control plane upgrade at 2 PM on a Monday, that's not great. 
+Might bump that to blocking actually...
+
+No — I flagged it clearly. She'll see it. Moving on to the 2 PM 
+meeting.
+```
+
+---
+
+**Review submitted. Heading to 2 PM meeting. Ready for the circuit breaker design session.**
+
+---
+
+# SIMULATION RESPONSE — PR Grade + Meeting Time
+
+## PR Review Grade: A+
+
+| Aspect | Assessment |
+|--------|-----------|
+| **Trust anchor renewal catch** | This is the kind of catch that prevents a mesh-wide outage 10 years from now — or more realistically, during the first manual rotation test. Genuinely senior-level. Most engineers look at the cert chain, say "looks right," and approve. |
+| **Self-correction honesty** | You thought the issuer reference was circular, re-read it, realized you were wrong, and moved on instead of flagging a false positive. That's intellectual discipline. |
+| **Blocking vs non-blocking** | Correct categorization. The two blockers are genuine ship-stoppers. The NB items are real but won't cause outages. |
+| **ArgoCD auto-sync flag** | You wavered on making this blocking. Your instinct was right — mesh upgrades auto-syncing on merge IS dangerous. But flagging it clearly as NB-5 with explanation is acceptable. Priya will see it. |
+| **Proxy CPU limit catch** | Correct. Linkerd docs do recommend against CPU limits on proxies. CFS throttling on a mesh proxy is mesh-wide latency injection. |
+| **Tone** | Constructive, specific, offered to pair. This is how you grow mid-level engineers into senior engineers. |
+
+**One thing you missed** (minor, not grading against it): The test pod (`linkerd-cert-test.yaml`) needs RBAC to read Certificate resources in the linkerd namespace. It uses `bitnami/kubectl` with no ServiceAccount binding — it'll likely fail with a 403 on `kubectl get certificate`. Trivial fix (add a ServiceAccount + RoleBinding to the test), but worth catching. Filing this under "would have caught on second pass."
+
+---
+
+## 2:00 PM — Circuit Breaker Design Meeting
+
+**Attendees:** You, Derek Huang (Order team), Nina Petrov (Order lead), Lisa Park (SRE)
+
+**Setting:** Video call. Derek shares his screen with the order-service code.
+
+---
+
+**Nina Petrov** (2:01 PM):
+> Thanks everyone for jumping on this. [You] — great job on the incident this morning. Derek, want to give context on the original change?
+
+**Derek Huang** (2:02 PM):
+> Sure. So after INC-2847 last month — where inventory went degraded for 40 minutes and the 5-second timeout caused thread pool saturation in order-service, which cascaded to cart-service — I wanted to fail fast. The idea was: if inventory can't answer in 800ms, the order should fail immediately rather than holding a thread for 5 seconds.
+> 
+> I tested it in staging at 3K rpm, inventory p99 was 400ms, so 800ms felt like 2x headroom. Obviously I didn't account for production load scaling the p99 up.
+> 
+> The 2000ms interim fix works for now, but I agree we need something smarter. I've been reading about circuit breakers — Resilience4j has one built in since we're Spring Boot. Question is: what does the right config look like?
+
+**Derek shares his screen — a draft Resilience4j configuration:**
+
+```java
+@CircuitBreaker(name = "inventoryService", fallbackMethod = "inventoryFallback")
+@Retry(name = "inventoryService")
+@TimeLimiter(name = "inventoryService")
+public CompletableFuture<InventoryResponse> reserveInventory(OrderRequest request) {
+    return CompletableFuture.supplyAsync(() -> 
+        inventoryClient.reserve(request.getItems())
+    );
+}
+
+public CompletableFuture<InventoryResponse> inventoryFallback(OrderRequest request, Throwable t) {
+    // What goes here?
+    return CompletableFuture.completedFuture(
+        InventoryResponse.builder().status("PENDING_VERIFICATION").build()
+    );
+}
+```
+
+```yaml
+# application.yml
+resilience4j:
+  circuitbreaker:
+    instances:
+      inventoryService:
+        registerHealthIndicator: true
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 100
+        failureRateThreshold: 50
+        waitDurationInOpenState: 30s
+        permittedNumberOfCallsInHalfOpenState: 10
+        minimumNumberOfCalls: 20
+  timelimiter:
+    instances:
+      inventoryService:
+        timeoutDuration: 2s
+  retry:
+    instances:
+      inventoryService:
+        maxAttempts: 2
+        waitDuration: 200ms
+        retryExceptions:
+          - java.util.concurrent.TimeoutException
+          - java.io.IOException
+```
+
+**Derek** (2:05 PM):
+> So the circuit breaker trips at 50% failure rate over a sliding window of 100 calls. When it's open, it goes straight to the fallback. After 30 seconds, it tries half-open with 10 test calls.
+> 
+> The fallback returns `PENDING_VERIFICATION` — the order gets created but flagged, and a background job reconciles inventory later.
+> 
+> My main questions:
+> 1. Is 50% failure rate threshold right, or too high?
+> 2. Is the fallback approach acceptable? We're basically creating orders without confirmed inventory.
+> 3. Should the circuit breaker metrics feed into our SLO somehow?
+> 4. Lisa mentioned something about the circuit breaker interacting with Linkerd's retry — do we have a retry amplification problem?
+
+**Lisa Park** (2:06 PM):
+> Yeah, my concern: Linkerd already does automatic retries on 503s at the mesh level. If your circuit breaker returns a 503 when open, Linkerd retries it, which hits the circuit breaker again, which returns another 503, which Linkerd retries... you get retry storms.
+> 
+> Also — the order-service has 12 replicas. Each replica has its own circuit breaker instance. Circuit breaker state isn't shared. So one replica might have its breaker open while another's is closed. Is that a problem?
+
+**Nina Petrov** (2:07 PM):
+> On the business side — creating orders without confirmed inventory is... risky. If inventory is actually out of stock and we accept the order, the customer gets an order confirmation, then we have to email them "sorry, out of stock" later. Customer experience team will hate that. But the alternative is failing the order entirely, which is also bad.
+> 
+> Is there a middle ground? Like a degraded UX — "we're experiencing delays, your order is being processed" — rather than a hard confirm?
+
+---
+
+**The room is looking at you. Derek's questions are technical. Lisa's raising a real distributed systems concern. Nina's raising a business concern.**
+
+**What's your input?**
+
+
+
+
+# 2:00 PM — Circuit Breaker Design Meeting
+
+---
+
+## 🧠 THINKING (15 seconds before responding)
+
+```
+Four questions on the table. Let me organize:
+
+1. Derek Q1: Failure rate threshold (50%) — config tuning
+2. Derek Q2: Fallback approach — business + technical
+3. Derek Q3: CB metrics → SLO — observability
+4. Lisa: Retry amplification + per-replica CB state — distributed systems
+5. Nina: Business impact of false confirms — product decision
+
+I need to address Lisa's concerns FIRST because they're 
+architectural — if we get retry amplification wrong, the whole 
+CB pattern makes things worse, not better. Then Derek's config, 
+then Nina's business concern.
+```
+
+---
+
+**Me** (2:08 PM):
+
+> Good questions all around. Let me take them slightly out of order because Lisa just raised the two things that will bite us hardest if we get wrong.
+
+---
+
+### Lisa's Concern 1: Retry Amplification
+
+> Lisa's right — this is the most dangerous interaction. Let me draw this out.
+
+```
+CURRENT DANGER — If CB returns 503 when open:
+
+  Client → Linkerd Proxy → order-service (CB OPEN) → returns 503
+                ↑                                          │
+                └────────── Linkerd retries 503 ───────────┘
+                
+  Result: Linkerd retries into an OPEN circuit breaker. Every 
+  retry is guaranteed to fail. You're just burning CPU and 
+  amplifying load for zero benefit.
+```
+
+> Three things we need to get right:
+>
+> **First** — when the circuit breaker is open, do NOT return 503. Return **429** with a `Retry-After` header or a **503 with a specific error body** and configure Linkerd's retry policy to NOT retry on circuit breaker responses. In Linkerd, we can configure retry budgets and retryable status codes. We should make the CB fallback response non-retryable at the mesh level.
+
+```yaml
+# Linkerd ServiceProfile for order-service
+spec:
+  routes:
+    - name: POST /api/v1/orders
+      condition:
+        method: POST
+        pathRegex: /api/v1/orders
+      isRetryable: false    # POST is not idempotent — Linkerd 
+                            # should NEVER retry order creation
+```
+
+> Actually — **bigger point**: Linkerd should never retry POST /api/v1/orders regardless of circuit breaker. Order creation is not idempotent. If Linkerd retries a POST that timed out but actually succeeded on the backend, you get duplicate orders. This should be `isRetryable: false` at the route level. Retries for this endpoint should ONLY happen inside the application code where you have idempotency key control.
+>
+> **Second** — Derek, your Resilience4j retry config should use an idempotency key to prevent duplicate inventory reservations:
+
+```java
+// The retry should only retry if the call DEFINITIVELY failed 
+// (timeout, connection refused), NOT if we got a response and 
+// aren't sure. The idempotency key should be passed to inventory 
+// service so it can deduplicate.
+```
+
+> **Third** — the retry and circuit breaker ordering matters. Resilience4j applies decorators outside-in. Your annotation order is `@CircuitBreaker → @Retry → @TimeLimiter`, which means:
+
+```
+Execution order (outside-in):
+  CircuitBreaker → Retry → TimeLimiter → actual call
+
+This means: CB checks first, if closed → Retry wraps the 
+TimeLimiter call. If the call times out, Retry retries it. 
+If retries exhaust, CB records it as a failure.
+
+This is CORRECT. You want retries INSIDE the circuit breaker 
+so that exhausted retries count as a single failure against the 
+CB sliding window. If it were reversed (retry outside CB), 
+each retry would independently hit the CB, tripping it faster.
+```
+
+> So the annotation order is right. Good instinct, Derek.
+
+---
+
+### Lisa's Concern 2: Per-Replica Circuit Breaker State
+
+> This is actually **fine**, and here's why.
+
+```
+12 REPLICAS, EACH WITH INDEPENDENT CB:
+
+  Scenario: Inventory service degrades.
+  
+  Replica 1:  sees 60% failures → CB OPENS  → fallback
+  Replica 2:  sees 45% failures → CB CLOSED → still trying
+  Replica 3:  sees 55% failures → CB OPENS  → fallback
+  ...
+  
+  Is this a problem? NO — it's actually BETTER than shared state.
+```
+
+> If inventory is degraded, replicas with more traffic to the slow inventory partitions trip first. Replicas that happen to hit healthy inventory instances stay open. This is natural load-adaptive behavior.
+>
+> Shared CB state across 12 replicas would mean one replica's bad experience trips the breaker for ALL replicas, even ones talking to healthy inventory instances. That's worse.
+>
+> The only scenario where per-replica CB is problematic is if your sliding window of 100 calls is too large relative to per-replica request rate. If each replica handles 500 rpm to inventory, 100 calls = 12 seconds of traffic. That's fine — responsive enough. If per-replica rate were very low (like 5 rpm), the window would take 20 minutes to fill and the CB would be useless. But at our scale, not a concern.
+>
+> Keep per-replica. Don't add shared state complexity (Redis-backed CB, etc). It's not needed.
+
+---
+
+### Derek Q1: Failure Rate Threshold
+
+> 50% is too high. Think about what 50% means — half your inventory calls are failing before you trip. At 6,200 rpm with 12 replicas, that's ~258 calls/min per replica. 50% failure means ~129 failed orders per replica before the breaker trips. Across 12 replicas that could be over a thousand failed orders.
+
+```
+RECOMMENDATION:
+  failureRateThreshold: 25
+  slowCallRateThreshold: 50      # ADD THIS — treat slow calls as half-failures
+  slowCallDurationThreshold: 1500ms  # "slow" = >1.5s
+  slidingWindowSize: 50          # Reduce from 100 — faster detection
+  minimumNumberOfCalls: 10       # Reduce from 20 — don't wait too long
+  waitDurationInOpenState: 15s   # Reduce from 30 — try recovery faster
+  permittedNumberOfCallsInHalfOpenState: 5  # Reduce — fewer probes needed
+```
+
+```yaml
+resilience4j:
+  circuitbreaker:
+    instances:
+      inventoryService:
+        registerHealthIndicator: true
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 50
+        failureRateThreshold: 25
+        slowCallRateThreshold: 50
+        slowCallDurationThreshold: 1500ms
+        waitDurationInOpenState: 15s
+        permittedNumberOfCallsInHalfOpenState: 5
+        minimumNumberOfCalls: 10
+        recordExceptions:
+          - java.util.concurrent.TimeoutException
+          - java.io.IOException
+          - io.grpc.StatusRuntimeException
+        ignoreExceptions:
+          - com.novamart.exceptions.BusinessValidationException
+```
+
+> Key addition: **slowCallRateThreshold**. This is what catches today's scenario — inventory isn't failing, it's SLOW. Without this, a 100% slow response rate never trips the breaker because nothing "failed." The circuit breaker just watches your threads burn. With slowCallDurationThreshold at 1500ms, any call over 1.5s counts as a slow call, and if 50% of calls are slow, the breaker trips.
+
+---
+
+### Derek Q2 + Nina's Business Concern: The Fallback
+
+> Nina, your instinct is right — "PENDING_VERIFICATION" that sends an order confirmation and then emails "sorry, out of stock" is the worst customer experience. You've set an expectation and broken it. 
+>
+> But Derek's also right that hard-failing every order during an inventory degradation is bad too.
+>
+> Here's the middle ground — **two-tier degradation**:
+
+```
+TIER 1 — CB CLOSED (normal operation):
+  Order → reserve inventory → confirm → process payment → done
+  (Current happy path. No change.)
+
+TIER 2 — CB OPEN (inventory degraded):
+  Two options depending on product type:
+
+  Option A: HIGH-CONFIDENCE ITEMS (stock level > threshold in cache)
+    → Accept order with "Processing" status (not "Confirmed")
+    → UI shows: "Your order is being processed. We'll confirm 
+      within 15 minutes."
+    → Background job reconciles inventory within SLA
+    → If stock confirmed → upgrade to Confirmed, send email
+    → If stock NOT available → notify customer, offer alternatives
+    
+  Option B: LOW-CONFIDENCE / HIGH-VALUE ITEMS
+    → Show degraded UI: "Inventory check is temporarily slow. 
+      Please try again in a few minutes."
+    → Return HTTP 202 or 503 with retry guidance
+    → Don't create the order at all
+
+  The key: you need a local inventory CACHE (Redis) with recent 
+  stock levels to make the confidence decision. If cache says 
+  "500 units in stock" and customer wants 1, that's high confidence. 
+  If cache says "3 units" or cache miss — low confidence, don't 
+  risk it.
+```
+
+> This is a product decision more than a technical one. I'd recommend Derek implements the technical capability for both tiers, and Nina works with product to define the confidence threshold and the customer-facing copy. Platform team can help with the monitoring piece.
+>
+> For NOW — the interim 2000ms timeout is holding. The circuit breaker implementation can be done properly this sprint without rushing.
+
+---
+
+### Derek Q3: CB Metrics → SLO
+
+> Yes, absolutely. The circuit breaker state should be a Prometheus metric. Resilience4j exposes this out of the box with the actuator integration:
+
+```
+KEY METRICS (auto-exposed by Resilience4j + Micrometer):
+  resilience4j_circuitbreaker_state{name="inventoryService"}
+    0 = closed, 1 = open, 2 = half_open
+
+  resilience4j_circuitbreaker_failure_rate{name="inventoryService"}
+  resilience4j_circuitbreaker_slow_call_rate{name="inventoryService"}
+  resilience4j_circuitbreaker_calls_seconds_count{state="successful|failed|ignored"}
+```
+
+> What we should build:
+>
+> **Alert:** Circuit breaker open for >2 minutes → SEV3 PagerDuty
+>
+> **SLO interaction:** When the CB is open and serving fallback responses, those should count as DEGRADED, not as failures against the SLO — IF the fallback provides acceptable user experience. This is where your SLI definition matters. If the SLI is "successful order creation," a "Processing" fallback response is still a success from the user's perspective. But if the reconciliation job later fails, THAT failure counts.
+>
+> Lisa — thoughts on how to encode that in the SLI?
+
+---
+
+### Summary and Action Items
+
+> Let me summarize what we're aligning on:
+
+```
+IMMEDIATE (this week):
+  ✓ 2000ms timeout + 1 retry stays as interim (already deployed)
+  
+THIS SPRINT:
+  1. Derek: Implement Resilience4j CB with revised config above
+  2. Derek: Add Linkerd ServiceProfile — isRetryable:false on 
+     POST /api/v1/orders (critical safety item)
+  3. Derek: Add idempotency key to inventory reservation calls
+  4. Derek + Nina: Define fallback tiers with product team
+  5. Me: Add CB state alerting (PrometheusRule)
+  6. Lisa: Update SLI definition to handle degraded-mode responses
+
+TESTING REQUIREMENTS:
+  - Staging load test at production-equivalent RPM (not 3K)
+  - Chaos test: inject inventory latency, verify CB trips correctly
+  - Verify Linkerd does NOT retry POST /api/v1/orders
+  - Verify retry amplification doesn't occur
+
+POST-IMPLEMENTATION:
+  - Update the canary analysis to include CB trip rate as a 
+    rollback signal
+  - Document CB config in runbook (thresholds, what each param means)
+```
+
+> Sound good? I'll create the umbrella Jira ticket linking all of this back to today's incident and INC-2847.
+
+---
+
+**Waiting for the room's response, then wrapping the meeting.**
