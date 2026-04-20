@@ -3507,23 +3507,1766 @@ resource "aws_ebs_encryption_by_default" "enabled" {
 ```
 
 ```hcl
-# modules/security-baseline/outputs.tf
+# ─── DATA TIER MODULE VARIABLES ─────────────────────────────────────
 
-output "eks_secrets_kms_key_arn" {
-  description = "KMS key ARN for EKS secrets encryption"
-  value       = aws_kms_key.eks_secrets.arn
+variable "environment" {
+  description = "Environment name"
+  type        = string
 }
 
-output "rds_kms_key_arn" {
+variable "project" {
+  description = "Project name"
+  type        = string
+}
+
+variable "vpc_id" {
+  description = "VPC ID"
+  type        = string
+}
+
+variable "data_subnet_ids" {
+  description = "Subnet IDs for data tier (private data subnets)"
+  type        = list(string)
+}
+
+variable "eks_node_security_group_id" {
+  description = "Security group ID of EKS nodes (allowed to access data tier)"
+  type        = string
+}
+
+variable "tags" {
+  description = "Common tags"
+  type        = map(string)
+  default     = {}
+}
+
+# ─── RDS VARIABLES ──────────────────────────────────────────────────
+
+variable "rds_instances" {
+  description = "Map of RDS instances to create"
+  type = map(object({
+    engine_version        = string
+    instance_class        = string
+    allocated_storage     = number
+    max_allocated_storage = number
+    database_name         = string
+    multi_az              = bool
+    backup_retention_period = number
+    deletion_protection   = bool
+  }))
+  default = {
+    payments = {
+      engine_version        = "15.5"
+      instance_class        = "db.r6g.xlarge"
+      allocated_storage     = 100
+      max_allocated_storage = 500
+      database_name         = "payments"
+      multi_az              = true
+      backup_retention_period = 30
+      deletion_protection   = true
+    }
+    orders = {
+      engine_version        = "15.5"
+      instance_class        = "db.r6g.large"
+      allocated_storage     = 100
+      max_allocated_storage = 500
+      database_name         = "orders"
+      multi_az              = true
+      backup_retention_period = 30
+      deletion_protection   = true
+    }
+    users = {
+      engine_version        = "15.5"
+      instance_class        = "db.r6g.large"
+      allocated_storage     = 50
+      max_allocated_storage = 200
+      database_name         = "users"
+      multi_az              = true
+      backup_retention_period = 30
+      deletion_protection   = true
+    }
+  }
+}
+
+variable "rds_kms_key_arn" {
   description = "KMS key ARN for RDS encryption"
-  value       = aws_kms_key.rds.arn
+  type        = string
 }
 
-output "s3_kms_key_arn" {
-  description = "KMS key ARN for S3 encryption"
-  value       = aws_kms_key.s3.arn
+variable "rds_master_password_management" {
+  description = "Use AWS-managed master password via Secrets Manager"
+  type        = bool
+  default     = true
 }
 
-output "general_kms_key_arn" {
-  description = "KMS key ARN for general-
+variable "rds_performance_insights_enabled" {
+  description = "Enable Performance Insights"
+  type        = bool
+  default     = true
+}
 
+variable "rds_monitoring_interval" {
+  description = "Enhanced Monitoring interval in seconds (0 to disable)"
+  type        = number
+  default     = 60
+}
+
+# ─── ELASTICACHE VARIABLES ──────────────────────────────────────────
+
+variable "redis_node_type" {
+  description = "ElastiCache Redis node type"
+  type        = string
+  default     = "cache.r6g.large"
+}
+
+variable "redis_num_cache_clusters" {
+  description = "Number of cache clusters (nodes) in the replication group"
+  type        = number
+  default     = 3  # 1 primary + 2 replicas across 3 AZs
+}
+
+variable "redis_engine_version" {
+  description = "Redis engine version"
+  type        = string
+  default     = "7.1"
+}
+
+variable "redis_parameter_group_family" {
+  description = "Redis parameter group family"
+  type        = string
+  default     = "redis7"
+}
+
+variable "redis_kms_key_arn" {
+  description = "KMS key ARN for ElastiCache encryption"
+  type        = string
+}
+
+variable "redis_snapshot_retention_limit" {
+  description = "Number of days to retain Redis snapshots"
+  type        = number
+  default     = 7
+}
+
+variable "redis_maintenance_window" {
+  description = "Weekly maintenance window"
+  type        = string
+  default     = "sun:05:00-sun:07:00"
+}
+
+variable "redis_snapshot_window" {
+  description = "Daily snapshot window"
+  type        = string
+  default     = "03:00-05:00"
+}
+```
+
+### `modules/data-tier/main.tf`
+
+```hcl
+# ─── DATA TIER MODULE ───────────────────────────────────────────────
+# RDS PostgreSQL + ElastiCache Redis
+# All resources in data subnets, accessible only from EKS nodes
+# ─────────────────────────────────────────────────────────────────────
+
+locals {
+  rds_common_tags = merge(var.tags, {
+    Component = "data-tier"
+    Tier      = "data"
+  })
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# RDS POSTGRESQL
+# ═══════════════════════════════════════════════════════════════════
+
+# ─── Subnet Group ─────────────────────────────────────────────────
+resource "aws_db_subnet_group" "main" {
+  name       = "${var.project}-${var.environment}-data"
+  subnet_ids = var.data_subnet_ids
+
+  tags = merge(local.rds_common_tags, {
+    Name = "${var.project}-${var.environment}-data-subnet-group"
+  })
+}
+
+# ─── Security Group for RDS ──────────────────────────────────────
+resource "aws_security_group" "rds" {
+  name_prefix = "${var.project}-${var.environment}-rds-"
+  vpc_id      = var.vpc_id
+  description = "RDS PostgreSQL - data tier. Access from EKS nodes only."
+
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [var.eks_node_security_group_id]
+    description     = "PostgreSQL from EKS pods"
+  }
+
+  # No broad egress — RDS doesn't need outbound internet
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [data.aws_vpc.current.cidr_block]
+    description = "VPC internal only"
+  }
+
+  tags = merge(local.rds_common_tags, {
+    Name = "${var.project}-${var.environment}-rds"
+  })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+data "aws_vpc" "current" {
+  id = var.vpc_id
+}
+
+# ─── Parameter Group ─────────────────────────────────────────────
+resource "aws_db_parameter_group" "postgres15" {
+  name_prefix = "${var.project}-${var.environment}-pg15-"
+  family      = "postgres15"
+  description = "NovaMart PostgreSQL 15 parameters"
+
+  # Connection management
+  parameter {
+    name  = "max_connections"
+    value = "500"
+    # 200 microservices × 2-3 connections per pod + headroom
+    # RDS applies per-instance, not per-database
+  }
+
+  # Logging for compliance (PCI Req 10)
+  parameter {
+    name  = "log_connections"
+    value = "1"
+  }
+
+  parameter {
+    name  = "log_disconnections"
+    value = "1"
+  }
+
+  parameter {
+    name  = "log_statement"
+    value = "ddl"
+    # Log DDL statements (CREATE, ALTER, DROP)
+    # "all" is too noisy for production
+  }
+
+  parameter {
+    name  = "log_min_duration_statement"
+    value = "1000"
+    # Log queries taking longer than 1 second (slow query detection)
+  }
+
+  # SSL enforcement
+  parameter {
+    name  = "rds.force_ssl"
+    value = "1"
+    # Enforce TLS for all connections — PCI Req 4
+  }
+
+  # Performance
+  parameter {
+    name  = "shared_preload_libraries"
+    value = "pg_stat_statements"
+    apply_method = "pending-reboot"
+    # Enables query performance tracking
+  }
+
+  parameter {
+    name  = "pg_stat_statements.track"
+    value = "all"
+  }
+
+  tags = local.rds_common_tags
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# ─── Enhanced Monitoring IAM Role ────────────────────────────────
+resource "aws_iam_role" "rds_monitoring" {
+  name_prefix = "${var.project}-${var.environment}-rds-monitoring-"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "monitoring.rds.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = local.rds_common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "rds_monitoring" {
+  role       = aws_iam_role.rds_monitoring.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
+}
+
+# ─── RDS Instances ───────────────────────────────────────────────
+resource "aws_db_instance" "main" {
+  for_each = var.rds_instances
+
+  identifier = "${var.project}-${var.environment}-${each.key}"
+
+  # Engine
+  engine         = "postgres"
+  engine_version = each.value.engine_version
+
+  # Sizing
+  instance_class        = each.value.instance_class
+  allocated_storage     = each.value.allocated_storage
+  max_allocated_storage = each.value.max_allocated_storage
+  storage_type          = "gp3"
+  storage_encrypted     = true
+  kms_key_id            = var.rds_kms_key_arn
+
+  # Database
+  db_name = each.value.database_name
+
+  # Authentication — AWS-managed master password (never in Terraform state)
+  username                    = "${each.key}_admin"
+  manage_master_user_password = var.rds_master_password_management
+  # This creates the password in Secrets Manager automatically
+  # No password in Terraform state, auto-rotation available
+
+  # Network
+  db_subnet_group_name   = aws_db_subnet_group.main.name
+  vpc_security_group_ids = [aws_security_group.rds.id]
+  publicly_accessible    = false
+  port                   = 5432
+
+  # High Availability
+  multi_az = each.value.multi_az
+
+  # Parameters
+  parameter_group_name = aws_db_parameter_group.postgres15.name
+
+  # Backup
+  backup_retention_period = each.value.backup_retention_period
+  backup_window           = "03:00-04:00"
+  maintenance_window      = "sun:05:00-sun:06:00"
+  copy_tags_to_snapshot   = true
+
+  # Deletion protection
+  deletion_protection       = each.value.deletion_protection
+  skip_final_snapshot       = false
+  final_snapshot_identifier = "${var.project}-${var.environment}-${each.key}-final"
+
+  # Monitoring
+  performance_insights_enabled          = var.rds_performance_insights_enabled
+  performance_insights_retention_period = 7  # Free tier: 7 days
+  performance_insights_kms_key_id       = var.rds_kms_key_arn
+  monitoring_interval                   = var.rds_monitoring_interval
+  monitoring_role_arn                   = aws_iam_role.rds_monitoring.arn
+  enabled_cloudwatch_logs_exports       = ["postgresql", "upgrade"]
+
+  # Auto minor version upgrade (security patches)
+  auto_minor_version_upgrade = true
+
+  # IAM database authentication (for app access without passwords)
+  iam_database_authentication_enabled = true
+
+  tags = merge(local.rds_common_tags, {
+    Name    = "${var.project}-${var.environment}-${each.key}"
+    Service = each.key
+  })
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [
+      # Password managed by Secrets Manager, not Terraform
+      password,
+    ]
+  }
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# ELASTICACHE REDIS
+# ═══════════════════════════════════════════════════════════════════
+
+# ─── Subnet Group ─────────────────────────────────────────────────
+resource "aws_elasticache_subnet_group" "main" {
+  name       = "${var.project}-${var.environment}-redis"
+  subnet_ids = var.data_subnet_ids
+
+  tags = local.rds_common_tags
+}
+
+# ─── Security Group for Redis ────────────────────────────────────
+resource "aws_security_group" "redis" {
+  name_prefix = "${var.project}-${var.environment}-redis-"
+  vpc_id      = var.vpc_id
+  description = "ElastiCache Redis. Access from EKS nodes only."
+
+  ingress {
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [var.eks_node_security_group_id]
+    description     = "Redis from EKS pods"
+  }
+
+  tags = merge(local.rds_common_tags, {
+    Name = "${var.project}-${var.environment}-redis"
+  })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# ─── Parameter Group ─────────────────────────────────────────────
+resource "aws_elasticache_parameter_group" "redis7" {
+  name   = "${var.project}-${var.environment}-redis7"
+  family = var.redis_parameter_group_family
+
+  # Memory management
+  parameter {
+    name  = "maxmemory-policy"
+    value = "volatile-lru"
+    # Evict keys with TTL set, least recently used first
+    # "allkeys-lru" evicts ANY key — dangerous for session data
+    # "volatile-lru" only evicts keys with explicit TTL
+  }
+
+  # Slow log for debugging
+  parameter {
+    name  = "slowlog-log-slower-than"
+    value = "10000"
+    # Log commands taking longer than 10ms (microseconds)
+  }
+
+  parameter {
+    name  = "slowlog-max-len"
+    value = "128"
+  }
+
+  # Connection management
+  parameter {
+    name  = "timeout"
+    value = "300"
+    # Close idle connections after 5 minutes
+    # Prevents connection leaks from misbehaving apps
+  }
+
+  # Notifications
+  parameter {
+    name  = "notify-keyspace-events"
+    value = "Ex"
+    # E = keyevent events, x = expired events
+    # Allows apps to subscribe to key expiration notifications
+    # Useful for session expiry callbacks
+  }
+
+  tags = local.rds_common_tags
+}
+
+# ─── Redis Replication Group ─────────────────────────────────────
+resource "aws_elasticache_replication_group" "main" {
+  replication_group_id = "${var.project}-${var.environment}-redis"
+  description          = "NovaMart ${var.environment} Redis cluster"
+
+  # Engine
+  engine               = "redis"
+  engine_version       = var.redis_engine_version
+  node_type            = var.redis_node_type
+  parameter_group_name = aws_elasticache_parameter_group.redis7.name
+
+  # Topology: 1 primary + 2 replicas across 3 AZs
+  num_cache_clusters      = var.redis_num_cache_clusters
+  automatic_failover_enabled = true
+  multi_az_enabled           = true
+
+  # Network
+  subnet_group_name  = aws_elasticache_subnet_group.main.name
+  security_group_ids = [aws_security_group.redis.id]
+  port               = 6379
+
+  # Encryption
+  at_rest_encryption_enabled = true
+  kms_key_id                 = var.redis_kms_key_arn
+  transit_encryption_enabled = true
+  # transit_encryption = TLS for data in flight (PCI Req 4)
+  # Apps MUST connect via TLS when this is enabled
+
+  # Auth
+  auth_token = null
+  # Using IAM authentication instead of auth token
+  # (configured at application level with IRSA)
+
+  # Maintenance
+  maintenance_window         = var.redis_maintenance_window
+  snapshot_window            = var.redis_snapshot_window
+  snapshot_retention_limit   = var.redis_snapshot_retention_limit
+  auto_minor_version_upgrade = true
+
+  # Notifications
+  notification_topic_arn = null  # Will connect to SNS in security-baseline module
+
+  # Logging
+  log_delivery_configuration {
+    destination      = "/elasticache/${var.project}-${var.environment}/slow-log"
+    destination_type = "cloudwatch-logs"
+    log_format       = "json"
+    log_type         = "slow-log"
+  }
+
+  log_delivery_configuration {
+    destination      = "/elasticache/${var.project}-${var.environment}/engine-log"
+    destination_type = "cloudwatch-logs"
+    log_format       = "json"
+    log_type         = "engine-log"
+  }
+
+  tags = merge(local.rds_common_tags, {
+    Name    = "${var.project}-${var.environment}-redis"
+    Service = "redis"
+  })
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [
+      # Cluster count managed by scaling, not Terraform, if auto-scaling enabled
+      num_cache_clusters,
+    ]
+  }
+}
+
+# ─── CloudWatch Log Groups for Redis ─────────────────────────────
+resource "aws_cloudwatch_log_group" "redis_slow_log" {
+  name              = "/elasticache/${var.project}-${var.environment}/slow-log"
+  retention_in_days = 30
+  kms_key_id        = var.redis_kms_key_arn
+
+  tags = local.rds_common_tags
+}
+
+resource "aws_cloudwatch_log_group" "redis_engine_log" {
+  name              = "/elasticache/${var.project}-${var.environment}/engine-log"
+  retention_in_days = 30
+  kms_key_id        = var.redis_kms_key_arn
+
+  tags = local.rds_common_tags
+}
+```
+
+### `modules/data-tier/outputs.tf`
+
+```hcl
+# ─── DATA TIER OUTPUTS ──────────────────────────────────────────────
+
+# ─── RDS Outputs ─────────────────────────────────────────────────
+output "rds_endpoints" {
+  description = "Map of RDS instance endpoints"
+  value = {
+    for key, instance in aws_db_instance.main : key => {
+      endpoint = instance.endpoint
+      address  = instance.address
+      port     = instance.port
+      name     = instance.db_name
+    }
+  }
+}
+
+output "rds_instance_ids" {
+  description = "Map of RDS instance IDs"
+  value = {
+    for key, instance in aws_db_instance.main : key => instance.id
+  }
+}
+
+output "rds_master_secret_arns" {
+  description = "Map of Secrets Manager ARNs for RDS master passwords"
+  value = {
+    for key, instance in aws_db_instance.main : key => instance.master_user_secret[0].secret_arn
+  }
+}
+
+output "rds_security_group_id" {
+  description = "Security group ID for RDS instances"
+  value       = aws_security_group.rds.id
+}
+
+# ─── Redis Outputs ───────────────────────────────────────────────
+output "redis_primary_endpoint" {
+  description = "Redis primary endpoint address"
+  value       = aws_elasticache_replication_group.main.primary_endpoint_address
+}
+
+output "redis_reader_endpoint" {
+  description = "Redis reader endpoint address"
+  value       = aws_elasticache_replication_group.main.reader_endpoint_address
+}
+
+output "redis_port" {
+  description = "Redis port"
+  value       = aws_elasticache_replication_group.main.port
+}
+
+output "redis_security_group_id" {
+  description = "Security group ID for Redis"
+  value       = aws_security_group.redis.id
+}
+
+output "rds_subnet_group_name" {
+  description = "RDS subnet group name"
+  value       = aws_db_subnet_group.main.name
+}
+```
+
+---
+
+## Module 4: Security Baseline (KMS, S3, CloudTrail)
+
+### `modules/security-baseline/variables.tf`
+
+```hcl
+# ─── SECURITY BASELINE MODULE VARIABLES ─────────────────────────────
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+}
+
+variable "project" {
+  description = "Project name"
+  type        = string
+}
+
+variable "aws_account_id" {
+  description = "AWS account ID"
+  type        = string
+}
+
+variable "aws_region" {
+  description = "AWS region"
+  type        = string
+}
+
+variable "vpc_id" {
+  description = "VPC ID for VPC Flow Logs"
+  type        = string
+}
+
+variable "tags" {
+  description = "Common tags"
+  type        = map(string)
+  default     = {}
+}
+
+# ─── CLOUDTRAIL VARIABLES ───────────────────────────────────────────
+
+variable "cloudtrail_s3_data_event_buckets" {
+  description = "List of S3 bucket ARNs for CloudTrail data event logging"
+  type        = list(string)
+  default     = []
+}
+
+variable "cloudtrail_log_retention_days" {
+  description = "Days to retain CloudTrail logs in CloudWatch"
+  type        = number
+  default     = 90
+}
+
+# ─── S3 VARIABLES ───────────────────────────────────────────────────
+
+variable "terraform_state_bucket_name" {
+  description = "S3 bucket name for Terraform state (must be globally unique)"
+  type        = string
+}
+
+variable "flow_log_retention_days" {
+  description = "Days before transitioning flow logs to IA"
+  type        = number
+  default     = 90
+}
+```
+
+### `modules/security-baseline/kms.tf`
+
+```hcl
+# ═══════════════════════════════════════════════════════════════════
+# KMS KEYS — One per domain for separation of duties
+# ═══════════════════════════════════════════════════════════════════
+
+# ─── General Encryption Key (S3, CloudWatch, SNS) ────────────────
+resource "aws_kms_key" "general" {
+  description             = "NovaMart ${var.environment} general encryption"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  rotation_period_in_days = 365
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableRootAccount"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${var.aws_account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowKeyAdministration"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${var.aws_account_id}:role/OrganizationAdmin"
+        }
+        Action = [
+          "kms:Create*",
+          "kms:Describe*",
+          "kms:Enable*",
+          "kms:List*",
+          "kms:Put*",
+          "kms:Update*",
+          "kms:Revoke*",
+          "kms:Disable*",
+          "kms:Get*",
+          "kms:Delete*",
+          "kms:TagResource",
+          "kms:UntagResource",
+          "kms:ScheduleKeyDeletion",
+          "kms:CancelKeyDeletion"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowServiceUsage"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${var.aws_account_id}:root"
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = [
+              "s3.${var.aws_region}.amazonaws.com",
+              "logs.${var.aws_region}.amazonaws.com",
+              "sns.${var.aws_region}.amazonaws.com",
+              "sqs.${var.aws_region}.amazonaws.com"
+            ]
+          }
+        }
+      },
+      {
+        Sid    = "AllowCloudWatchLogs"
+        Effect = "Allow"
+        Principal = {
+          Service = "logs.${var.aws_region}.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+        Condition = {
+          ArnLike = {
+            "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${var.aws_region}:${var.aws_account_id}:*"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = merge(var.tags, {
+    Name    = "${var.project}-${var.environment}-general"
+    KeyType = "general"
+  })
+}
+
+resource "aws_kms_alias" "general" {
+  name          = "alias/${var.project}-${var.environment}-general"
+  target_key_id = aws_kms_key.general.key_id
+}
+
+# ─── EKS Secrets Encryption Key ─────────────────────────────────
+resource "aws_kms_key" "eks" {
+  description             = "NovaMart ${var.environment} EKS secrets encryption"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  rotation_period_in_days = 365
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableRootAccount"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${var.aws_account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowEKSService"
+        Effect = "Allow"
+        Principal = {
+          Service = "eks.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+          "kms:CreateGrant"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:CallerAccount" = var.aws_account_id
+          }
+        }
+      }
+    ]
+  })
+
+  tags = merge(var.tags, {
+    Name    = "${var.project}-${var.environment}-eks"
+    KeyType = "eks-secrets"
+  })
+}
+
+resource "aws_kms_alias" "eks" {
+  name          = "alias/${var.project}-${var.environment}-eks"
+  target_key_id = aws_kms_key.eks.key_id
+}
+
+# ─── RDS Encryption Key ─────────────────────────────────────────
+resource "aws_kms_key" "rds" {
+  description             = "NovaMart ${var.environment} RDS encryption"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  rotation_period_in_days = 365
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableRootAccount"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${var.aws_account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowRDSService"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${var.aws_account_id}:root"
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "rds.${var.aws_region}.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = merge(var.tags, {
+    Name    = "${var.project}-${var.environment}-rds"
+    KeyType = "rds"
+  })
+}
+
+resource "aws_kms_alias" "rds" {
+  name          = "alias/${var.project}-${var.environment}-rds"
+  target_key_id = aws_kms_key.rds.key_id
+}
+
+# ─── ElastiCache Encryption Key ─────────────────────────────────
+resource "aws_kms_key" "elasticache" {
+  description             = "NovaMart ${var.environment} ElastiCache encryption"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  rotation_period_in_days = 365
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableRootAccount"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${var.aws_account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = merge(var.tags, {
+    Name    = "${var.project}-${var.environment}-elasticache"
+    KeyType = "elasticache"
+  })
+}
+
+resource "aws_kms_alias" "elasticache" {
+  name          = "alias/${var.project}-${var.environment}-elasticache"
+  target_key_id = aws_kms_key.elasticache.key_id
+}
+```
+
+### `modules/security-baseline/s3.tf`
+
+```hcl
+# ═══════════════════════════════════════════════════════════════════
+# S3 BUCKETS — Terraform state, CloudTrail, Flow Logs, Compliance
+# ═══════════════════════════════════════════════════════════════════
+
+# ─── Terraform State Bucket ──────────────────────────────────────
+resource "aws_s3_bucket" "terraform_state" {
+  bucket = var.terraform_state_bucket_name
+
+  # NEVER destroy the state bucket
+  force_destroy = false
+
+  tags = merge(var.tags, {
+    Name    = var.terraform_state_bucket_name
+    Purpose = "terraform-state"
+  })
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_s3_bucket_versioning" "terraform_state" {
+  bucket = aws_s3_bucket.terraform_state.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" {
+  bucket = aws_s3_bucket.terraform_state.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.general.arn
+    }
+    bucket_key_enabled = true  # Reduces KMS API calls (cost optimization)
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "terraform_state" {
+  bucket = aws_s3_bucket.terraform_state.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# DynamoDB table for state locking
+resource "aws_dynamodb_table" "terraform_locks" {
+  name         = "${var.project}-${var.environment}-terraform-locks"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "LockID"
+
+  attribute {
+    name = "LockID"
+    type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.general.arn
+  }
+
+  tags = merge(var.tags, {
+    Name    = "${var.project}-${var.environment}-terraform-locks"
+    Purpose = "terraform-state-locking"
+  })
+}
+
+# ─── CloudTrail Bucket ───────────────────────────────────────────
+resource "aws_s3_bucket" "cloudtrail" {
+  bucket = "${var.project}-cloudtrail-${var.aws_account_id}"
+
+  force_destroy = false
+
+  tags = merge(var.tags, {
+    Name       = "${var.project}-cloudtrail-${var.aws_account_id}"
+    Purpose    = "cloudtrail-audit-logs"
+    Compliance = "pci-soc2"
+  })
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_s3_bucket_versioning" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.general.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  rule {
+    id     = "archive-and-expire"
+    status = "Enabled"
+
+    transition {
+      days          = 90
+      storage_class = "STANDARD_IA"
+    }
+    transition {
+      days          = 365
+      storage_class = "GLACIER"
+    }
+    # PCI: 1 year minimum. NovaMart: 2 years.
+    expiration {
+      days = 730
+    }
+  }
+}
+
+# Object Lock for tamper-proof compliance logs
+resource "aws_s3_bucket_object_lock_configuration" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  rule {
+    default_retention {
+      mode = "COMPLIANCE"
+      days = 365
+    }
+  }
+}
+
+# Bucket policy for CloudTrail service access
+resource "aws_s3_bucket_policy" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AWSCloudTrailAclCheck"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action   = "s3:GetBucketAcl"
+        Resource = aws_s3_bucket.cloudtrail.arn
+      },
+      {
+        Sid    = "AWSCloudTrailWrite"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.cloudtrail.arn}/cloudtrail/AWSLogs/${var.aws_account_id}/*"
+        Condition = {
+          StringEquals = {
+            "s3:x-amz-acl" = "bucket-owner-full-control"
+          }
+        }
+      },
+      {
+        Sid    = "DenyUnencryptedUploads"
+        Effect = "Deny"
+        Principal = "*"
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.cloudtrail.arn}/*"
+        Condition = {
+          StringNotEquals = {
+            "s3:x-amz-server-side-encryption" = "aws:kms"
+          }
+        }
+      },
+      {
+        Sid    = "DenyHTTP"
+        Effect = "Deny"
+        Principal = "*"
+        Action   = "s3:*"
+        Resource = [
+          aws_s3_bucket.cloudtrail.arn,
+          "${aws_s3_bucket.cloudtrail.arn}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# ─── VPC Flow Logs Bucket ────────────────────────────────────────
+resource "aws_s3_bucket" "flow_logs" {
+  bucket = "${var.project}-flow-logs-${var.aws_account_id}"
+
+  force_destroy = false
+
+  tags = merge(var.tags, {
+    Name    = "${var.project}-flow-logs-${var.aws_account_id}"
+    Purpose = "vpc-flow-logs"
+  })
+}
+
+resource "aws_s3_bucket_versioning" "flow_logs" {
+  bucket = aws_s3_bucket.flow_logs.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "flow_logs" {
+  bucket = aws_s3_bucket.flow_logs.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.general.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "flow_logs" {
+  bucket = aws_s3_bucket.flow_logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "flow_logs" {
+  bucket = aws_s3_bucket.flow_logs.id
+
+  rule {
+    id     = "archive-flow-logs"
+    status = "Enabled"
+
+    transition {
+      days          = var.flow_log_retention_days
+      storage_class = "STANDARD_IA"
+    }
+    transition {
+      days          = 365
+      storage_class = "GLACIER"
+    }
+    expiration {
+      days = 730
+    }
+  }
+}
+
+# ─── Compliance Evidence Bucket ──────────────────────────────────
+resource "aws_s3_bucket" "compliance" {
+  bucket = "${var.project}-compliance-${var.aws_account_id}"
+
+  tags = merge(var.tags, {
+    Name       = "${var.project}-compliance-${var.aws_account_id}"
+    Purpose    = "compliance-evidence"
+    Compliance = "pci-soc2-gdpr"
+  })
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_s3_bucket_versioning" "compliance" {
+  bucket = aws_s3_bucket.compliance.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "compliance" {
+  bucket = aws_s3_bucket.compliance.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.general.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "compliance" {
+  bucket = aws_s3_bucket.compliance.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_object_lock_configuration" "compliance" {
+  bucket = aws_s3_bucket.compliance.id
+
+  rule {
+    default_retention {
+      mode = "COMPLIANCE"
+      days = 365
+    }
+  }
+}
+```
+
+### `modules/security-baseline/cloudtrail.tf`
+
+```hcl
+# ═══════════════════════════════════════════════════════════════════
+# CLOUDTRAIL — Multi-region, tamper-proof, PCI/SOC2 compliant
+# ═══════════════════════════════════════════════════════════════════
+
+# ─── CloudWatch Log Group for CloudTrail ─────────────────────────
+resource "aws_cloudwatch_log_group" "cloudtrail" {
+  name              = "/cloudtrail/${var.project}-${var.environment}"
+  retention_in_days = var.cloudtrail_log_retention_days
+  kms_key_id        = aws_kms_key.general.arn
+
+  tags = merge(var.tags, {
+    Purpose    = "cloudtrail-realtime"
+    Compliance = "pci-req10"
+  })
+}
+
+# ─── IAM Role for CloudTrail → CloudWatch ────────────────────────
+resource "aws_iam_role" "cloudtrail_cloudwatch" {
+  name_prefix = "${var.project}-${var.environment}-ct-cw-"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy" "cloudtrail_cloudwatch" {
+  name_prefix = "${var.project}-ct-cw-"
+  role        = aws_iam_role.cloudtrail_cloudwatch.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "${aws_cloudwatch_log_group.cloudtrail.arn}:*"
+      }
+    ]
+  })
+}
+
+# ─── CloudTrail ──────────────────────────────────────────────────
+resource "aws_cloudtrail" "main" {
+  name                          = "${var.project}-${var.environment}"
+  s3_bucket_name                = aws_s3_bucket.cloudtrail.id
+  s3_key_prefix                 = "cloudtrail"
+  include_global_service_events = true
+  is_multi_region_trail         = true
+  enable_log_file_validation    = true
+
+  # Real-time alerting via CloudWatch
+  cloud_watch_logs_group_arn = "${aws_cloudwatch_log_group.cloudtrail.arn}:*"
+  cloud_watch_logs_role_arn  = aws_iam_role.cloudtrail_cloudwatch.arn
+
+  # KMS encryption
+  kms_key_id = aws_kms_key.general.arn
+
+  # Management events (all API calls)
+  event_selector {
+    read_write_type           = "All"
+    include_management_events = true
+
+    # S3 data events for sensitive buckets only (cost-conscious)
+    dynamic "data_resource" {
+      for_each = length(var.cloudtrail_s3_data_event_buckets) > 0 ? [1] : []
+      content {
+        type   = "AWS::S3::Object"
+        values = var.cloudtrail_s3_data_event_buckets
+      }
+    }
+  }
+
+  # Insights — detect unusual API activity patterns
+  insight_selector {
+    insight_type = "ApiCallRateInsight"
+  }
+
+  insight_selector {
+    insight_type = "ApiErrorRateInsight"
+  }
+
+  tags = merge(var.tags, {
+    Name       = "${var.project}-${var.environment}-cloudtrail"
+    Compliance = "pci-soc2"
+  })
+
+  depends_on = [
+    aws_s3_bucket_policy.cloudtrail
+  ]
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# VPC FLOW LOGS
+# ═══════════════════════════════════════════════════════════════════
+
+resource "aws_flow_log" "main" {
+  vpc_id               = var.vpc_id
+  traffic_type         = "ALL"
+  log_destination_type = "s3"
+  log_destination      = aws_s3_bucket.flow_logs.arn
+
+  max_aggregation_interval = 60  # 60 seconds for production forensic granularity
+
+  # Custom log format with enhanced fields
+  log_format = join(" ", [
+    "$${version}",
+    "$${account-id}",
+    "$${interface-id}",
+    "$${srcaddr}",
+    "$${dstaddr}",
+    "$${srcport}",
+    "$${dstport}",
+    "$${protocol}",
+    "$${packets}",
+    "$${bytes}",
+    "$${start}",
+    "$${end}",
+    "$${action}",
+    "$${log-status}",
+    "$${vpc-id}",
+    "$${subnet-id}",
+    "$${az-id}",
+    "$${pkt-srcaddr}",
+    "$${pkt-dstaddr}",
+    "$${region}",
+    "$${pkt-src-aws-service}",
+    "$${pkt-dst-aws-service}",
+    "$${flow-direction}",
+    "$${traffic-path}"
+  ])
+
+  tags = merge(var.tags, {
+    Name = "${var.project}-${var.environment}-vpc-flow-logs"
+  })
+}
+```
+
+### `modules/security-baseline/outputs.tf`
+
+```hcl
+# ─── SECURITY BASELINE OUTPUTS ──────────────────────────────────────
+
+# ─── KMS Key ARNs ───────────────────────────────────────────────
+output "kms_key_arns" {
+  description = "Map of KMS key ARNs by purpose"
+  value = {
+    general     = aws_kms_key.general.arn
+    eks         = aws_kms_key.eks.arn
+    rds         = aws_kms_key.rds.arn
+    elasticache = aws_kms_key.elasticache.arn
+  }
+}
+
+output "kms_key_ids" {
+  description = "Map of KMS key IDs by purpose"
+  value = {
+    general     = aws_kms_key.general.key_id
+    eks         = aws_kms_key.eks.key_id
+    rds         = aws_kms_key.rds.key_id
+    elasticache = aws_kms_key.elasticache.key_id
+  }
+}
+
+# ─── S3 Bucket ARNs ─────────────────────────────────────────────
+output "s3_bucket_arns" {
+  description = "Map of S3 bucket ARNs"
+  value = {
+    terraform_state = aws_s3_bucket.terraform_state.arn
+    cloudtrail      = aws_s3_bucket.cloudtrail.arn
+    flow_logs       = aws_s3_bucket.flow_logs.arn
+    compliance      = aws_s3_bucket.compliance.arn
+  }
+}
+
+output "s3_bucket_ids" {
+  description = "Map of S3 bucket IDs (names)"
+  value = {
+    terraform_state = aws_s3_bucket.terraform_state.id
+    cloudtrail      = aws_s3_bucket.cloudtrail.id
+    flow_logs       = aws_s3_bucket.flow_logs.id
+    compliance      = aws_s3_bucket.compliance.id
+  }
+}
+
+# ─── DynamoDB ────────────────────────────────────────────────────
+output "terraform_lock_table_name" {
+  description = "DynamoDB table name for Terraform state locking"
+  value       = aws_dynamodb_table.terraform_locks.name
+}
+
+# ─── CloudTrail ──────────────────────────────────────────────────
+output "cloudtrail_arn" {
+  description = "CloudTrail ARN"
+  value       = aws_cloudtrail.main.arn
+}
+
+output "cloudtrail_log_group_name" {
+  description = "CloudWatch log group for CloudTrail"
+  value       = aws_cloudwatch_log_group.cloudtrail.name
+}
+
+# ─── Flow Logs ───────────────────────────────────────────────────
+output "flow_log_id" {
+  description = "VPC Flow Log ID"
+  value       = aws_flow_log.main.id
+}
+```
+
+---
+
+## Module 5: Security Groups
+
+### `modules/security-groups/variables.tf`
+
+```hcl
+# ─── SECURITY GROUPS MODULE VARIABLES ────────────────────────────────
+
+variable "environment" {
+  description = "Environment name"
+  type        = string
+}
+
+variable "project" {
+  description = "Project name"
+  type        = string
+}
+
+variable "vpc_id" {
+  description = "VPC ID"
+  type        = string
+}
+
+variable "vpc_cidr" {
+  description = "VPC CIDR block"
+  type        = string
+}
+
+variable "cloudflare_ip_ranges" {
+  description = "Cloudflare IP ranges for ALB ingress restriction"
+  type        = list(string)
+  # Updated by automation from https://api.cloudflare.com/client/v4/ips
+  # Default includes current Cloudflare IPv4 ranges
+  default = [
+    "173.245.48.0/20",
+    "103.21.244.0/22",
+    "103.22.200.0/22",
+    "103.31.4.0/22",
+    "141.101.64.0/18",
+    "108.162.192.0/18",
+    "190.93.240.0/20",
+    "188.114.96.0/20",
+    "197.234.240.0/22",
+    "198.41.128.0/17",
+    "162.158.0.0/15",
+    "104.16.0.0/13",
+    "104.24.0.0/14",
+    "172.64.0.0/13",
+    "131.0.72.0/22"
+  ]
+}
+
+variable "eks_control_plane_security_group_id" {
+  description = "EKS control plane security group ID (EKS-managed)"
+  type        = string
+}
+
+variable "tags" {
+  description = "Common tags"
+  type        = map(string)
+  default     = {}
+}
+```
+
+### `modules/security-groups/main.tf`
+
+```hcl
+# ═══════════════════════════════════════════════════════════════════
+# SECURITY GROUPS — SG-to-SG references for clean trust chain
+#
+# Trust chain: Cloudflare → ALB → EKS Nodes → Data Tier
+# ═══════════════════════════════════════════════════════════════════
+
+locals {
+  sg_tags = merge(var.tags, {
+    Component = "security-groups"
+  })
+}
+
+# ─── ALB Security Group ─────────────────────────────────────────
+resource "aws_security_group" "alb" {
+  name_prefix = "${var.project}-${var.environment}-alb-"
+  vpc_id      = var.vpc_id
+  description = "Internet-facing ALB. HTTPS from Cloudflare only."
+
+  tags = merge(local.sg_tags, {
+    Name = "${var.project}-${var.environment}-alb"
+    Tier = "public"
+  })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# ALB ingress: HTTPS from Cloudflare IPs only
+resource "aws_security_group_rule" "alb_ingress_https" {
+  type              = "ingress"
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  cidr_blocks       = var.cloudflare_ip_ranges
+  security_group_id = aws_security_group.alb.id
+  description       = "HTTPS from Cloudflare"
+}
+
+# ALB egress: to EKS nodes only
+resource "aws_security_group_rule" "alb_egress_to_eks" {
+  type                     = "egress"
+  from_port                = 0
+  to_port                  = 65535
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.eks_node.id
+  security_group_id        = aws_security_group.alb.id
+  description              = "To EKS worker nodes"
+}
+
+# ─── EKS Node Security Group ────────────────────────────────────
+resource "aws_security_group" "eks_node" {
+  name_prefix = "${var.project}-${var.environment}-eks-node-"
+  vpc_id      = var.vpc_id
+  description = "EKS worker nodes. Pod-to-pod and ALB traffic."
+
+  tags = merge(local.sg_tags, {
+    Name = "${var.project}-${var.environment}-eks-node"
+    Tier = "private"
+    # Required tag for EKS to discover this SG
+    "kubernetes.io/cluster/${var.project}-${var.environment}" = "owned"
+  })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# EKS nodes: ingress from ALB
+resource "aws_security_group_rule" "eks_node_ingress_alb" {
+  type                     = "ingress"
+  from_port                = 0
+  to_port                  = 65535
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.alb.id
+  security_group_id        = aws_security_group.eks_node.id
+  description              = "From ALB"
+}
+
+# EKS nodes: ingress from other nodes (pod-to-pod via VPC CNI)
+resource "aws_security_group_rule" "eks_node_ingress_self_tcp" {
+  type              = "ingress"
+  from_port         = 0
+  to_port           = 65535
+  protocol          = "tcp"
+  self              = true
+  security_group_id = aws_security_group.eks_node.id
+  description       = "Node-to-node TCP (pod communication)"
+}
+
+resource "aws_security_group_rule" "eks_node_ingress_self_udp" {
+  type              = "ingress"
+  from_port         = 0
+  to_port           = 65535
+  protocol          = "udp"
+  self              = true
+  security_group_id = aws_security_group.eks_node.id
+  description       = "Node-to-node UDP (DNS, VXLAN)"
+}
+
+# EKS nodes: ingress from EKS control plane (kubelet, webhooks)
+resource "aws_security_group_rule" "eks_node_ingress_cp_kubelet" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  source_security_group_id = var.eks_control_plane_security_group_id
+  security_group_id        = aws_security_group.eks_node.id
+  description              = "EKS control plane to kubelet HTTPS"
+}
+
+resource "aws_security_group_rule" "eks_node_ingress_cp_webhooks" {
+  type                     = "ingress"
+  from_port                = 1025
+  to_port                  = 65535
+  protocol                 = "tcp"
+  source_security_group_id = var.eks_control_plane_security_group_id
+  security_group_id        = aws_security_group.eks_node.id
+  description              = "EKS control plane to pods (webhooks, metrics)"
+}
+
+# EKS nodes: egress to internet via NAT Gateway
+resource "aws_security_group_rule" "eks_node_egress_all" {
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.eks_node.id
+  description       = "Outbound (via NAT Gateway for external dependencies)"
+}
+
+# ─── VPC Endpoints Security Group ────────────────────────────────
+resource "aws_security_group" "vpc_endpoints" {
+  name_prefix = "${var.project}-${var.environment}-vpce-"
+  vpc_id      = var.vpc_id
+  description = "VPC Endpoints (ECR, KMS, STS, etc.)"
+
+  ingress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.eks_node.id]
+    description     = "HTTPS from EKS nodes to VPC endpoints"
+  }
+
+  # Also allow from VPC CIDR for non-EKS services (Lambda, etc.)
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+    description = "HTTPS from VPC CIDR"
+  }
+
+  tags = merge(local.sg_tags, {
+    Name = "${var.project}-${var.environment}-vpc-endpoints"
+    Tier = "infrastructure"
+  })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+```
+
+### `modules/security-groups/outputs.tf`
+
+```hcl
+# ─── SECURITY GROUPS OUTPUTS ────────────────────────────────────────
+
+output "alb_security_group_id" {
+  description = "ALB security group ID"
+  value       = aws_security_group.alb.id
+}
+
+output "eks_node_security_group_id" {
+  description = "EKS node security group ID"
+  value       = aws_security_group.eks_node.id
+}
+
+output "vpc_endpoints_security_group_id" {
+  description = "VPC endpoints security group ID"
+  value       = aws_security_group.vpc_endpoints.id
+}
+
+output "security_group_ids" {
+  description = "All security group IDs as a map"
+  value = {
+    alb           = aws_security_group.alb.id
+    eks_node      = aws_security_group.eks_node.id
+    vpc_endpoints = aws_security_group.vpc_endpoints.id
+  }
+}
+```
+
+---
+
+## Root Module: `environments/production/`
+
+### `environments/production/versions.tf`
