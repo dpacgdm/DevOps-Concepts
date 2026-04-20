@@ -979,20 +979,19 @@ After completing all 8 phases, the student should:
 ══════════════════════════════════════════════════════════════════
 ```
 
----
-
 ## Phase 7 & 8 Summary
 
 ```
+```
 ┌──────────────────────────────────────────────────────────────────┐
-│                    PHASE 7: COST OPTIMIZATION                     │
+│                    PHASE 7: COST OPTIMIZATION                    │
 ├──────────┬───────────────────────────────────────────────────────┤
 │ Lesson 1 │ Kubernetes Resource Economics                         │
-│          │ Right-sizing, VPA, HPA, QoS, bin-packing, Karpenter  │
+│          │ Right-sizing, VPA, HPA, QoS, bin-packing, Karpenter   │
 │          │ 4 scenario questions, each with 4 sub-parts           │
 ├──────────┼───────────────────────────────────────────────────────┤
 │ Lesson 2 │ AWS Cost Management                                   │
-│          │ Savings Plans, data transfer, NAT Gateway, S3, RDS   │
+│          │ Savings Plans, data transfer, NAT Gateway, S3, RDS    │
 │          │ 4 scenario questions, each with 4 sub-parts           │
 ├──────────┼───────────────────────────────────────────────────────┤
 │ Lesson 3 │ FinOps Culture & Organization                         │
@@ -1007,7 +1006,7 @@ After completing all 8 phases, the student should:
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
-│                  PHASE 8: ARCHITECTURAL DESIGN                    │
+│                  PHASE 8: ARCHITECTURAL DESIGN                   │
 ├──────────┬───────────────────────────────────────────────────────┤
 │ Lesson 1 │ Greenfield Platform Design (MedRelay)                 │
 │          │ Technology decisions, HIPAA, small-team CI/CD,        │
@@ -1038,15 +1037,15 @@ After completing all 8 phases, the student should:
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
-│                 FULL CURRICULUM STATISTICS                         │
+│                 FULL CURRICULUM STATISTICS                       │
 ├──────────────────────────────────────────────────────────────────┤
-│ Phases:           8                                               │
+│ Phases:           8                                              │
 │ Companies:        4 (NovaMart, MedRelay, ShipFast, UrbanFleet)   │
-│ Phase 7-8 Scenarios: 28                                           │
-│ Phase 7-8 Sub-questions: 112                                      │
-│ Career levels covered: Junior → Principal                         │
-│ AWS services covered: 40+                                         │
-│ K8s concepts covered: 30+                                         │
+│ Phase 7-8 Scenarios: 28                                          │
+│ Phase 7-8 Sub-questions: 112                                     │
+│ Career levels covered: Junior → Principal                        │
+│ AWS services covered: 40+                                        │
+│ K8s concepts covered: 30+                                        │
 │ Compliance frameworks: HIPAA, SOC2, GDPR, CCPA                   │
 └──────────────────────────────────────────────────────────────────┘
 ```
