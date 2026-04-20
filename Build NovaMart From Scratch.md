@@ -5270,3 +5270,2381 @@ output "security_group_ids" {
 ## Root Module: `environments/production/`
 
 ### `environments/production/versions.tf`
+
+# NovaMart Production Environment — Complete Compositions
+
+---
+
+## Remaining EKS Module Files (Not Yet Delivered)
+
+Before wiring environments, these module files were referenced in the directory tree but not yet provided.
+
+### `modules/eks/node-groups.tf` (Completion)
+
+```hcl
+# modules/eks/node-groups.tf
+# (Continues from IAM role + policy attachments already delivered)
+
+# ─────────────────────────────────────────────
+# LAUNCH TEMPLATE (shared hardening baseline)
+# ─────────────────────────────────────────────
+
+resource "aws_launch_template" "system_nodes" {
+  name_prefix = "${local.name_prefix}-system-"
+  description = "Launch template for EKS system node group"
+
+  # IMDSv2 enforcement — prevents SSRF-based credential theft
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"  # IMDSv2 ONLY
+    http_put_response_hop_limit = 1           # Pods cannot reach IMDS (VPC CNI handles this)
+    instance_metadata_tags      = "enabled"
+  }
+
+  # EBS root volume encryption
+  block_device_mappings {
+    device_name = "/dev/xvda"
+
+    ebs {
+      volume_size           = 100
+      volume_type           = "gp3"
+      iops                  = 3000
+      throughput            = 125
+      encrypted             = true
+      kms_key_id            = var.eks_secrets_kms_key_arn
+      delete_on_termination = true
+    }
+  }
+
+  # Monitoring
+  monitoring {
+    enabled = true  # Detailed CloudWatch monitoring (1-minute intervals)
+  }
+
+  # Network — no public IP on nodes
+  network_interfaces {
+    associate_public_ip_address = false
+    security_groups             = [aws_security_group.node.id]
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = merge(local.common_tags, {
+      Name     = "${local.name_prefix}-system-node"
+      NodeType = "system"
+    })
+  }
+
+  tag_specifications {
+    resource_type = "volume"
+    tags = merge(local.common_tags, {
+      Name      = "${local.name_prefix}-system-node-vol"
+      Encrypted = "true"
+    })
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-system-lt"
+  })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# ─────────────────────────────────────────────
+# NODE SECURITY GROUP
+# ─────────────────────────────────────────────
+
+resource "aws_security_group" "node" {
+  name_prefix = "${local.name_prefix}-eks-node-"
+  description = "EKS worker node security group — pod-to-pod and control plane communication"
+  vpc_id      = var.vpc_id
+
+  tags = merge(local.common_tags, {
+    Name                                          = "${local.name_prefix}-eks-node-sg"
+    "kubernetes.io/cluster/${var.cluster_name}"    = "owned"
+  })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Node-to-node (pod-to-pod via VPC CNI)
+resource "aws_security_group_rule" "node_self_ingress" {
+  type              = "ingress"
+  from_port         = 0
+  to_port           = 65535
+  protocol          = "-1"
+  self              = true
+  security_group_id = aws_security_group.node.id
+  description       = "Node-to-node all traffic (pods, DNS, metrics)"
+}
+
+# Control plane → nodes (kubelet API, webhook callbacks)
+resource "aws_security_group_rule" "node_cp_ingress_443" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.cluster.id
+  security_group_id        = aws_security_group.node.id
+  description              = "Control plane to kubelet HTTPS"
+}
+
+resource "aws_security_group_rule" "node_cp_ingress_high_ports" {
+  type                     = "ingress"
+  from_port                = 1025
+  to_port                  = 65535
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.cluster.id
+  security_group_id        = aws_security_group.node.id
+  description              = "Control plane to pods (webhooks, admission controllers)"
+}
+
+# Nodes → control plane (API server)
+resource "aws_security_group_rule" "cp_node_ingress" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.node.id
+  security_group_id        = aws_security_group.cluster.id
+  description              = "Worker nodes to EKS API server"
+}
+
+# Node egress — outbound to internet via NAT, VPC endpoints, and data tier
+resource "aws_security_group_rule" "node_egress_all" {
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.node.id
+  description       = "All outbound (NAT GW for internet, direct for VPC resources)"
+}
+
+# CoreDNS port (UDP 53) — explicit for clarity in audits
+resource "aws_security_group_rule" "node_coredns_tcp" {
+  type              = "ingress"
+  from_port         = 53
+  to_port           = 53
+  protocol          = "tcp"
+  self              = true
+  security_group_id = aws_security_group.node.id
+  description       = "CoreDNS TCP"
+}
+
+resource "aws_security_group_rule" "node_coredns_udp" {
+  type              = "ingress"
+  from_port         = 53
+  to_port           = 53
+  protocol          = "udp"
+  self              = true
+  security_group_id = aws_security_group.node.id
+  description       = "CoreDNS UDP"
+}
+
+# ─────────────────────────────────────────────
+# SYSTEM NODE GROUP
+# Runs: CoreDNS, kube-proxy, Karpenter, DaemonSets
+# This is the "always-on" foundation — never scaled to zero
+# ─────────────────────────────────────────────
+
+resource "aws_eks_node_group" "system" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${local.name_prefix}-system"
+  node_role_arn   = aws_iam_role.node.arn
+  subnet_ids      = var.private_subnet_ids
+
+  scaling_config {
+    desired_size = var.system_node_desired
+    min_size     = var.system_node_min
+    max_size     = var.system_node_max
+  }
+
+  # Use our hardened launch template
+  launch_template {
+    id      = aws_launch_template.system_nodes.id
+    version = aws_launch_template.system_nodes.latest_version
+  }
+
+  instance_types = var.system_node_instance_types
+
+  # Kubernetes labels for scheduling
+  labels = {
+    "novamart.com/node-type" = "system"
+    "novamart.com/lifecycle" = "on-demand"
+  }
+
+  # Taint system nodes — only system workloads tolerate this
+  taint {
+    key    = "CriticalAddonsOnly"
+    value  = "true"
+    effect = "NO_SCHEDULE"
+  }
+
+  update_config {
+    max_unavailable_percentage = 33  # Rolling update: max 1/3 nodes at a time
+  }
+
+  tags = merge(local.common_tags, {
+    Name                     = "${local.name_prefix}-system-ng"
+    "novamart.com/node-type" = "system"
+  })
+
+  depends_on = [
+    aws_iam_role_policy_attachment.node_policies,
+  ]
+
+  lifecycle {
+    ignore_changes = [
+      scaling_config[0].desired_size,  # Let autoscaler manage desired count
+    ]
+  }
+}
+```
+
+---
+
+### `modules/eks/addons.tf`
+
+```hcl
+# modules/eks/addons.tf
+
+# ═══════════════════════════════════════════════════════════════════
+# EKS MANAGED ADD-ONS
+#
+# VPC CNI, CoreDNS, kube-proxy managed by EKS for:
+#   - Automatic security patches
+#   - Version compatibility guarantees
+#   - Simplified upgrade path
+# ═══════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# VPC CNI (aws-node DaemonSet)
+# ─────────────────────────────────────────────
+
+resource "aws_iam_role" "vpc_cni" {
+  name_prefix = "${local.name_prefix}-vpc-cni-"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.cluster.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:kube-system:aws-node"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-vpc-cni-irsa"
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "vpc_cni" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+  role       = aws_iam_role.vpc_cni.name
+}
+
+resource "aws_eks_addon" "vpc_cni" {
+  cluster_name = aws_eks_cluster.main.name
+  addon_name   = "vpc-cni"
+
+  # Pin to a known-good version — don't auto-upgrade in production
+  addon_version            = var.vpc_cni_addon_version
+  resolve_conflicts_on_update = "OVERWRITE"
+  service_account_role_arn = aws_iam_role.vpc_cni.arn
+
+  configuration_values = jsonencode({
+    env = {
+      # Enable custom networking — pods use secondary CIDR subnets
+      AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG = "true"
+      # ENI config label — maps nodes to pod subnets by AZ
+      ENI_CONFIG_LABEL_DEF               = "topology.kubernetes.io/zone"
+      # Enable prefix delegation for higher pod density per node
+      ENABLE_PREFIX_DELEGATION           = "true"
+      # Warm prefix target — pre-allocate IPs for fast pod startup
+      WARM_PREFIX_TARGET                 = "1"
+      # Minimum IPs to keep warm
+      MINIMUM_IP_TARGET                  = "5"
+      # Disable SNAT for pods — pods use their VPC IP directly
+      # Required when using custom networking with secondary CIDR
+      AWS_VPC_K8S_CNI_EXTERNALSNAT       = "true"
+    }
+    # Enable NetworkPolicy support (native VPC CNI network policies)
+    enableNetworkPolicy = "true"
+  })
+
+  tags = local.common_tags
+
+  depends_on = [
+    aws_eks_node_group.system,
+  ]
+}
+
+# ─────────────────────────────────────────────
+# ENI CONFIG (maps AZs to pod subnets)
+# Applied via kubectl after cluster bootstrap
+# Defined here as a reference for the bootstrap script
+# ─────────────────────────────────────────────
+
+# NOTE: ENIConfig custom resources must be created in-cluster.
+# This is handled by the bootstrap Helm chart or kubectl apply.
+# The config maps each AZ to its corresponding pod subnet:
+#
+# apiVersion: crd.k8s.amazonaws.com/v1alpha1
+# kind: ENIConfig
+# metadata:
+#   name: us-east-1a
+# spec:
+#   securityGroups:
+#     - <node_security_group_id>
+#   subnet: <pod_subnet_id_az_a>
+#
+# Repeated for us-east-1b and us-east-1c
+
+# ─────────────────────────────────────────────
+# COREDNS
+# ─────────────────────────────────────────────
+
+resource "aws_eks_addon" "coredns" {
+  cluster_name = aws_eks_cluster.main.name
+  addon_name   = "coredns"
+
+  addon_version               = var.coredns_addon_version
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  configuration_values = jsonencode({
+    replicaCount = 3  # One per AZ for HA DNS
+    resources = {
+      requests = {
+        cpu    = "100m"
+        memory = "128Mi"
+      }
+      limits = {
+        cpu    = "250m"
+        memory = "256Mi"
+      }
+    }
+    # Tolerate system node taint so CoreDNS runs on system nodes
+    tolerations = [
+      {
+        key      = "CriticalAddonsOnly"
+        operator = "Equal"
+        value    = "true"
+        effect   = "NoSchedule"
+      }
+    ]
+    affinity = {
+      podAntiAffinity = {
+        preferredDuringSchedulingIgnoredDuringExecution = [
+          {
+            weight = 100
+            podAffinityTerm = {
+              labelSelector = {
+                matchExpressions = [
+                  {
+                    key      = "k8s-app"
+                    operator = "In"
+                    values   = ["kube-dns"]
+                  }
+                ]
+              }
+              topologyKey = "kubernetes.io/hostname"
+            }
+          }
+        ]
+      }
+    }
+    # TopologySpreadConstraints for AZ distribution
+    topologySpreadConstraints = [
+      {
+        maxSkew           = 1
+        topologyKey       = "topology.kubernetes.io/zone"
+        whenUnsatisfiable = "DoNotSchedule"
+        labelSelector = {
+          matchLabels = {
+            "k8s-app" = "kube-dns"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = local.common_tags
+
+  depends_on = [
+    aws_eks_node_group.system,
+  ]
+}
+
+# ─────────────────────────────────────────────
+# KUBE-PROXY
+# ─────────────────────────────────────────────
+
+resource "aws_eks_addon" "kube_proxy" {
+  cluster_name = aws_eks_cluster.main.name
+  addon_name   = "kube-proxy"
+
+  addon_version               = var.kube_proxy_addon_version
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  tags = local.common_tags
+
+  depends_on = [
+    aws_eks_node_group.system,
+  ]
+}
+
+# ─────────────────────────────────────────────
+# EBS CSI DRIVER (for persistent volumes)
+# ─────────────────────────────────────────────
+
+resource "aws_iam_role" "ebs_csi" {
+  name_prefix = "${local.name_prefix}-ebs-csi-"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.cluster.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:kube-system:ebs-csi-controller-sa"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-ebs-csi-irsa"
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+  role       = aws_iam_role.ebs_csi.name
+}
+
+# Custom KMS policy for EBS CSI — allows encrypting PVs with our KMS key
+resource "aws_iam_role_policy" "ebs_csi_kms" {
+  name_prefix = "ebs-csi-kms-"
+  role        = aws_iam_role.ebs_csi.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:CreateGrant",
+          "kms:ListGrants",
+          "kms:RevokeGrant"
+        ]
+        Resource = var.eks_secrets_kms_key_arn
+        Condition = {
+          Bool = {
+            "kms:GrantIsForAWSResource" = "true"
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = var.eks_secrets_kms_key_arn
+      }
+    ]
+  })
+}
+
+resource "aws_eks_addon" "ebs_csi" {
+  cluster_name = aws_eks_cluster.main.name
+  addon_name   = "aws-ebs-csi-driver"
+
+  addon_version               = var.ebs_csi_addon_version
+  resolve_conflicts_on_update = "OVERWRITE"
+  service_account_role_arn    = aws_iam_role.ebs_csi.arn
+
+  tags = local.common_tags
+
+  depends_on = [
+    aws_eks_node_group.system,
+  ]
+}
+```
+
+---
+
+### `modules/eks/karpenter.tf`
+
+```hcl
+# modules/eks/karpenter.tf
+
+# ═══════════════════════════════════════════════════════════════════
+# KARPENTER — Just-in-time node provisioning
+#
+# Architecture:
+#   - Karpenter controller runs on the system managed node group
+#   - Karpenter provisions/deprovisions application workload nodes
+#   - Uses EC2 Fleet API for optimal instance selection
+#   - Supports Spot for non-critical, On-Demand for critical
+# ═══════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# KARPENTER IAM: IRSA for the controller pod
+# ─────────────────────────────────────────────
+
+resource "aws_iam_role" "karpenter_controller" {
+  name_prefix = "${local.name_prefix}-karpenter-"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.cluster.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:kube-system:karpenter"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-karpenter-irsa"
+  })
+}
+
+resource "aws_iam_role_policy" "karpenter_controller" {
+  name_prefix = "karpenter-"
+  role        = aws_iam_role.karpenter_controller.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EC2NodeManagement"
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateLaunchTemplate",
+          "ec2:CreateFleet",
+          "ec2:RunInstances",
+          "ec2:CreateTags",
+          "ec2:TerminateInstances",
+          "ec2:DeleteLaunchTemplate",
+          "ec2:DescribeLaunchTemplates",
+          "ec2:DescribeInstances",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeInstanceTypeOfferings",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeImages",
+          "ec2:DescribeSpotPriceHistory"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion" = data.aws_region.current.name
+          }
+        }
+      },
+      {
+        Sid    = "EC2TerminateScoped"
+        Effect = "Allow"
+        Action = "ec2:TerminateInstances"
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "ec2:ResourceTag/karpenter.sh/discovery" = var.cluster_name
+          }
+        }
+      },
+      {
+        Sid    = "PassNodeRole"
+        Effect = "Allow"
+        Action = "iam:PassRole"
+        Resource = aws_iam_role.node.arn
+      },
+      {
+        Sid    = "EKSClusterAccess"
+        Effect = "Allow"
+        Action = [
+          "eks:DescribeCluster"
+        ]
+        Resource = aws_eks_cluster.main.arn
+      },
+      {
+        Sid    = "SSMGetAMI"
+        Effect = "Allow"
+        Action = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${data.aws_region.current.name}::parameter/aws/service/eks/optimized-ami/*"
+      },
+      {
+        Sid    = "PricingAPI"
+        Effect = "Allow"
+        Action = [
+          "pricing:GetProducts"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "SQSInterruptionQueue"
+        Effect = "Allow"
+        Action = [
+          "sqs:DeleteMessage",
+          "sqs:GetQueueUrl",
+          "sqs:ReceiveMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = aws_sqs_queue.karpenter_interruption.arn
+      }
+    ]
+  })
+}
+
+# ─────────────────────────────────────────────
+# KARPENTER NODE IAM: Instance Profile
+# (Reuses the node IAM role from node-groups.tf)
+# ─────────────────────────────────────────────
+
+resource "aws_iam_instance_profile" "karpenter_node" {
+  name_prefix = "${local.name_prefix}-karpenter-node-"
+  role        = aws_iam_role.node.name
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-karpenter-node-profile"
+  })
+}
+
+# ─────────────────────────────────────────────
+# SPOT INTERRUPTION HANDLING
+# Karpenter listens to SQS for spot interruption
+# and rebalance recommendation events
+# ─────────────────────────────────────────────
+
+resource "aws_sqs_queue" "karpenter_interruption" {
+  name                       = "${local.name_prefix}-karpenter-interruption"
+  message_retention_seconds  = 300
+  sqs_managed_sse_enabled    = true
+  receive_wait_time_seconds  = 20  # Long polling
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-karpenter-interruption"
+  })
+}
+
+resource "aws_sqs_queue_policy" "karpenter_interruption" {
+  queue_url = aws_sqs_queue.karpenter_interruption.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowEC2Events"
+        Effect = "Allow"
+        Principal = {
+          Service = [
+            "events.amazonaws.com",
+            "sqs.amazonaws.com"
+          ]
+        }
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.karpenter_interruption.arn
+      }
+    ]
+  })
+}
+
+# EventBridge rules for Spot interruption, rebalance, state change, health
+resource "aws_cloudwatch_event_rule" "spot_interruption" {
+  name_prefix = "${local.name_prefix}-spot-int-"
+  description = "EC2 Spot Instance Interruption Warning"
+
+  event_pattern = jsonencode({
+    source      = ["aws.ec2"]
+    detail-type = ["EC2 Spot Instance Interruption Warning"]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "spot_interruption" {
+  rule = aws_cloudwatch_event_rule.spot_interruption.name
+  arn  = aws_sqs_queue.karpenter_interruption.arn
+}
+
+resource "aws_cloudwatch_event_rule" "instance_rebalance" {
+  name_prefix = "${local.name_prefix}-rebalance-"
+  description = "EC2 Instance Rebalance Recommendation"
+
+  event_pattern = jsonencode({
+    source      = ["aws.ec2"]
+    detail-type = ["EC2 Instance Rebalance Recommendation"]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "instance_rebalance" {
+  rule = aws_cloudwatch_event_rule.instance_rebalance.name
+  arn  = aws_sqs_queue.karpenter_interruption.arn
+}
+
+resource "aws_cloudwatch_event_rule" "instance_state_change" {
+  name_prefix = "${local.name_prefix}-state-chg-"
+  description = "EC2 Instance State-change Notification"
+
+  event_pattern = jsonencode({
+    source      = ["aws.ec2"]
+    detail-type = ["EC2 Instance State-change Notification"]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "instance_state_change" {
+  rule = aws_cloudwatch_event_rule.instance_state_change.name
+  arn  = aws_sqs_queue.karpenter_interruption.arn
+}
+
+resource "aws_cloudwatch_event_rule" "scheduled_change" {
+  name_prefix = "${local.name_prefix}-health-"
+  description = "AWS Health Events for EC2"
+
+  event_pattern = jsonencode({
+    source      = ["aws.health"]
+    detail-type = ["AWS Health Event"]
+    detail = {
+      service = ["EC2"]
+    }
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_cloudwatch_event_target" "scheduled_change" {
+  rule = aws_cloudwatch_event_rule.scheduled_change.name
+  arn  = aws_sqs_queue.karpenter_interruption.arn
+}
+
+# ─────────────────────────────────────────────
+# KARPENTER ACCESS ENTRY
+# Allows Karpenter-provisioned nodes to join the cluster
+# (EKS Access Entry replaces the deprecated aws-auth ConfigMap)
+# ─────────────────────────────────────────────
+
+resource "aws_eks_access_entry" "karpenter_node" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = aws_iam_role.node.arn
+  type          = "EC2_LINUX"
+
+  tags = local.common_tags
+}
+```
+
+---
+
+### `modules/eks/irsa.tf`
+
+```hcl
+# modules/eks/irsa.tf
+
+# ═══════════════════════════════════════════════════════════════════
+# IRSA HELPER — Reusable pattern for creating service account roles
+#
+# The OIDC provider is created in main.tf.
+# This file provides:
+#   1. AWS Load Balancer Controller IRSA (needed for ALB Ingress)
+#   2. External Secrets Operator IRSA (needed for Secrets Manager)
+#   3. A generic output for downstream IRSA creation
+# ═══════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# AWS LOAD BALANCER CONTROLLER
+# ─────────────────────────────────────────────
+
+resource "aws_iam_role" "aws_lb_controller" {
+  name_prefix = "${local.name_prefix}-aws-lb-ctrl-"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.cluster.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:kube-system:aws-load-balancer-controller"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-aws-lb-controller-irsa"
+  })
+}
+
+resource "aws_iam_role_policy" "aws_lb_controller" {
+  name_prefix = "aws-lb-ctrl-"
+  role        = aws_iam_role.aws_lb_controller.id
+
+  # Full ALB controller policy — covers ALB, NLB, TargetGroup creation
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "iam:CreateServiceLinkedRole"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "iam:AWSServiceName" = "elasticloadbalancing.amazonaws.com"
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAddresses",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeInternetGateways",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeVpcPeeringConnections",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeInstances",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeTags",
+          "ec2:DescribeCoipPools",
+          "ec2:GetCoipPoolUsage",
+          "ec2:DescribeVpcEndpoints",
+          "elasticloadbalancing:DescribeLoadBalancers",
+          "elasticloadbalancing:DescribeLoadBalancerAttributes",
+          "elasticloadbalancing:DescribeListeners",
+          "elasticloadbalancing:DescribeListenerCertificates",
+          "elasticloadbalancing:DescribeSSLPolicies",
+          "elasticloadbalancing:DescribeRules",
+          "elasticloadbalancing:DescribeTargetGroups",
+          "elasticloadbalancing:DescribeTargetGroupAttributes",
+          "elasticloadbalancing:DescribeTargetHealth",
+          "elasticloadbalancing:DescribeTags",
+          "elasticloadbalancing:DescribeTrustStores"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:DescribeUserPoolClient",
+          "acm:ListCertificates",
+          "acm:DescribeCertificate",
+          "iam:ListServerCertificates",
+          "iam:GetServerCertificate",
+          "waf-regional:GetWebACL",
+          "waf-regional:GetWebACLForResource",
+          "waf-regional:AssociateWebACL",
+          "waf-regional:DisassociateWebACL",
+          "wafv2:GetWebACL",
+          "wafv2:GetWebACLForResource",
+          "wafv2:AssociateWebACL",
+          "wafv2:DisassociateWebACL",
+          "shield:GetSubscriptionState",
+          "shield:DescribeProtection",
+          "shield:CreateProtection",
+          "shield:DeleteProtection"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupIngress",
+          "ec2:CreateSecurityGroup",
+          "ec2:CreateTags",
+          "ec2:DeleteTags",
+          "ec2:DeleteSecurityGroup"
+        ]
+        Resource = "*"
+        Condition = {
+          "Null" = {
+            "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "false"
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:CreateLoadBalancer",
+          "elasticloadbalancing:CreateTargetGroup"
+        ]
+        Resource = "*"
+        Condition = {
+          "Null" = {
+            "aws:RequestTag/elbv2.k8s.aws/cluster" = "false"
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:AddTags",
+          "elasticloadbalancing:RemoveTags",
+          "elasticloadbalancing:DeleteLoadBalancer",
+          "elasticloadbalancing:DeleteTargetGroup",
+          "elasticloadbalancing:ModifyLoadBalancerAttributes",
+          "elasticloadbalancing:ModifyTargetGroupAttributes",
+          "elasticloadbalancing:SetIpAddressType",
+          "elasticloadbalancing:SetSecurityGroups",
+          "elasticloadbalancing:SetSubnets",
+          "elasticloadbalancing:CreateListener",
+          "elasticloadbalancing:DeleteListener",
+          "elasticloadbalancing:ModifyListener",
+          "elasticloadbalancing:CreateRule",
+          "elasticloadbalancing:DeleteRule",
+          "elasticloadbalancing:ModifyRule",
+          "elasticloadbalancing:RegisterTargets",
+          "elasticloadbalancing:DeregisterTargets"
+        ]
+        Resource = "*"
+        Condition = {
+          "Null" = {
+            "aws:ResourceTag/elbv2.k8s.aws/cluster" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# ─────────────────────────────────────────────
+# EXTERNAL SECRETS OPERATOR
+# ─────────────────────────────────────────────
+
+resource "aws_iam_role" "external_secrets" {
+  name_prefix = "${local.name_prefix}-ext-secrets-"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.cluster.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+            "${replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")}:sub" = "system:serviceaccount:external-secrets:external-secrets"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-external-secrets-irsa"
+  })
+}
+
+resource "aws_iam_role_policy" "external_secrets" {
+  name_prefix = "ext-secrets-"
+  role        = aws_iam_role.external_secrets.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:ListSecretVersionIds"
+        ]
+        # Scoped to NovaMart secrets only
+        Resource = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:novamart/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:GetParametersByPath"
+        ]
+        Resource = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/novamart/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = var.eks_secrets_kms_key_arn
+      }
+    ]
+  })
+}
+```
+
+---
+
+### `modules/eks/variables.tf` (Additions for Add-on Versions)
+
+```hcl
+# Append to existing modules/eks/variables.tf
+
+variable "vpc_cni_addon_version" {
+  description = "VPC CNI add-on version"
+  type        = string
+  default     = "v1.18.1-eksbuild.1"
+}
+
+variable "coredns_addon_version" {
+  description = "CoreDNS add-on version"
+  type        = string
+  default     = "v1.11.1-eksbuild.8"
+}
+
+variable "kube_proxy_addon_version" {
+  description = "kube-proxy add-on version"
+  type        = string
+  default     = "v1.29.1-eksbuild.2"
+}
+
+variable "ebs_csi_addon_version" {
+  description = "EBS CSI Driver add-on version"
+  type        = string
+  default     = "v1.28.0-eksbuild.1"
+}
+```
+
+### `modules/eks/outputs.tf` (Complete)
+
+```hcl
+# modules/eks/outputs.tf
+
+output "cluster_name" {
+  description = "EKS cluster name"
+  value       = aws_eks_cluster.main.name
+}
+
+output "cluster_endpoint" {
+  description = "EKS cluster API endpoint"
+  value       = aws_eks_cluster.main.endpoint
+}
+
+output "cluster_certificate_authority" {
+  description = "EKS cluster CA certificate (base64 encoded)"
+  value       = aws_eks_cluster.main.certificate_authority[0].data
+}
+
+output "cluster_version" {
+  description = "EKS cluster Kubernetes version"
+  value       = aws_eks_cluster.main.version
+}
+
+output "cluster_arn" {
+  description = "EKS cluster ARN"
+  value       = aws_eks_cluster.main.arn
+}
+
+output "cluster_security_group_id" {
+  description = "EKS cluster (control plane) security group ID"
+  value       = aws_security_group.cluster.id
+}
+
+output "node_security_group_id" {
+  description = "EKS worker node security group ID"
+  value       = aws_security_group.node.id
+}
+
+output "node_iam_role_arn" {
+  description = "IAM role ARN for EKS worker nodes"
+  value       = aws_iam_role.node.arn
+}
+
+output "node_iam_role_name" {
+  description = "IAM role name for EKS worker nodes"
+  value       = aws_iam_role.node.name
+}
+
+output "oidc_provider_arn" {
+  description = "OIDC provider ARN for IRSA"
+  value       = aws_iam_openid_connect_provider.cluster.arn
+}
+
+output "oidc_provider_url" {
+  description = "OIDC provider URL (without https://)"
+  value       = replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")
+}
+
+output "karpenter_controller_role_arn" {
+  description = "Karpenter controller IRSA role ARN"
+  value       = aws_iam_role.karpenter_controller.arn
+}
+
+output "karpenter_instance_profile_name" {
+  description = "Instance profile name for Karpenter-provisioned nodes"
+  value       = aws_iam_instance_profile.karpenter_node.name
+}
+
+output "karpenter_interruption_queue_name" {
+  description = "SQS queue name for Karpenter spot interruption handling"
+  value       = aws_sqs_queue.karpenter_interruption.name
+}
+
+output "aws_lb_controller_role_arn" {
+  description = "AWS Load Balancer Controller IRSA role ARN"
+  value       = aws_iam_role.aws_lb_controller.arn
+}
+
+output "external_secrets_role_arn" {
+  description = "External Secrets Operator IRSA role ARN"
+  value       = aws_iam_role.external_secrets.arn
+}
+
+output "system_node_group_name" {
+  description = "System node group name"
+  value       = aws_eks_node_group.system.node_group_name
+}
+
+output "cluster_primary_security_group_id" {
+  description = "EKS-managed primary cluster security group (auto-created by EKS)"
+  value       = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
+}
+```
+
+---
+
+## Environment Compositions
+
+### `environments/production/versions.tf`
+
+```hcl
+# environments/production/versions.tf
+# Shared version constraints — symlinked or copied into each subdirectory
+
+terraform {
+  required_version = ">= 1.7.0, < 2.0.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.40"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+  }
+}
+```
+
+### `environments/production/provider.tf`
+
+```hcl
+# environments/production/provider.tf
+# Shared provider config — symlinked or copied into each subdirectory
+
+provider "aws" {
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      Environment = "production"
+      Team        = "platform"
+      ManagedBy   = "terraform"
+      Project     = "novamart"
+      CostCenter  = "PLATFORM-001"
+    }
+  }
+
+  # Safety: prevent accidental operations on wrong account
+  # Uncomment and set when account ID is known
+  # allowed_account_ids = ["888888888888"]
+}
+```
+
+---
+
+### `environments/production/security/`
+
+```hcl
+# environments/production/security/backend.tf
+
+terraform {
+  backend "s3" {
+    bucket         = "novamart-terraform-state-888888888888"
+    key            = "novamart/production/security/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "novamart-terraform-locks"
+    encrypt        = true
+  }
+}
+```
+
+```hcl
+# environments/production/security/main.tf
+
+module "security_baseline" {
+  source = "../../../modules/security-baseline"
+
+  environment    = "production"
+  project        = "novamart"
+  aws_account_id = data.aws_caller_identity.current.account_id
+  aws_region     = data.aws_region.current.name
+
+  # VPC ID injected after networking is created
+  # For initial bootstrap, use a placeholder and update after networking apply
+  vpc_id = var.vpc_id
+
+  terraform_state_bucket_name = "novamart-tfstate-production-${data.aws_caller_identity.current.account_id}"
+
+  cloudtrail_log_retention_days = 90
+  flow_log_retention_days       = 90
+
+  # Data event logging for sensitive buckets
+  cloudtrail_s3_data_event_buckets = [
+    "arn:aws:s3:::novamart-tfstate-production-${data.aws_caller_identity.current.account_id}",
+  ]
+
+  tags = {
+    SecurityZone = "management"
+  }
+}
+
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+```
+
+```hcl
+# environments/production/security/variables.tf
+
+variable "vpc_id" {
+  description = "VPC ID — set after networking module is applied"
+  type        = string
+  default     = ""  # Empty on first run; populated via tfvars after networking
+}
+```
+
+```hcl
+# environments/production/security/outputs.tf
+
+output "kms_key_arns" {
+  description = "KMS key ARNs for use by other modules"
+  value       = module.security_baseline.kms_key_arns
+}
+
+output "kms_key_ids" {
+  description = "KMS key IDs"
+  value       = module.security_baseline.kms_key_ids
+}
+
+output "s3_bucket_arns" {
+  description = "S3 bucket ARNs"
+  value       = module.security_baseline.s3_bucket_arns
+}
+
+output "s3_bucket_ids" {
+  description = "S3 bucket names"
+  value       = module.security_baseline.s3_bucket_ids
+}
+
+output "terraform_lock_table_name" {
+  description = "DynamoDB lock table"
+  value       = module.security_baseline.terraform_lock_table_name
+}
+
+output "cloudtrail_arn" {
+  value = module.security_baseline.cloudtrail_arn
+}
+```
+
+```hcl
+# environments/production/security/terraform.tfvars
+
+# First apply: leave vpc_id empty (CloudTrail + KMS don't need it)
+# Second apply (after networking): set the vpc_id for flow logs
+# vpc_id = "vpc-0123456789abcdef0"
+```
+
+---
+
+### `environments/production/networking/`
+
+```hcl
+# environments/production/networking/backend.tf
+
+terraform {
+  backend "s3" {
+    bucket         = "novamart-terraform-state-888888888888"
+    key            = "novamart/production/networking/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "novamart-terraform-locks"
+    encrypt        = true
+  }
+}
+```
+
+```hcl
+# environments/production/networking/data.tf
+
+# Pull outputs from security module
+data "terraform_remote_state" "security" {
+  backend = "s3"
+  config = {
+    bucket = "novamart-terraform-state-888888888888"
+    key    = "novamart/production/security/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+```
+
+```hcl
+# environments/production/networking/main.tf
+
+module "vpc" {
+  source = "../../../modules/vpc"
+
+  environment = "production"
+  cluster_name = "novamart-production"
+
+  primary_cidr   = "10.0.0.0/16"
+  secondary_cidr = "100.64.0.0/16"
+
+  availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c"]
+
+  public_subnet_cidrs  = ["10.0.0.0/22", "10.0.4.0/22", "10.0.8.0/22"]
+  private_subnet_cidrs = ["10.0.16.0/20", "10.0.32.0/20", "10.0.48.0/20"]
+  pod_subnet_cidrs     = ["100.64.0.0/18", "100.64.64.0/18", "100.64.128.0/18"]
+  data_subnet_cidrs    = ["10.0.64.0/22", "10.0.68.0/22", "10.0.72.0/22"]
+
+  enable_vpc_endpoints = true
+
+  flow_log_retention_days = 90
+  flow_log_s3_bucket_arn  = data.terraform_remote_state.security.outputs.s3_bucket_arns["flow_logs"]
+
+  tags = {
+    NetworkTier = "production"
+  }
+}
+```
+
+```hcl
+# environments/production/networking/outputs.tf
+
+output "vpc_id" {
+  value = module.vpc.vpc_id
+}
+
+output "vpc_cidr" {
+  value = module.vpc.vpc_cidr
+}
+
+output "public_subnet_ids" {
+  value = module.vpc.public_subnet_ids
+}
+
+output "private_subnet_ids" {
+  value = module.vpc.private_subnet_ids
+}
+
+output "pod_subnet_ids" {
+  value = module.vpc.pod_subnet_ids
+}
+
+output "data_subnet_ids" {
+  value = module.vpc.data_subnet_ids
+}
+
+output "db_subnet_group_name" {
+  value = module.vpc.db_subnet_group_name
+}
+
+output "elasticache_subnet_group_name" {
+  value = module.vpc.elasticache_subnet_group_name
+}
+
+output "nat_gateway_ips" {
+  value = module.vpc.nat_gateway_ips
+}
+
+output "availability_zones" {
+  value = module.vpc.availability_zones
+}
+```
+
+---
+
+### `environments/production/eks/`
+
+```hcl
+# environments/production/eks/backend.tf
+
+terraform {
+  backend "s3" {
+    bucket         = "novamart-terraform-state-888888888888"
+    key            = "novamart/production/eks/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "novamart-terraform-locks"
+    encrypt        = true
+  }
+}
+```
+
+```hcl
+# environments/production/eks/data.tf
+
+data "terraform_remote_state" "networking" {
+  backend = "s3"
+  config = {
+    bucket = "novamart-terraform-state-888888888888"
+    key    = "novamart/production/networking/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+
+data "terraform_remote_state" "security" {
+  backend = "s3"
+  config = {
+    bucket = "novamart-terraform-state-888888888888"
+    key    = "novamart/production/security/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+```
+
+```hcl
+# environments/production/eks/main.tf
+
+module "eks" {
+  source = "../../../modules/eks"
+
+  environment  = "production"
+  cluster_name = "novamart-production"
+  cluster_version = "1.29"
+
+  vpc_id             = data.terraform_remote_state.networking.outputs.vpc_id
+  private_subnet_ids = data.terraform_remote_state.networking.outputs.private_subnet_ids
+  pod_subnet_ids     = data.terraform_remote_state.networking.outputs.pod_subnet_ids
+
+  eks_secrets_kms_key_arn = data.terraform_remote_state.security.outputs.kms_key_arns["eks"]
+
+  # Public API endpoint restricted to corporate + CI/CD IPs
+  api_public_access_cidrs = var.api_public_access_cidrs
+
+  # System node group sizing
+  system_node_instance_types = ["m5.large"]
+  system_node_desired        = 2
+  system_node_min            = 2
+  system_node_max            = 4
+
+  # Add-on versions — pinned for production stability
+  vpc_cni_addon_version    = "v1.18.1-eksbuild.1"
+  coredns_addon_version    = "v1.11.1-eksbuild.8"
+  kube_proxy_addon_version = "v1.29.1-eksbuild.2"
+  ebs_csi_addon_version    = "v1.28.0-eksbuild.1"
+
+  tags = {
+    ClusterTier = "production"
+  }
+}
+```
+
+```hcl
+# environments/production/eks/variables.tf
+
+variable "api_public_access_cidrs" {
+  description = "CIDR blocks allowed to reach EKS public API endpoint"
+  type        = list(string)
+  # Corporate VPN + CI/CD runners
+  # NEVER use 0.0.0.0/0 in production
+}
+```
+
+```hcl
+# environments/production/eks/terraform.tfvars
+
+api_public_access_cidrs = [
+  "203.0.113.0/24",   # NovaMart corporate VPN egress
+  "198.51.100.0/28",  # GitHub Actions self-hosted runner NAT
+]
+```
+
+```hcl
+# environments/production/eks/outputs.tf
+
+output "cluster_name" {
+  value = module.eks.cluster_name
+}
+
+output "cluster_endpoint" {
+  value     = module.eks.cluster_endpoint
+  sensitive = true
+}
+
+output "cluster_certificate_authority" {
+  value     = module.eks.cluster_certificate_authority
+  sensitive = true
+}
+
+output "cluster_version" {
+  value = module.eks.cluster_version
+}
+
+output "node_security_group_id" {
+  value = module.eks.node_security_group_id
+}
+
+output "cluster_security_group_id" {
+  value = module.eks.cluster_security_group_id
+}
+
+output "oidc_provider_arn" {
+  value = module.eks.oidc_provider_arn
+}
+
+output "oidc_provider_url" {
+  value = module.eks.oidc_provider_url
+}
+
+output "karpenter_controller_role_arn" {
+  value = module.eks.karpenter_controller_role_arn
+}
+
+output "karpenter_instance_profile_name" {
+  value = module.eks.karpenter_instance_profile_name
+}
+
+output "karpenter_interruption_queue_name" {
+  value = module.eks.karpenter_interruption_queue_name
+}
+
+output "aws_lb_controller_role_arn" {
+  value = module.eks.aws_lb_controller_role_arn
+}
+
+output "external_secrets_role_arn" {
+  value = module.eks.external_secrets_role_arn
+}
+
+output "node_iam_role_arn" {
+  value = module.eks.node_iam_role_arn
+}
+```
+
+---
+
+### `environments/production/data/`
+
+```hcl
+# environments/production/data/backend.tf
+
+terraform {
+  backend "s3" {
+    bucket         = "novamart-terraform-state-888888888888"
+    key            = "novamart/production/data/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "novamart-terraform-locks"
+    encrypt        = true
+  }
+}
+```
+
+```hcl
+# environments/production/data/data.tf
+
+data "terraform_remote_state" "networking" {
+  backend = "s3"
+  config = {
+    bucket = "novamart-terraform-state-888888888888"
+    key    = "novamart/production/networking/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+
+data "terraform_remote_state" "eks" {
+  backend = "s3"
+  config = {
+    bucket = "novamart-terraform-state-888888888888"
+    key    = "novamart/production/eks/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+
+data "terraform_remote_state" "security" {
+  backend = "s3"
+  config = {
+    bucket = "novamart-terraform-state-888888888888"
+    key    = "novamart/production/security/terraform.tfstate"
+    region = "us-east-1"
+  }
+}
+```
+
+```hcl
+# environments/production/data/main.tf
+
+module "data_tier" {
+  source = "../../../modules/data-tier"
+
+  environment = "production"
+  project     = "novamart"
+
+  vpc_id          = data.terraform_remote_state.networking.outputs.vpc_id
+  data_subnet_ids = data.terraform_remote_state.networking.outputs.data_subnet_ids
+
+  eks_node_security_group_id = data.terraform_remote_state.eks.outputs.node_security_group_id
+
+  # RDS configuration — separate instance per service
+  rds_instances = {
+    payments = {
+      engine_version          = "15.5"
+      instance_class          = "db.r6g.xlarge"  # Payments gets more power
+      allocated_storage       = 100
+      max_allocated_storage   = 500
+      database_name           = "payments"
+      multi_az                = true
+      backup_retention_period = 30  # Maximum for regulatory
+      deletion_protection     = true
+    }
+    orders = {
+      engine_version          = "15.5"
+      instance_class          = "db.r6g.large"
+      allocated_storage       = 100
+      max_allocated_storage   = 500
+      database_name           = "orders"
+      multi_az                = true
+      backup_retention_period = 30
+      deletion_protection     = true
+    }
+    users = {
+      engine_version          = "15.5"
+      instance_class          = "db.r6g.large"
+      allocated_storage       = 50
+      max_allocated_storage   = 200
+      database_name           = "users"
+      multi_az                = true
+      backup_retention_period = 30
+      deletion_protection     = true
+    }
+  }
+
+  rds_kms_key_arn                  = data.terraform_remote_state.security.outputs.kms_key_arns["rds"]
+  rds_master_password_management   = true  # AWS manages password in Secrets Manager
+  rds_performance_insights_enabled = true
+  rds_monitoring_interval          = 60    # 60-second Enhanced Monitoring
+
+  # Redis configuration
+  redis_node_type            = "cache.r6g.large"
+  redis_num_cache_clusters   = 3  # 1 primary + 2 replicas across 3 AZs
+  redis_engine_version       = "7.1"
+  redis_kms_key_arn          = data.terraform_remote_state.security.outputs.kms_key_arns["elasticache"]
+  redis_snapshot_retention_limit = 7
+  redis_maintenance_window   = "sun:05:00-sun:07:00"
+  redis_snapshot_window      = "03:00-05:00"
+
+  tags = {
+    DataTier = "production"
+  }
+}
+```
+
+```hcl
+# environments/production/data/outputs.tf
+
+output "rds_endpoints" {
+  description = "RDS endpoints by service"
+  value       = module.data_tier.rds_endpoints
+  sensitive   = true
+}
+
+output "rds_master_secret_arns" {
+  description = "Secrets Manager ARNs for RDS passwords"
+  value       = module.data_tier.rds_master_secret_arns
+}
+
+output "rds_security_group_id" {
+  value = module.data_tier.rds_security_group_id
+}
+
+output "redis_primary_endpoint" {
+  value     = module.data_tier.redis_primary_endpoint
+  sensitive = true
+}
+
+output "redis_reader_endpoint" {
+  value     = module.data_tier.redis_reader_endpoint
+  sensitive = true
+}
+
+output "redis_port" {
+  value = module.data_tier.redis_port
+}
+
+output "redis_security_group_id" {
+  value = module.data_tier.redis_security_group_id
+}
+```
+
+```hcl
+# environments/production/data/terraform.tfvars
+
+# No overrides needed — defaults in main.tf are production-tuned
+# This file exists for consistency and future per-environment tuning
+```
+
+---
+
+## Apply Order & Bootstrap Runbook
+
+```hcl
+# docs/runbook-terraform-operations.md (referenced in directory tree)
+
+# ═══════════════════════════════════════════════════════════════════
+# NOVAMART INFRASTRUCTURE — APPLY ORDER
+# ═══════════════════════════════════════════════════════════════════
+#
+# DEPENDENCY GRAPH:
+#
+#   ┌─────────────┐
+#   │  bootstrap   │  ← Run once manually (creates S3 + DynamoDB)
+#   └──────┬──────┘
+#          │
+#   ┌──────▼──────┐
+#   │  security    │  ← KMS keys, S3 buckets, CloudTrail
+#   └──────┬──────┘    (no VPC dependency for first apply)
+#          │
+#   ┌──────▼──────┐
+#   │ networking   │  ← VPC, subnets, NAT GW, endpoints, flow logs
+#   └──────┬──────┘
+#          │
+#   ┌──────▼──────┐    ← Re-apply security with vpc_id for flow logs
+#   │  security    │
+#   │  (2nd pass)  │
+#   └──────┬──────┘
+#          │
+#   ┌──────▼──────┐
+#   │     eks      │  ← Cluster, node groups, add-ons, Karpenter IAM
+#   └──────┬──────┘
+#          │
+#   ┌──────▼──────┐
+#   │    data      │  ← RDS instances, ElastiCache Redis
+#   └─────────────┘
+#
+# TOTAL ESTIMATED TIME: ~45-60 minutes
+#   bootstrap:   2 min
+#   security:    3 min
+#   networking: 10 min  (NAT GWs are slow)
+#   security:    1 min  (2nd pass — just adds flow logs)
+#   eks:        15 min  (cluster creation ~10min, node group ~5min)
+#   data:       20 min  (RDS Multi-AZ instances are slow)
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 0: PREREQUISITES
+# ═══════════════════════════════════════════════════════════════════
+
+# Required tools:
+#   - Terraform >= 1.7.0
+#   - AWS CLI v2
+#   - aws-iam-authenticator (for EKS kubectl access)
+#   - kubectl >= 1.29
+#   - helm >= 3.14
+
+# Verify AWS identity
+aws sts get-caller-identity
+# Expected: correct account (888888888888) and role (OrganizationAdmin or PlatformAdmin)
+
+# Verify Terraform version
+terraform version
+# Expected: >= 1.7.0
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 1: BOOTSTRAP (Run ONCE — never again)
+# ═══════════════════════════════════════════════════════════════════
+
+cd bootstrap/
+terraform init
+terraform plan -out=bootstrap.plan
+# REVIEW the plan carefully — this creates the state backend
+terraform apply bootstrap.plan
+
+# Capture outputs
+export STATE_BUCKET=$(terraform output -raw state_bucket)
+export LOCK_TABLE=$(terraform output -raw locks_table)
+echo "State bucket: ${STATE_BUCKET}"
+echo "Lock table:   ${LOCK_TABLE}"
+
+# IMPORTANT: After bootstrap, migrate bootstrap's OWN state to S3
+# (Optional but recommended — prevents local state file loss)
+# Add backend.tf to bootstrap/ and run terraform init -migrate-state
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 2: SECURITY BASELINE (First Pass — no VPC yet)
+# ═══════════════════════════════════════════════════════════════════
+
+cd ../environments/production/security/
+
+# Ensure terraform.tfvars has vpc_id = "" for first pass
+# (CloudTrail, KMS, S3 don't require VPC)
+
+terraform init \
+  -backend-config="bucket=${STATE_BUCKET}" \
+  -backend-config="dynamodb_table=${LOCK_TABLE}"
+
+terraform plan -out=security.plan
+# REVIEW: Expect ~20 resources (4 KMS keys, 4 S3 buckets, CloudTrail, IAM roles)
+terraform apply security.plan
+
+# Verify KMS keys exist
+aws kms list-aliases --query 'Aliases[?starts_with(AliasName, `alias/novamart`)]' \
+  --output table
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 3: NETWORKING
+# ═══════════════════════════════════════════════════════════════════
+
+cd ../networking/
+
+terraform init \
+  -backend-config="bucket=${STATE_BUCKET}" \
+  -backend-config="dynamodb_table=${LOCK_TABLE}"
+
+terraform plan -out=networking.plan
+# REVIEW: Expect ~50 resources
+#   - 1 VPC + 1 secondary CIDR
+#   - 12 subnets (3 public + 3 private + 3 pod + 3 data)
+#   - 3 NAT Gateways + 3 EIPs
+#   - 6 route tables + associations
+#   - 1 internet gateway
+#   - 7 VPC endpoints (1 gateway + 6 interface)
+#   - 2 flow logs (CloudWatch + S3)
+#   - Subnet groups (RDS + ElastiCache)
+
+terraform apply networking.plan
+# ⏱ ~10 minutes (NAT Gateways take 2-3 min each)
+
+# Verify VPC
+export VPC_ID=$(terraform output -raw vpc_id)
+echo "VPC ID: ${VPC_ID}"
+aws ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" \
+  --query 'Subnets[].[SubnetId,AvailabilityZone,CidrBlock,Tags[?Key==`Name`].Value|[0]]' \
+  --output table
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 4: SECURITY BASELINE (Second Pass — add VPC Flow Logs)
+# ═══════════════════════════════════════════════════════════════════
+
+cd ../security/
+
+# Update terraform.tfvars with the VPC ID
+echo "vpc_id = \"${VPC_ID}\"" > terraform.tfvars
+
+terraform plan -out=security-v2.plan
+# REVIEW: Expect 1-2 new resources (VPC flow log)
+terraform apply security-v2.plan
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 5: EKS CLUSTER
+# ═══════════════════════════════════════════════════════════════════
+
+cd ../eks/
+
+terraform init \
+  -backend-config="bucket=${STATE_BUCKET}" \
+  -backend-config="dynamodb_table=${LOCK_TABLE}"
+
+terraform plan -out=eks.plan
+# REVIEW: Expect ~30 resources
+#   - EKS cluster + IAM role
+#   - OIDC provider
+#   - System node group + launch template
+#   - Security groups (cluster + node)
+#   - 4 EKS add-ons (VPC CNI, CoreDNS, kube-proxy, EBS CSI)
+#   - Karpenter IAM (role, policy, instance profile, SQS, EventBridge rules)
+#   - IRSA roles (LB controller, External Secrets)
+#   - CloudWatch log group
+
+terraform apply eks.plan
+# ⏱ ~15 minutes (cluster ~10min, node group ~5min)
+
+# Verify cluster
+export CLUSTER_NAME=$(terraform output -raw cluster_name)
+aws eks describe-cluster --name ${CLUSTER_NAME} \
+  --query 'cluster.[name,status,version,endpoint]' --output table
+
+# Configure kubectl
+aws eks update-kubeconfig --name ${CLUSTER_NAME} --region us-east-1 --alias novamart-prod
+
+# Verify nodes
+kubectl get nodes -o wide
+# Expected: 2 system nodes in Ready state
+
+# Verify add-ons
+kubectl get pods -n kube-system
+# Expected: aws-node, coredns (3 replicas), kube-proxy, ebs-csi-controller
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 6: CREATE ENI CONFIGS (VPC CNI Custom Networking)
+# Must be applied BEFORE Karpenter provisions app nodes
+# ═══════════════════════════════════════════════════════════════════
+
+# Get pod subnet IDs and node security group
+POD_SUBNETS=$(cd ../networking && terraform output -json pod_subnet_ids)
+NODE_SG=$(terraform output -raw node_security_group_id)
+
+# Apply ENIConfig for each AZ
+cat <<EOF | kubectl apply -f -
+apiVersion: crd.k8s.amazonaws.com/v1alpha1
+kind: ENIConfig
+metadata:
+  name: us-east-1a
+spec:
+  securityGroups:
+    - ${NODE_SG}
+  subnet: $(echo $POD_SUBNETS | jq -r '.[0]')
+---
+apiVersion: crd.k8s.amazonaws.com/v1alpha1
+kind: ENIConfig
+metadata:
+  name: us-east-1b
+spec:
+  securityGroups:
+    - ${NODE_SG}
+  subnet: $(echo $POD_SUBNETS | jq -r '.[1]')
+---
+apiVersion: crd.k8s.amazonaws.com/v1alpha1
+kind: ENIConfig
+metadata:
+  name: us-east-1c
+spec:
+  securityGroups:
+    - ${NODE_SG}
+  subnet: $(echo $POD_SUBNETS | jq -r '.[2]')
+EOF
+
+# Verify ENIConfigs
+kubectl get eniconfigs
+# Expected: 3 ENIConfigs, one per AZ
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 7: INSTALL KARPENTER (Helm — after EKS cluster is ready)
+# ═══════════════════════════════════════════════════════════════════
+
+# Karpenter Helm chart (controller runs on system nodes)
+KARPENTER_VERSION="v0.35.0"
+
+helm registry logout public.ecr.aws || true
+
+helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
+  --version ${KARPENTER_VERSION} \
+  --namespace kube-system \
+  --set "settings.clusterName=${CLUSTER_NAME}" \
+  --set "settings.interruptionQueue=$(terraform output -raw karpenter_interruption_queue_name)" \
+  --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=$(terraform output -raw karpenter_controller_role_arn)" \
+  --set "controller.resources.requests.cpu=250m" \
+  --set "controller.resources.requests.memory=256Mi" \
+  --set "controller.resources.limits.cpu=1" \
+  --set "controller.resources.limits.memory=1Gi" \
+  --set "replicas=2" \
+  --set "tolerations[0].key=CriticalAddonsOnly" \
+  --set "tolerations[0].operator=Equal" \
+  --set "tolerations[0].value=true" \
+  --set "tolerations[0].effect=NoSchedule" \
+  --set "affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[0].topologyKey=kubernetes.io/hostname" \
+  --set "topologySpreadConstraints[0].maxSkew=1" \
+  --set "topologySpreadConstraints[0].topologyKey=topology.kubernetes.io/zone" \
+  --set "topologySpreadConstraints[0].whenUnsatisfiable=DoNotSchedule" \
+  --wait --timeout 5m
+
+# Verify Karpenter
+kubectl get pods -n kube-system -l app.kubernetes.io/name=karpenter
+# Expected: 2 karpenter pods Running
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 8: APPLY KARPENTER NODE POOL + EC2 NODE CLASS
+# ═══════════════════════════════════════════════════════════════════
+
+INSTANCE_PROFILE=$(terraform output -raw karpenter_instance_profile_name)
+
+cat <<EOF | kubectl apply -f -
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: general-workloads
+spec:
+  template:
+    metadata:
+      labels:
+        novamart.com/node-type: application
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]  # Start with on-demand; add spot for non-critical later
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["m", "r", "c"]  # General, memory-optimized, compute
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["4"]  # 5th gen+ only (m5, r6g, c6i, etc.)
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: ["large", "xlarge", "2xlarge", "4xlarge"]
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: ["us-east-1a", "us-east-1b", "us-east-1c"]
+      nodeClassRef:
+        name: default
+      # Kubelet configuration
+      kubelet:
+        maxPods: 110
+        systemReserved:
+          cpu: "100m"
+          memory: "256Mi"
+          ephemeral-storage: "1Gi"
+        kubeReserved:
+          cpu: "200m"
+          memory: "512Mi"
+          ephemeral-storage: "1Gi"
+  # Consolidation: Karpenter replaces underutilized nodes
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+    expireAfter: 720h  # 30 days — force node refresh for AMI updates
+  # Limits: prevent runaway scaling
+  limits:
+    cpu: "2000"       # Max 2000 vCPUs across all Karpenter nodes
+    memory: "4000Gi"  # Max 4TB RAM
+  # Weight: prefer this pool (higher = more preferred)
+  weight: 50
+---
+apiVersion: karpenter.k8s.aws/v1beta1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  amiFamily: AL2023
+  role: "${INSTANCE_PROFILE}"
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+  securityGroupSelectorTerms:
+    - tags:
+        kubernetes.io/cluster/${CLUSTER_NAME}: owned
+  # EBS root volume
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 100Gi
+        volumeType: gp3
+        iops: 3000
+        throughput: 125
+        encrypted: true
+        deleteOnTermination: true
+  # IMDSv2 enforcement
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 1
+    httpTokens: required
+  # Tags on launched instances
+  tags:
+    Environment: production
+    ManagedBy: karpenter
+    Team: platform
+    Project: novamart
+    CostCenter: PLATFORM-001
+EOF
+
+# Verify NodePool
+kubectl get nodepools
+kubectl get ec2nodeclasses
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 9: DATA TIER
+# ═══════════════════════════════════════════════════════════════════
+
+cd ../data/
+
+terraform init \
+  -backend-config="bucket=${STATE_BUCKET}" \
+  -backend-config="dynamodb_table=${LOCK_TABLE}"
+
+terraform plan -out=data.plan
+# REVIEW: Expect ~15 resources
+#   - 3 RDS instances (payments, orders, users) — Multi-AZ
+#   - 1 RDS subnet group + 1 security group + 1 parameter group
+#   - 1 Enhanced Monitoring IAM role
+#   - 1 Redis replication group (3 nodes)
+#   - 1 Redis subnet group + 1 security group + 1 parameter group
+#   - 2 CloudWatch log groups (Redis slow-log, engine-log)
+
+terraform apply data.plan
+# ⏱ ~20 minutes (RDS Multi-AZ instances are slow to provision)
+
+# Verify RDS
+aws rds describe-db-instances \
+  --query 'DBInstances[?starts_with(DBInstanceIdentifier, `novamart`)].[DBInstanceIdentifier,DBInstanceStatus,MultiAZ,Engine,EngineVersion]' \
+  --output table
+
+# Verify Redis
+aws elasticache describe-replication-groups \
+  --query 'ReplicationGroups[?starts_with(ReplicationGroupId, `novamart`)].[ReplicationGroupId,Status,AutomaticFailover,MultiAZ]' \
+  --output table
+
+# Verify Secrets Manager has RDS passwords
+aws secretsmanager list-secrets \
+  --query 'SecretList[?starts_with(Name, `rds!`)].Name' --output table
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 10: POST-DEPLOY VALIDATION
+# ═══════════════════════════════════════════════════════════════════
+
+echo "========================================="
+echo "  POST-DEPLOYMENT VALIDATION CHECKLIST"
+echo "========================================="
+
+echo "--- VPC ---"
+aws ec2 describe-vpcs --vpc-ids ${VPC_ID} --query 'Vpcs[0].State' --output text
+# Expected: available
+
+echo "--- Subnets ---"
+aws ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" \
+  --query 'length(Subnets)' --output text
+# Expected: 12
+
+echo "--- NAT Gateways ---"
+aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=${VPC_ID}" \
+  --query 'NatGateways[].State' --output text
+# Expected: available available available
+
+echo "--- VPC Endpoints ---"
+aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=${VPC_ID}" \
+  --query 'VpcEndpoints[].[ServiceName,State]' --output table
+# Expected: 7 endpoints, all available
+
+echo "--- EKS Cluster ---"
+aws eks describe-cluster --name ${CLUSTER_NAME} --query 'cluster.status' --output text
+# Expected: ACTIVE
+
+echo "--- EKS Nodes ---"
+kubectl get nodes
+# Expected: 2 system nodes, Ready
+
+echo "--- System Pods ---"
+kubectl get pods -n kube-system --field-selector=status.phase!=Running 2>/dev/null
+# Expected: No results (all running)
+
+echo "--- Karpenter ---"
+kubectl get nodepools
+# Expected: general-workloads
+
+echo "--- RDS ---"
+aws rds describe-db-instances \
+  --query 'DBInstances[?starts_with(DBInstanceIdentifier,`novamart-production`)].DBInstanceStatus' \
+  --output text
+# Expected: available available available
+
+echo "--- Redis ---"
+aws elasticache describe-replication-groups \
+  --replication-group-id novamart-production-redis \
+  --query 'ReplicationGroups[0].Status' --output text
+# Expected: available
+
+echo "--- CloudTrail ---"
+aws cloudtrail get-trail-status --name novamart-production \
+  --query '[IsLogging,LatestDeliveryTime]' --output text
+# Expected: True <recent_timestamp>
+
+echo "--- KMS Keys ---"
+aws kms list-aliases --query 'Aliases[?starts_with(AliasName,`alias/novamart-production`)].AliasName' \
+  --output text
+# Expected: 4 aliases
+
+echo "--- Flow Logs ---"
+aws ec2 describe-flow-logs --filter "Name=resource-id,Values=${VPC_ID}" \
+  --query 'FlowLogs[].[FlowLogId,FlowLogStatus,LogDestinationType]' --output table
+# Expected: 2 flow logs (cloudwatch-logs + s3), both ACTIVE
+
+echo "========================================="
+echo "  VALIDATION COMPLETE"
+echo "========================================="
+
+# ═══════════════════════════════════════════════════════════════════
+# ROLLBACK PROCEDURES
+# ═══════════════════════════════════════════════════════════════════
+#
+# CRITICAL: Rollback order is REVERSE of apply order
+#
+#   1. data      → terraform destroy (RDS has deletion_protection — disable first)
+#   2. eks       → terraform destroy (node groups drain, cluster deletes)
+#   3. networking → terraform destroy (VPC, subnets, NAT GWs)
+#   4. security  → terraform destroy (KMS keys enter 30-day deletion window)
+#
+# WARNINGS:
+#   - RDS has deletion_protection = true. You MUST disable it first:
+#     aws rds modify-db-instance --db-instance-identifier <id> --no-deletion-protection
+#   - RDS will create a final snapshot (configured in Terraform)
+#   - KMS keys have 30-day deletion window — recoverable
+#   - S3 buckets have prevent_destroy — must remove lifecycle rule first
+#   - CloudTrail Object Lock prevents deletion for 365 days
+#
+# NEVER run terraform destroy in production without:
+#   1. Change ticket approved
+#   2. Data backup verified
+#   3. Stakeholder sign-off
+#   4. Runbook reviewed
+
+# ═══════════════════════════════════════════════════════════════════
+# COST ESTIMATE (Monthly)
+# ═══════════════════════════════════════════════════════════════════
+#
+# ┌─────────────────────────────────────┬──────────────┐
+# │ Component                           │ Est. Monthly │
+# ├─────────────────────────────────────┼──────────────┤
+# │ NAT Gateways (3x)                  │ $98          │
+# │ NAT Gateway data processing*       │ $200-800     │
+# │ VPC Endpoints (6 interface, 3 AZ)  │ $132         │
+# │ EKS Control Plane                  │ $73          │
+# │ System Node Group (2x m5.large)    │ $140         │
+# │ Karpenter Nodes (variable)**       │ $2,000-8,000 │
+# │ RDS payments (db.r6g.xlarge M-AZ)  │ $550         │
+# │ RDS orders (db.r6g.large M-AZ)     │ $370         │
+# │ RDS users (db.r6g.large M-AZ)      │ $370         │
+# │ RDS storage (250 GB total gp3)     │ $30          │
+# │ RDS Performance Insights           │ Free (7-day) │
+# │ ElastiCache (3x cache.r6g.large)   │ $550         │
+# │ CloudWatch Logs                    │ $50-100      │
+# │ S3 (state, trails, flow logs)      │ $10-30       │
+# │ KMS Keys (4x)                      │ $4           │
+# │ DynamoDB (state locking)           │ <$1          │
+# ├─────────────────────────────────────┼──────────────┤
+# │ BASELINE (before app workloads)    │ ~$2,400      │
+# │ WITH APP WORKLOADS (normal)        │ ~$4,500      │
+# │ PEAK (Black Friday)               │ ~$10,000     │
+# └─────────────────────────────────────┴──────────────┘
+#
+# * NAT data processing highly variable — VPC endpoints offset most
+# ** Karpenter nodes scale to zero when no workloads scheduled
+#
+# COST OPTIMIZATION LEVERS:
+#   1. Spot instances for non-critical workloads (Karpenter NodePool)
+#   2. Reserved Instances for RDS (1yr RI saves ~40%)
+#   3. Savings Plans for EC2 (1yr compute SP saves ~30%)
+#   4. GP3 storage over GP2 (already using GP3)
+#   5. VPC endpoints avoid NAT data processing charges
+#   6. S3 lifecycle policies move old data to Glacier
+#   7. CloudWatch log retention limits (90 days hot, then S3)
+```
+
+---
+
+## CIDR Allocation Reference
+
+```markdown
+# docs/cidr-allocation.md
+
+# ═══════════════════════════════════════════════════════════════════
+# NOVAMART CIDR ALLOCATION MAP
+# ═══════════════════════════════════════════════════════════════════
+#
+# PRIMARY CIDR: 10.0.0.0/16 (65,536 IPs)
+# ─────────────────────────────────────────────────────────────────
+#
+# ┌─────────────────┬──────────────────┬─────────┬──────────────┐
+# │ Subnet Tier     │ CIDR             │ Size    │ Usable IPs   │
+# ├─────────────────┼──────────────────┼─────────┼──────────────┤
+# │ Public AZ-a     │ 10.0.0.0/22      │ /22     │ 1,019        │
+# │ Public AZ-b     │ 10.0.4.0/22      │ /22     │ 1,019        │
+# │ Public AZ-c     │ 10.0.8.0/22      │ /22     │ 1,019        │
+# │ (reserved)      │ 10.0.12.0/22     │ /22     │ reserved     │
+# ├─────────────────┼──────────────────┼─────────┼──────────────┤
+# │ Private AZ-a    │ 10.0.16.0/20     │ /20     │ 4,091        │
+# │ Private AZ-b    │ 10.0.32.0/20     │ /20     │ 4,091        │
+# │ Private AZ-c    │ 10.0.48.0/20     │ /20     │ 4,091        │
+# ├─────────────────┼──────────────────┼─────────┼──────────────┤
+# │ Data AZ-a       │ 10.0.64.0/22     │ /22     │ 1,019        │
+# │ Data AZ-b       │ 10.0.68.0/22     │ /22     │ 1,019        │
+# │ Data AZ-c       │ 10.0.72.0/22     │ /22     │ 1,019        │
+# │ (reserved)      │ 10.0.76.0/22     │ /22     │ reserved     │
+# ├─────────────────┼──────────────────┼─────────┼──────────────┤
+# │ UNALLOCATED     │ 10.0.80.0/20     │         │ future use   │
+# │                 │ 10.0.96.0/19     │         │              │
+# │                 │ 10.0.128.0/17    │         │              │
+# └─────────────────┴──────────────────┴─────────┴──────────────┘
+#
+# Allocated:  ~28,500 IPs (43% of /16)
+# Reserved:   ~2,000 IPs (for future subnet tiers)
+# Unallocated: ~35,000 IPs (for future growth)
+#
+# SECONDARY CIDR: 100.64.0.0/16 (65,536 IPs) — Pod IPs Only
+# ─────────────────────────────────────────────────────────────────
+#
+# ┌─────────────────┬──────────────────┬─────────┬──────────────┐
+# │ Subnet Tier     │ CIDR             │ Size    │ Usable IPs   │
+# ├─────────────────┼──────────────────┼─────────┼──────────────┤
+# │ Pods AZ-a       │ 100.64.0.0/18    │ /18     │ 16,379       │
+# │ Pods AZ-b       │ 100.64.64.0/18   │ /18     │ 16,379       │
+# │ Pods AZ-c       │ 100.64.128.0/18  │ /18     │ 16,379       │
+# │ (reserved)      │ 100.64.192.0/18  │ /18     │ reserved     │
+# └─────────────────┴──────────────────┴─────────┴──────────────┘
+#
+# Total pod capacity: 49,137 IPs across 3 AZs
+# Peak requirement:   5,000 pods (Black Friday)
+# Headroom:           9.8x — sufficient for multi-year growth
+#
+# ENVIRONMENT STRATEGY (Future):
+# ─────────────────────────────────────────────────────────────────
+#
+# │ Environment │ Primary CIDR    │ Secondary CIDR    │
+# │ production  │ 10.0.0.0/16     │ 100.64.0.0/16     │
+# │ staging     │ 10.1.0.0/16     │ 100.65.0.0/16     │
+# │ dev         │ 10.2.0.0/16     │ 100.66.0.0/16     │
+#
+# Non-overlapping CIDRs enable VPC peering between environments
+# if cross-environment access is needed (e.g., staging → prod read replica)
+```
