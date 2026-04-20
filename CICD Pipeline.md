@@ -17,23 +17,23 @@ Let's make sure that doesn't happen.
 ┌─────────────────────────────────────────────────────────────────┐
 │                     JENKINS CONTROLLER                          │
 │                                                                 │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐  ┌──────────────┐  │
-│  │ Web UI   │  │ REST API │  │ Job Queue  │  │ Config Store │  │
-│  │ (Stapler)│  │          │  │ (Build Q)  │  │ ($JENKINS_   │  │
-│  └──────────┘  └──────────┘  └─────┬─────┘  │  HOME/jobs/) │  │
-│                                    │         └──────────────┘  │
-│  ┌──────────────┐  ┌──────────┐    │    ┌───────────────────┐  │
-│  │ Credentials  │  │ Plugin   │    │    │ Executor Pool     │  │
-│  │ Store        │  │ Manager  │    │    │ (0 on controller  │  │
-│  │ (encrypted)  │  │ (200+)   │    │    │  in production!)  │  │
-│  └──────────────┘  └──────────┘    │    └───────────────────┘  │
+│  ┌──────────┐  ┌──────────┐  ┌─────────────┐  ┌──────────────┐  │
+│  │ Web UI   │  │ REST API │  │ Job Queue   │  │ Config Store │  │
+│  │ (Stapler)│  │          │  │ (Build Q)   │  │ ($JENKINS_   │  │
+│  └──────────┘  └──────────┘  └─────┬───────┘  │  HOME/jobs/) │  │
+│                                    │          └──────────────┘  │
+│  ┌──────────────┐  ┌──────────┐    │    ┌───────────────────┐   │
+│  │ Credentials  │  │ Plugin   │    │    │ Executor Pool     │   │
+│  │ Store        │  │ Manager  │    │    │ (0 on controller  │   │
+│  │ (encrypted)  │  │ (200+)   │    │    │  in production!)  │   │
+│  └──────────────┘  └──────────┘    │    └───────────────────┘   │
 │                                    │                            │
 └────────────────────────────────────┼────────────────────────────┘
                                      │ JNLP (WebSocket/TCP)
                                      │ or SSH
                     ┌────────────────┼────────────────┐
-                    │                │                 │
-            ┌───────▼──────┐ ┌──────▼───────┐ ┌──────▼───────┐
+                    │                │                │
+            ┌───────▼───────┐ ┌──────▼────────┐ ┌──────▼────────┐
             │  Agent (Node) │ │  Agent (Node) │ │  Agent (Node) │
             │  Label: java  │ │  Label: docker│ │  Label: gpu   │
             │               │ │               │ │               │
@@ -102,30 +102,30 @@ Agents are **disposable compute** that run actual builds. Connection methods:
 ### Jenkins on Kubernetes (NovaMart Pattern)
 
 ```
-┌─────────────────── EKS Cluster ───────────────────────┐
-│                                                        │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │           jenkins namespace                       │  │
-│  │                                                   │  │
-│  │  ┌─────────────────────┐   ┌──────────────────┐  │  │
-│  │  │  Jenkins Controller │   │  EBS Volume (gp3) │  │  │
-│  │  │  (StatefulSet,      │───│  $JENKINS_HOME    │  │  │
-│  │  │   1 replica)        │   │  100Gi            │  │  │
-│  │  │  CPU: 2, Mem: 4Gi   │   └──────────────────┘  │  │
-│  │  └────────┬────────────┘                          │  │
-│  │           │ K8s API (creates pods)                │  │
-│  └───────────┼──────────────────────────────────────┘  │
-│              │                                         │
-│  ┌───────────▼──────────────────────────────────────┐  │
-│  │       jenkins-agents namespace                    │  │
-│  │                                                   │  │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐         │  │
-│  │  │ Build Pod│ │ Build Pod│ │ Build Pod│  (dynamic│  │
-│  │  │ maven +  │ │ go +     │ │ node +   │  on-     │  │
-│  │  │ docker   │ │ trivy    │ │ chrome   │  demand) │  │
-│  │  └──────────┘ └──────────┘ └──────────┘         │  │
-│  └──────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────┘
+┌─────────────────── EKS Cluster ──────────────────────────┐
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │           jenkins namespace                        │  │
+│  │                                                    │  │
+│  │  ┌─────────────────────┐   ┌───────────────────┐   │  │
+│  │  │  Jenkins Controller │   │  EBS Volume (gp3) │   │  │
+│  │  │  (StatefulSet,      │───│  $JENKINS_HOME    │   │  │
+│  │  │   1 replica)        │   │  100Gi            │   │  │
+│  │  │  CPU: 2, Mem: 4Gi   │   └───────────────────┘   │  │
+│  │  └────────┬────────────┘                           │  │
+│  │           │ K8s API (creates pods)                 │  │
+│  └───────────┼────────────────────────────────────────┘  │
+│              │                                           │
+│  ┌───────────▼───────────────────────────────────────┐   │
+│  │       jenkins-agents namespace                    │   │
+│  │                                                   │   │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐           │   │
+│  │  │ Build Pod│ │ Build Pod│ │ Build Pod│  (dynamic │   │
+│  │  │ maven +  │ │ go +     │ │ node +   │  on-      │   │
+│  │  │ docker   │ │ trivy    │ │ chrome   │  demand)  │   │
+│  │  └──────────┘ └──────────┘ └──────────┘           │   │
+│  └───────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────┘
 ```
 
 **Kubernetes plugin pod template:**
@@ -1131,32 +1131,32 @@ Sandbox bypass via shared library — incomplete threat model. You correctly sai
 ### Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────┐
 │                     SonarQube Server                          │
 │                                                               │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐  │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────────────┐  │
 │  │  Web Server  │  │ Compute      │  │  Search (ES)        │  │
 │  │  (UI + API)  │  │ Engine (CE)  │  │  (Elasticsearch     │  │
 │  │  Port 9000   │  │  Processes   │  │   embedded)         │  │
 │  │              │  │  analysis    │  │  Indexes results    │  │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬──────────────┘  │
-│         │                 │                  │                 │
+│         │                 │                  │                │
 │         └────────┬────────┴──────────────────┘                │
-│                  │                                             │
+│                  │                                            │
 │         ┌────────▼─────────┐                                  │
 │         │  PostgreSQL DB   │  (Issues, metrics, config,       │
 │         │  (External)      │   quality profiles, rules)       │
 │         └──────────────────┘                                  │
-└──────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────┘
          ▲                              │
          │ Analysis report              │ Webhook (quality gate result)
          │ (POST /api/ce/submit)        │ (POST to Jenkins)
          │                              ▼
-┌────────┴──────────┐          ┌───────────────────┐
-│  SonarQube Scanner │          │     Jenkins        │
-│  (runs in CI/CD)   │          │  waitForQuality    │
+┌────────┴────────────┐          ┌────────────────────┐
+│  SonarQube Scanner  │          │     Jenkins        │
+│  (runs in CI/CD)    │          │  waitForQuality    │
 │                     │          │  Gate()            │
-│  - Parses source    │          └───────────────────┘
+│  - Parses source    │          └────────────────────┘
 │  - Runs rules       │
 │  - Sends report     │
 │  (NOT the server    │
@@ -1215,9 +1215,9 @@ Example custom rules for NovaMart:
 Quality Gate = pass/fail criteria applied to analysis results
 
 NovaMart Quality Gate ("NovaMart Production"):
-┌──────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────┐
 │  Condition                    │ Operator │ Threshold  │
-├──────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────┤
 │  New Code Coverage            │    <     │   80%      │
 │  New Code Duplications        │    >     │   3%       │
 │  New Bugs                     │    >     │   0        │
@@ -1226,7 +1226,7 @@ NovaMart Quality Gate ("NovaMart Production"):
 │  New Code Smells (BLOCKER)    │    >     │   0        │
 │  New Code Smells (CRITICAL)   │    >     │   0        │
 │  Overall Code Maintainability │    <     │   A        │
-└──────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────┘
 
 KEY CONCEPT: "New Code" vs "Overall Code"
 ├── New Code = code changed in this branch/PR (since branch point)
@@ -1365,24 +1365,24 @@ This is why Trivy is dominant — it's not just a container scanner. It's a **un
 ### Architecture
 
 ```
-┌───────────────────────────────────────────────────┐
-│                  Trivy CLI                         │
-│                                                    │
-│  ┌──────────────┐   ┌────────────────────────┐    │
+┌─────────────────────────────────────────────────────┐
+│                  Trivy CLI                          │
+│                                                     │
+│  ┌───────────────┐   ┌─────────────────────────┐    │
 │  │  Scanner      │   │  Vulnerability DB       │    │
-│  │  ├── OS pkg   │   │  (trivy-db)            │    │
+│  │  ├── OS pkg   │   │  (trivy-db)             │    │
 │  │  ├── Language │   │  ├── NVD (NIST)         │    │
 │  │  ├── License  │   │  ├── Red Hat OVAL       │    │
 │  │  ├── Secret   │   │  ├── Debian Security    │    │
 │  │  ├── Misconfig│   │  ├── Alpine SecDB       │    │
 │  │  └── SBOM     │   │  ├── GitHub Advisory    │    │
-│  └──────────────┘   │  └── And 10+ more        │    │
-│                      └────────────────────────┘    │
-│                                                    │
-│  DB download: ghcr.io/aquasecurity/trivy-db        │
-│  Updated every 6 hours                             │
-│  Cached locally: ~/.cache/trivy/                   │
-└───────────────────────────────────────────────────┘
+│  └───────────────┘   │  └── And 10+ more       │    │
+│                      └─────────────────────────┘    │
+│                                                     │
+│  DB download: ghcr.io/aquasecurity/trivy-db         │
+│  Updated every 6 hours                              │
+│  Cached locally: ~/.cache/trivy/                    │
+└─────────────────────────────────────────────────────┘
 ```
 
 ### Trivy in CI Pipeline — Complete Reference
@@ -1553,21 +1553,21 @@ WHY BOTH:
 ### How BlackDuck Works
 
 ```
-┌─────────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────────┐
 │                    BlackDuck Server                           │
-│                                                              │
-│  ┌──────────────┐  ┌─────────────────┐  ┌───────────────┐   │
-│  │ KnowledgeBase │  │ Policy Engine   │  │ Reporting     │   │
-│  │ (2.7M+ OSS   │  │ (License rules, │  │ (PDF, CSV,    │   │
-│  │  components,  │  │  vuln rules,    │  │  API, SPDX,   │   │
-│  │  licenses,    │  │  custom rules)  │  │  CycloneDX)   │   │
-│  │  vulns)       │  │                 │  │               │   │
-│  └──────────────┘  └─────────────────┘  └───────────────┘   │
-└───────────────────────────▲──────────────────────────────────┘
+│                                                               │
+│  ┌───────────────┐  ┌─────────────────┐  ┌───────────────┐    │
+│  │ KnowledgeBase │  │ Policy Engine   │  │ Reporting     │    │
+│  │ (2.7M+ OSS    │  │ (License rules, │  │ (PDF, CSV,    │    │
+│  │  components,  │  │  vuln rules,    │  │  API, SPDX,   │    │
+│  │  licenses,    │  │  custom rules)  │  │  CycloneDX)   │    │
+│  │  vulns)       │  │                 │  │               │    │
+│  └───────────────┘  └─────────────────┘  └───────────────┘    │
+└───────────────────────────▲───────────────────────────────────┘
                             │ Upload scan results
                             │
 ┌───────────────────────────┴──────────────────────────────────┐
-│                   Synopsys Detect (CLI)                       │
+│                   Synopsys Detect (CLI)                      │
 │                                                              │
 │  Runs in CI/CD agent. Detection methods:                     │
 │  ├── Package manager inspection (pom.xml, go.mod, etc.)      │
@@ -1675,10 +1675,10 @@ WITH ARTIFACTORY:
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
+┌───────────────────────────────────────────────────────────┐
 │                    Artifactory                            │
-│                                                          │
-│  ┌─────────────────────────────────────────────────┐     │
+│                                                           │
+│  ┌──────────────────────────────────────────────────┐     │
 │  │              Repository Types                    │     │
 │  │                                                  │     │
 │  │  LOCAL repos (you publish to):                   │     │
@@ -1702,15 +1702,15 @@ WITH ARTIFACTORY:
 │  │  ├── libs-release   = local + remote (reads)     │     │
 │  │  ├── npm            = local + remote             │     │
 │  │  └── docker         = local + remote             │     │
-│  └─────────────────────────────────────────────────┘     │
-│                                                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
-│  │ Build Info    │  │ Replication  │  │ Xray         │   │
-│  │ (Tracks      │  │ (Cross-site  │  │ (Vuln scan   │   │
-│  │  artifact     │  │  sync, DR)   │  │  + license)  │   │
-│  │  provenance)  │  │              │  │              │   │
-│  └──────────────┘  └──────────────┘  └──────────────┘   │
-└─────────────────────────────────────────────────────────┘
+│  └──────────────────────────────────────────────────┘     │
+│                                                           │
+│  ┌───────────────┐  ┌──────────────┐  ┌──────────────┐    │
+│  │ Build Info    │  │ Replication  │  │ Xray         │    │
+│  │ (Tracks       │  │ (Cross-site  │  │ (Vuln scan   │    │
+│  │  artifact     │  │  sync, DR)   │  │  + license)  │    │
+│  │  provenance)  │  │              │  │              │    │
+│  └───────────────┘  └──────────────┘  └──────────────┘    │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ### Repository Strategy — NovaMart Pattern
@@ -1792,17 +1792,17 @@ docker pull docker.artifactory.novamart.com/nginx:1.25
 
 ```
 BUILD PIPELINE:
-┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
-│  Build    │────▶│   Dev    │────▶│ Staging  │────▶│   Prod   │
+┌───────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│  Build    │────▶│   Dev    │────▶│ Staging  │────▶│   Prod  │
 │  (CI)     │     │  Deploy  │     │  Deploy  │     │  Deploy  │
-└──────────┘     └──────────┘     └──────────┘     └──────────┘
+└───────────┘     └──────────┘     └──────────┘     └──────────┘
      │                │                │                │
      ▼                ▼                ▼                ▼
-┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+┌───────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
 │ snapshot  │     │   dev    │     │ staging  │     │ release  │
-│ repo      │────▶│  repo    │────▶│   repo   │────▶│  repo    │
+│ repo      │────▶│  repo    │────▶│   repo   │────▶│  repo   │
 │ (mutable) │     │(promote) │     │(promote) │     │(immutable│
-└──────────┘     └──────────┘     └──────────┘     └──────────┘
+└───────────┘     └──────────┘     └──────────┘     └──────────┘
 
 PROMOTION = copy (not move) artifact from one repo to another
             with metadata update (promoted_by, promoted_at, build_id)
@@ -2512,54 +2512,54 @@ You saw ArgoCD basics in Phase 2 Lesson 4: Application resource, syncPolicy, aut
 ## 1. ArgoCD Architecture — Production Internals
 
 ```
-┌────────────────────────── ArgoCD Namespace ──────────────────────────┐
-│                                                                       │
-│  ┌──────────────────────┐    ┌───────────────────────────────────┐   │
-│  │  argocd-server        │    │  argocd-repo-server                │   │
-│  │  (API + UI)           │    │  (Git clone, manifest generation)  │   │
-│  │                       │    │                                    │   │
-│  │  - Serves Web UI      │    │  - Clones Git repos               │   │
-│  │  - REST/gRPC API      │    │  - Runs Helm template             │   │
-│  │  - Auth (OIDC/SSO)    │    │  - Runs Kustomize build           │   │
-│  │  - RBAC enforcement   │    │  - Runs jsonnet, plain YAML       │   │
-│  │  - Webhook receiver   │    │  - Caches repos (60s default)     │   │
-│  │  2+ replicas (HA)     │    │  - CPU/memory intensive           │   │
-│  └──────────┬────────────┘    │  2+ replicas (HA)                 │   │
-│             │                  └───────────┬───────────────────────┘   │
-│             │                              │                          │
-│  ┌──────────▼──────────────────────────────▼─────────────────────┐   │
-│  │              argocd-application-controller                     │   │
-│  │              (THE BRAIN — reconciliation loop)                 │   │
-│  │                                                                │   │
-│  │  - Watches Application CRDs                                    │   │
-│  │  - Compares desired state (Git) vs live state (cluster)        │   │
-│  │  - Detects drift (OutOfSync)                                   │   │
-│  │  - Applies manifests to target cluster (sync)                  │   │
-│  │  - Runs health checks on resources                             │   │
-│  │  - Manages sync waves and hooks                                │   │
-│  │  - ONE controller OR sharded (by cluster/namespace)            │   │
-│  └───────────────────────────────┬───────────────────────────────┘   │
-│                                  │                                    │
-│  ┌───────────────────────────────▼───────────────────────────────┐   │
-│  │              argocd-applicationset-controller                  │   │
-│  │              (Dynamic Application generation)                  │   │
-│  │                                                                │   │
-│  │  - Generates Application CRDs from templates                   │   │
-│  │  - Sources: Git directory, Git file, list, cluster,            │   │
-│  │    SCM provider, pull request, merge request                   │   │
-│  └───────────────────────────────────────────────────────────────┘   │
-│                                                                       │
-│  ┌──────────────────────┐    ┌──────────────────────────────────┐    │
+┌────────────────────────── ArgoCD Namespace ────────────────────────────┐
+│                                                                        │
+│  ┌───────────────────────┐    ┌───────────────────────────────────┐    │
+│  │  argocd-server        │    │  argocd-repo-server               │    │
+│  │  (API + UI)           │    │  (Git clone, manifest generation) │    │
+│  │                       │    │                                   │    │
+│  │  - Serves Web UI      │    │  - Clones Git repos               │    │
+│  │  - REST/gRPC API      │    │  - Runs Helm template             │    │
+│  │  - Auth (OIDC/SSO)    │    │  - Runs Kustomize build           │    │
+│  │  - RBAC enforcement   │    │  - Runs jsonnet, plain YAML       │    │
+│  │  - Webhook receiver   │    │  - Caches repos (60s default)     │    │
+│  │  2+ replicas (HA)     │    │  - CPU/memory intensive           │    │
+│  └──────────┬────────────┘    │  2+ replicas (HA)                 │    │
+│             │                  └───────────┬──────────────────────┘    │
+│             │                              │                           │
+│  ┌──────────▼──────────────────────────────▼──────────────────────┐    │
+│  │              argocd-application-controller                     │    │
+│  │              (THE BRAIN — reconciliation loop)                 │    │
+│  │                                                                │    │
+│  │  - Watches Application CRDs                                    │    │
+│  │  - Compares desired state (Git) vs live state (cluster)        │    │
+│  │  - Detects drift (OutOfSync)                                   │    │
+│  │  - Applies manifests to target cluster (sync)                  │    │
+│  │  - Runs health checks on resources                             │    │
+│  │  - Manages sync waves and hooks                                │    │
+│  │  - ONE controller OR sharded (by cluster/namespace)            │    │
+│  └───────────────────────────────┬────────────────────────────────┘    │
+│                                  │                                     │
+│  ┌───────────────────────────────▼────────────────────────────────┐    │
+│  │              argocd-applicationset-controller                  │    │
+│  │              (Dynamic Application generation)                  │    │
+│  │                                                                │    │
+│  │  - Generates Application CRDs from templates                   │    │
+│  │  - Sources: Git directory, Git file, list, cluster,            │    │
+│  │    SCM provider, pull request, merge request                   │    │
+│  └────────────────────────────────────────────────────────────────┘    │
+│                                                                        │
+│  ┌───────────────────────┐    ┌───────────────────────────────────┐    │
 │  │  Redis                │    │  argocd-notifications-controller  │    │
 │  │  (Cache layer)        │    │  (Slack, webhook, email triggers) │    │
 │  │  - Manifest cache     │    │  - Sync succeeded/failed          │    │
 │  │  - App state cache    │    │  - Health degraded                │    │
 │  │  - CRITICAL for perf  │    │  - Custom triggers + templates    │    │
-│  └──────────────────────┘    └──────────────────────────────────┘    │
-│                                                                       │
-│  Storage: Kubernetes etcd (Application CRDs + Secrets for repo creds) │
-│  NO external database. ArgoCD is fully Kubernetes-native.             │
-└───────────────────────────────────────────────────────────────────────┘
+│  └───────────────────────┘    └───────────────────────────────────┘    │
+│                                                                        │
+│  Storage: Kubernetes etcd (Application CRDs + Secrets for repo creds)  │
+│  NO external database. ArgoCD is fully Kubernetes-native.              │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### The Reconciliation Loop — How Sync Works
@@ -3067,8 +3067,8 @@ Argo Rollouts:
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│                  Argo Rollouts Controller                    │
-│                  (Deployment in argo-rollouts namespace)     │
+│                  Argo Rollouts Controller                   │
+│                  (Deployment in argo-rollouts namespace)    │
 │                                                             │
 │  Watches: Rollout CRDs                                      │
 │  Manages: ReplicaSets (canary + stable)                     │
@@ -3516,28 +3516,28 @@ Bitbucket webhook → Jenkins
 │ DEV: auto-sync, no approval          │
 │ ┌─────────────────────────────┐      │
 │ │ Argo Rollout (canary)       │      │
-│ │ 5% → analysis → 100%       │      │
-│ │ Analysis: dev Prometheus     │      │
+│ │ 5% → analysis → 100%        │      │
+│ │ Analysis: dev Prometheus    │      │
 │ └─────────────────────────────┘      │
 │                                      │
 │ STAGING: auto-sync after dev green   │
 │ ┌─────────────────────────────┐      │
 │ │ Argo Rollout (canary)       │      │
-│ │ 10% → 50% → 100%           │      │
-│ │ Analysis: staging Prometheus │      │
-│ │ + integration test Job hook  │      │
+│ │ 10% → 50% → 100%            │      │
+│ │ Analysis: staging Prometheus│      │
+│ │ + integration test Job hook │      │
 │ └─────────────────────────────┘      │
 │                                      │
 │ PROD: manual sync (input gate)       │
 │ ┌─────────────────────────────┐      │
 │ │ Sync window check           │      │
 │ │ Argo Rollout (canary)       │      │
-│ │ 5% → analysis → 25% →      │      │
+│ │ 5% → analysis → 25% →       │      │
 │ │ analysis → 50% → analysis → │      │
 │ │ 100% → post-promotion       │      │
-│ │ Full analysis suite:         │      │
+│ │ Full analysis suite:        │      │
 │ │ - success rate ≥ 99.5%      │      │
-│ │ - P99 latency ≤ 500ms      │      │
+│ │ - P99 latency ≤ 500ms       │      │
 │ │ - error budget remaining    │      │
 │ │ - no new error log patterns │      │
 │ └─────────────────────────────┘      │
@@ -4078,23 +4078,23 @@ This lesson is breadth, not depth. You won't become an expert in GitHub Actions 
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    GitHub.com / GitHub Enterprise             │
-│                                                              │
-│  ┌────────────┐    ┌──────────────────────────────────────┐  │
-│  │ Repository  │    │         GitHub Actions Service        │  │
-│  │             │    │                                       │  │
-│  │ .github/    │    │  ┌─────────────┐  ┌──────────────┐   │  │
-│  │  workflows/ │───►│  │ Orchestrator │  │ Runner Mgmt  │   │  │
-│  │   ci.yml    │    │  │ (reads YAML, │  │ (assigns job │   │  │
-│  │   deploy.yml│    │  │  creates jobs│  │  to runner)   │   │  │
-│  │             │    │  └──────┬──────┘  └──────┬───────┘   │  │
-│  └────────────┘    │         │                 │            │  │
-│                     └─────────┼─────────────────┼───────────┘  │
-│                               │                 │              │
-│              ┌────────────────┼─────────────────┼──────┐       │
+┌─────────────────────────────────────────────────────────────────┐
+│                    GitHub.com / GitHub Enterprise               │
+│                                                                 │
+│  ┌─────────────┐    ┌───────────────────────────────────────┐   │
+│  │ Repository  │    │         GitHub Actions Service        │   │
+│  │             │    │                                       │   │
+│  │ .github/    │    │  ┌──────────────┐  ┌──────────────┐   │   │
+│  │  workflows/ │───►│  │ Orchestrator │  │ Runner Mgmt  │   │   │
+│  │   ci.yml    │    │  │ (reads YAML, │  │ (assigns job │   │   │
+│  │   deploy.yml│    │  │  creates jobs│  │  to runner)  │   │   │
+│  │             │    │  └──────┬───────┘  └──────┬───────┘   │   │
+│  └─────────────┘    │         │                 │           │   │
+│                     └─────────┼─────────────────┼───────────┘   │
+│                               │                 │               │
+│              ┌────────────────┼─────────────────┼───────┐       │
 │              │                ▼                 ▼       │       │
-│              │  ┌──────────────────┐  ┌──────────────┐ │       │
+│              │  ┌──────────────────┐  ┌───────────────┐ │       │
 │              │  │ GitHub-Hosted    │  │ Self-Hosted   │ │       │
 │              │  │ Runners          │  │ Runners       │ │       │
 │              │  │                  │  │               │ │       │
@@ -4106,7 +4106,7 @@ This lesson is breadth, not depth. You won't become an expert in GitHub Actions 
 │              │  │   (standard)     │  │ - Any OS      │ │       │
 │              │  │ - Pre-installed  │  │               │ │       │
 │              │  │   tools          │  │               │ │       │
-│              │  └──────────────────┘  └──────────────┘ │       │
+│              │  └──────────────────┘  └───────────────┘ │       │
 │              │        RUNNERS                           │       │
 │              └──────────────────────────────────────────┘       │
 └─────────────────────────────────────────────────────────────────┘
@@ -4316,12 +4316,12 @@ jobs:
 ### GitHub Actions OIDC → AWS (The Right Way)
 
 ```
-┌──────────────┐     JWT Token      ┌──────────────┐
+┌────────────────┐     JWT Token      ┌──────────────┐
 │ GitHub Actions│────────────────────►│  AWS STS     │
 │ Runner        │  (signed by GitHub)│  AssumeRole   │
 │               │◄────────────────────│  WithWebIdent│
 │               │  Temporary creds    │              │
-└──────────────┘  (15min-1hr)        └──────────────┘
+└───────────────┘  (15min-1hr)        └──────────────┘
 
 IAM Trust Policy:
 {
@@ -4459,11 +4459,11 @@ spec:
 ### Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │                    GitLab (SaaS or Self-Hosted)                │
-│                                                               │
-│  ┌──────────┐  ┌─────────────┐  ┌───────────────────────┐    │
-│  │ Repository│  │ CI/CD       │  │ Built-in Features     │    │
+│                                                                │
+│  ┌───────────┐  ┌─────────────┐  ┌────────────────────────┐    │
+│  │ Repository│  │ CI/CD       │  │ Built-in Features      │    │
 │  │           │  │ Coordinator │  │                        │    │
 │  │ Code      │  │             │  │ - Container Registry   │    │
 │  │ MRs       │  │ Parses      │  │ - Package Registry     │    │
@@ -4471,10 +4471,10 @@ spec:
 │  │           │  │ Assigns jobs│  │ - Environments/Deploy  │    │
 │  │           │  │ to runners  │  │ - Feature Flags        │    │
 │  └──────────┘  └──────┬──────┘  │ - Infrastructure (IaC)  │    │
-│                       │          │ - Wiki, Pages           │    │
-│                       │          └───────────────────────┘    │
-│                       │                                       │
-│              ┌────────▼────────┐                              │
+│                       │          │ - Wiki, Pages          │    │
+│                       │          └────────────────────────┘    │
+│                       │                                        │
+│              ┌────────▼────────┐                               │
 │              │  GitLab Runners  │                              │
 │              │                  │                              │
 │              │  SaaS: shared    │                              │
@@ -4484,7 +4484,7 @@ spec:
 │              │  - K8s executor  │                              │
 │              │  - Docker Machine│                              │
 │              └──────────────────┘                              │
-└──────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
 ```
 
 **GitLab's key differentiator:** Everything is built-in. Container registry, package registry, security scanning, feature flags, environments, monitoring — all in one product. No plugin ecosystem needed. The tradeoff: you're locked into GitLab's way of doing things.
@@ -4654,7 +4654,7 @@ AWS CI/CD ecosystem:
 ├── CodePipeline   → Orchestrator (connects the above)
 └── CodeArtifact   → Package repository (like Artifactory)
 
-┌────────────────────────────────────────────────────────────┐
+┌─────────────────────────────────────────────────────────────┐
 │                      CodePipeline                           │
 │                                                             │
 │  Source ──► Build ──► Test ──► Deploy                       │
@@ -4664,7 +4664,7 @@ AWS CI/CD ecosystem:
 │                                                             │
 │  Each stage: 1+ action groups                               │
 │  Each action: CodeBuild, Lambda, manual approval, etc.      │
-└────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ```yaml
