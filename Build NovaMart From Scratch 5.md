@@ -1831,7 +1831,6 @@ TRAP 8: Day-2 automation that itself has no monitoring.
          a false sense of security. Monitor the monitors.
 ```
 
----
 
 ## Quick Reference Card
 
@@ -1872,4 +1871,3 @@ DAY-2 CADENCE:
   Weekly:    SLO review + on-call handoff + capacity + cost
   Monthly:   Chaos game day + DR exercise + runbook review + access audit
   Quarterly: EKS upgrade + architecture review + SLO renegotiation
-```
