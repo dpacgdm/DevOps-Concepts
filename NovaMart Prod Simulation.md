@@ -7703,3 +7703,3605 @@ But I'm deferring that decision to Aisha (security) and Sarah (management). My j
 ---
 
 Waiting for investigation results and responses from Sarah/Aisha. What comes back?
+
+---
+
+# SIMULATION RESPONSE — Audit Deep Dive + PCI Escalation
+
+## Audit Response Grade: A+
+
+This is the most thorough single response you've delivered in the simulation. Let me be specific about what earned it.
+
+| Aspect | Grade | Notes |
+|--------|-------|-------|
+| **"15 more minutes before communicating"** | ✅ | Discipline. You resisted the urge to fire off "PAYMENT DATA IN KAFKA" to Aisha half-baked. When you did communicate, you had the data flow chain, the gap list, and specific questions. That's the difference between creating panic and enabling decisions. |
+| **Tiered classification** | ✅ | Correct risk stratification. PCI/PII critical vs governance vs cleanup. Auditors think in tiers — you're already speaking their language. |
+| **Nina handling** | ✅ | "Coming from you frames it as governance, not accusation." This is political awareness that most senior engineers lack entirely. You recognized the relationship dynamics and deferred appropriately without abdicating responsibility. |
+| **"Contain, don't break" decision** | ✅ | Correct. The data has flowed for 45 days. The next 5 days of containment while you coordinate properly is better than blindly suspending pipelines and breaking unknown dependencies. |
+| **"My job is to give them facts and options, not make unilateral compliance decisions"** | ✅ | This is the single most senior statement in the entire simulation. Knowing the boundary of your role under pressure is rare. |
+| **Audit report outline** | ✅ | Started the structure before the deadline. Data flow diagrams, methodology, recommendations — this will land well with James. |
+| **NetworkPolicy v3** | ⚠️ | One gap: egress to RDS via `ipBlock` CIDR is fragile. RDS failover can change the endpoint IP. Multi-AZ RDS resolves to different IPs depending on which instance is primary. Your policy could break silently after an RDS failover. Better approach: mesh-level egress policy (once Linkerd is injected) or accept the CIDR limitation and document it as a known gap with a TODO for mesh migration. Not docking — this is a "production gotcha" that's genuinely subtle. |
+| **One missing judgment call** | ⚠️ | Your reasoning about "suspend or contain" is correct for *contained* data. But you should have explicitly stated: "If the S3 bucket is public, that changes the calculus — public PII exposure is stop-the-bleeding, not contain-and-remediate." You deferred the decision to Aisha, which is fine, but your recommendation should have been conditional on the S3 findings. |
+
+---
+
+## 📊 Investigation Results
+
+### S3 Bucket — novamart-data-exports
+
+```bash
+$ aws s3api get-bucket-encryption --bucket novamart-data-exports
+
+{
+    "ServerSideEncryptionConfiguration": {
+        "Rules": [{
+            "ApplyServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+            }
+        }]
+    }
+}
+# SSE-S3 (Amazon-managed keys). NOT KMS. NOT CMK.
+# Encrypted at rest, but no customer-managed key control.
+
+$ aws s3api get-public-access-block --bucket novamart-data-exports
+
+{
+    "PublicAccessBlockConfiguration": {
+        "BlockPublicAcls": true,
+        "IgnorePublicAcls": true,
+        "BlockPublicPolicy": true,
+        "RestrictPublicBuckets": true
+    }
+}
+# ✅ Public access fully blocked. Not exposed to internet.
+
+$ aws s3api get-bucket-policy --bucket novamart-data-exports
+
+{
+    "Policy": {
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::role/order-data-export-role"},
+                "Action": ["s3:PutObject", "s3:GetObject"],
+                "Resource": "arn:aws:s3:::novamart-data-exports/*"
+            },
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": "arn:aws:iam::role/data-analytics-role"},
+                "Action": ["s3:GetObject", "s3:ListBucket"],
+                "Resource": [
+                    "arn:aws:s3:::novamart-data-exports",
+                    "arn:aws:s3:::novamart-data-exports/*"
+                ]
+            }
+        ]
+    }
+}
+# Two principals: export role (write) and analytics role (read).
+# Not wildcard. Scoped. But these roles — who/what assumes them?
+
+$ aws s3api get-bucket-versioning --bucket novamart-data-exports
+{
+    "Status": "Suspended"
+}
+# Versioning NOT enabled. No audit trail of overwrites/deletes.
+
+$ aws s3api get-bucket-lifecycle-configuration --bucket novamart-data-exports
+
+An error occurred (NoSuchLifecycleConfiguration)
+# NO lifecycle rules. Data retained FOREVER.
+
+$ aws s3 ls s3://novamart-data-exports/ --recursive | head -5
+2023-12-21 02:14:22   847293 exports/2023-12-21/orders.csv.gz
+2023-12-21 02:14:25   234891 exports/2023-12-21/order_items.csv.gz
+2023-12-21 02:14:28   124556 exports/2023-12-21/customers.csv.gz
+2023-12-21 02:14:30    89234 exports/2023-12-21/shipping_addresses.csv.gz
+
+$ aws s3 ls s3://novamart-data-exports/ --recursive | tail -5
+2024-01-17 02:15:01   912445 exports/2024-01-17/orders.csv.gz
+2024-01-17 02:15:04   245123 exports/2024-01-17/order_items.csv.gz
+2024-01-17 02:15:07   131289 exports/2024-01-17/customers.csv.gz
+2024-01-17 02:15:09    94521 exports/2024-01-17/shipping_addresses.csv.gz
+
+$ aws s3 ls s3://novamart-data-exports/ --summarize | tail -2
+   Total Objects: 108
+   Total Size: 34,892,176 (33.3 MiB)
+
+# 27 days of exports (Dec 21 — Jan 17). 4 files per day.
+# customers.csv.gz and shipping_addresses.csv.gz — PII files.
+
+$ aws s3api get-bucket-logging --bucket novamart-data-exports
+# (empty — no server access logging)
+
+$ grep -r "novamart-data-exports" ~/repos/novamart-infrastructure/
+# (no results — NOT in Terraform)
+```
+
+### S3 Summary
+
+```
+✅ Not public (public access block enabled)
+✅ Encrypted at rest (SSE-S3)
+✅ Scoped bucket policy (two specific roles)
+❌ NOT KMS/CMK encrypted (PCI gap for customer data)
+❌ No versioning (no audit trail)
+❌ No lifecycle rules (data retained forever — 27 days and growing)
+❌ No server access logging (who accessed what, when?)
+❌ Not in Terraform (unmanaged)
+❌ Contains PII: customer names, shipping addresses in CSV
+```
+
+---
+
+### Kafka Connect — Connectors
+
+```bash
+$ kubectl exec -n data-analytics data-kafka-broker-0 -- \
+    curl -s http://kafka-connect:8083/connectors | jq
+
+["orders-sink-s3", "payments-sink-mongo"]
+```
+
+**Two connectors.** Names are revealing.
+
+```bash
+$ kubectl exec -n data-analytics data-kafka-broker-0 -- \
+    curl -s http://kafka-connect:8083/connectors/orders-sink-s3/config | jq
+
+{
+  "connector.class": "io.confluent.connect.s3.S3SinkConnector",
+  "tasks.max": "1",
+  "topics": "etl.orders,etl.order_items",
+  "s3.bucket.name": "novamart-analytics-datalake",
+  "s3.region": "us-east-1",
+  "flush.size": "1000",
+  "storage.class": "io.confluent.connect.s3.storage.S3Storage",
+  "format.class": "io.confluent.connect.s3.format.json.JsonFormat",
+  "partitioner.class": "io.confluent.connect.storage.partitioner.DailyPartitioner"
+}
+```
+
+```bash
+$ kubectl exec -n data-analytics data-kafka-broker-0 -- \
+    curl -s http://kafka-connect:8083/connectors/payments-sink-mongo/config | jq
+
+{
+  "connector.class": "com.mongodb.kafka.connect.MongoSinkConnector",
+  "tasks.max": "1",
+  "topics": "etl.payments,etl.refunds",
+  "connection.uri": "mongodb+srv://analytics:****@novamart-analytics.xxxxx.mongodb.net",
+  "database": "payment_analytics",
+  "collection": "transactions",
+  "writemodel.strategy": "com.mongodb.kafka.connect.sink.writemodel.strategy.InsertOneDefaultStrategy"
+}
+```
+
+**Payment data is being written to MongoDB Atlas.** A cloud MongoDB instance outside our AWS infrastructure.
+
+```
+DATA FLOW — COMPLETE PICTURE:
+
+  Orders RDS ──────────────────────────────────────────────────┐
+  (payments, refunds, orders, order_items tables)              │
+       │                                                        │
+       ▼                                                        │
+  ETL CronJob (daily 2 AM)                                     │
+       │                                                        │
+       ▼                                                        │
+  Kafka Topics:                                                │
+    etl.orders ──────→ S3 Sink (novamart-analytics-datalake)   │
+    etl.order_items ─→ S3 Sink (novamart-analytics-datalake)   │
+    etl.payments ────→ MongoDB Atlas (payment_analytics)  🔴   │
+    etl.refunds ─────→ MongoDB Atlas (payment_analytics)  🔴   │
+       │                                                        │
+       ▼                                                        │
+  Analytics Dashboard (reads from Kafka + RDS directly)        │
+       │                                                        │
+       ▼                                                        │
+  Order Data Export CronJob (daily 2 AM) ──────────────────────┘
+    → S3 (novamart-data-exports) — customers, shipping addresses
+```
+
+---
+
+### Kafka Topics
+
+```bash
+$ kubectl exec -n data-analytics data-kafka-broker-0 -- \
+    /opt/bitnami/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092
+
+connect-configs
+connect-offsets
+connect-status
+etl.orders
+etl.order_items
+etl.payments
+etl.refunds
+__consumer_offsets
+```
+
+Four data topics. Two contain payment data.
+
+---
+
+### Analytics Dashboard Image
+
+```bash
+$ kubectl get pod -n data-analytics -l app=analytics-dashboard \
+    -o jsonpath='{.items[0].status.containerStatuses[0].imageID}'
+
+docker.io/library/novamart-analytics-dashboard:latest
+# It's on Docker Hub. Public? Let's check.
+
+$ kubectl get pod -n data-analytics -l app=analytics-dashboard \
+    -o jsonpath='{.items[0].spec.imagePullSecrets}'
+# (empty — no pull secrets)
+
+# This is either a public Docker Hub image someone pushed,
+# or it's using the node's default pull credentials
+```
+
+```bash
+$ aws ecr describe-repositories --repository-names novamart-analytics-dashboard 2>&1
+
+An error occurred (RepositoryNotFoundException)
+# NOT in ECR.
+```
+
+**Custom image on Docker Hub. No pull secrets. No vulnerability scanning. Has direct RDS access.**
+
+---
+
+### Second S3 Bucket
+
+```bash
+$ aws s3api get-bucket-encryption --bucket novamart-analytics-datalake
+
+{
+    "ServerSideEncryptionConfiguration": {
+        "Rules": [{
+            "ApplyServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+            }
+        }]
+    }
+}
+
+$ aws s3api get-public-access-block --bucket novamart-analytics-datalake
+
+{
+    "PublicAccessBlockConfiguration": {
+        "BlockPublicAcls": true,
+        "IgnorePublicAcls": true,
+        "BlockPublicPolicy": true,
+        "RestrictPublicBuckets": true
+    }
+}
+
+$ aws s3 ls s3://novamart-analytics-datalake/ --summarize | tail -2
+   Total Objects: 1,847
+   Total Size: 2,147,483,648 (2.0 GiB)
+
+# 2 GB of order data. Not public. SSE-S3 encrypted.
+# But also not in Terraform, no lifecycle, no logging.
+```
+
+---
+
+### Database User Permissions
+
+```bash
+$ kubectl get secret analytics-db-creds -n data-analytics -o json | jq '.metadata'
+
+{
+  "name": "analytics-db-creds",
+  "namespace": "data-analytics",
+  "creationTimestamp": "2023-11-09T14:18:00Z",
+  "annotations": {
+    "kubectl.kubernetes.io/last-applied-by": "tom.chen@novamart.com"
+  }
+}
+# Created by Tom, same day as the cluster. 
+# This is a Kubernetes Secret — base64, not encrypted with KMS.
+# Not managed by External Secrets Operator.
+
+$ kubectl get secret order-export-creds -n order-prod -o json | jq '.metadata'
+
+{
+  "name": "order-export-creds",
+  "namespace": "order-prod",
+  "creationTimestamp": "2023-12-20T09:55:00Z",
+  "annotations": {
+    "kubectl.kubernetes.io/last-applied-by": "nina.petrov@novamart.com"
+  }
+}
+# Created by Nina, December 20th.
+# Also a plain K8s Secret, not External Secrets Operator.
+```
+
+---
+
+### MongoDB Atlas — The Biggest Finding
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  🔴🔴🔴 CRITICAL FINDING 🔴🔴🔴                        │
+│                                                          │
+│  Payment data (payments + refunds tables) is being       │
+│  written to MongoDB Atlas — a CLOUD SERVICE OUTSIDE      │
+│  our AWS infrastructure.                                 │
+│                                                          │
+│  - Connection string: mongodb+srv://analytics:****@      │
+│    novamart-analytics.xxxxx.mongodb.net                   │
+│  - Password is in the kafka-connect config (passed via   │
+│    connector REST API, stored in Kafka internal topics)   │
+│  - We don't know:                                        │
+│    • Who manages this Atlas instance                     │
+│    • What tier/region it's in                            │
+│    • What access controls exist                          │
+│    • Whether it's encrypted at rest                      │
+│    • Who else has access to it                           │
+│    • Whether data is retained/purged                     │
+│    • Whether it meets PCI requirements                   │
+│                                                          │
+│  This is payment data leaving our controlled             │
+│  infrastructure boundary and going to an external        │
+│  managed database service that platform team didn't      │
+│  know existed.                                           │
+│                                                          │
+│  For PCI: data leaving the cardholder data environment   │
+│  (CDE) boundary without controls is a MAJOR finding.     │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 💬 Slack Responses Rolling In
+
+### Sarah Chen — DM (12:35 PM)
+
+> This is more serious than I expected. Let me loop in James quietly — he needs to know before the leadership sync, not during it.
+> 
+> On Tom: don't contact him on PTO yet. Let me talk to his manager first. If Aisha says we need to suspend the pipeline, we'll do it and deal with the analytics gap.
+> 
+> On Nina: I'll talk to her directly this afternoon. You're right to hold off.
+> 
+> Get me the full findings as soon as you can. Don't wait for Friday — give me what you have by EOD tomorrow.
+
+### Aisha Rahman — #security DM (12:42 PM)
+
+> This is exactly what I was afraid of. The MongoDB Atlas finding is the most concerning — payment data leaving our AWS boundary to an unmanaged external service. That's a CDE boundary violation.
+> 
+> I need to understand the Atlas instance before I can make the suspend/contain decision. Can you get the connection string details (host, cluster name) so I can check if we have an organizational Atlas account, or if Tom set this up personally?
+> 
+> On the S3 bucket: not public is good. Fix the encryption to KMS/CMK and enable logging this week. Don't wait for me.
+> 
+> I'm scheduling a PCI emergency review for tomorrow (Thursday) 2 PM. You, me, Sarah, and Tom's manager. We need to decide the containment strategy with the right people in the room.
+> 
+> In the meantime: do NOT suspend the ETL pipeline yet. If Tom built this for a business reason, suspending without understanding could cause a different kind of incident. But DO make sure the NetworkPolicy containment is solid.
+
+---
+
+**It's 12:45 PM Wednesday. The audit just became a PCI incident.**
+
+**You have:**
+1. Aisha's request for Atlas connection details
+2. Aisha's instruction to fix S3 encryption/logging now
+3. PCI emergency review tomorrow 2 PM
+4. Sarah wants findings by EOD tomorrow (moved up from Friday)
+5. NetworkPolicy containment needs verification
+6. EKS runbook still due Friday
+7. Linkerd staging dry-run tomorrow (Thursday)
+
+**What's your next move?**
+
+## Immediate Realization — 12:45 PM
+
+Before anything else, I need to check something critical about my own NetworkPolicy v3.
+
+### Did I Just Accidentally Block the MongoDB Atlas Sink?
+
+My v3 NetworkPolicy specifies default-deny egress with explicit allowlist: DNS, intra-namespace, RDS CIDR, S3 VPC endpoint. **MongoDB Atlas (mongodb+srv on port 27017/443) is not in that allowlist.**
+
+```bash
+# Check kafka-connect connector status RIGHT NOW
+$ kubectl exec -n data-analytics data-kafka-broker-0 -- \
+  curl -s http://kafka-connect:8083/connectors/payments-sink-mongo/status | jq
+
+# Check kafka-connect logs for connection failures
+$ kubectl logs -n data-analytics -l app=kafka-connect --since=30m | grep -i "error\|fail\|timeout\|mongo"
+
+# Check if the orders-sink-s3 connector is also impacted
+# S3 goes through VPC endpoint (HTTPS/443) — should still work IF I got the CIDR right
+$ kubectl exec -n data-analytics data-kafka-broker-0 -- \
+  curl -s http://kafka-connect:8083/connectors/orders-sink-s3/status | jq
+```
+
+**Three scenarios:**
+
+1. **I already applied v3 with incomplete egress rules** → MongoDB sink is failing silently. Kafka Connect will be buffering/retrying. Data isn't flowing out, which is *accidental containment*. Not terrible for PCI, but I need to acknowledge it and decide intentionally whether to keep it blocked.
+
+2. **I haven't applied v3 yet** (was still gathering RDS/S3 CIDRs) → MongoDB sink is still running. Payment data is still flowing to Atlas.
+
+3. **I applied v3 but the mongodb+srv resolves through DNS to an IP that happens to fall in my allowed CIDRs** → Unlikely but need to verify.
+
+Let me check which scenario I'm in:
+
+```bash
+# Did v3 actually get applied?
+$ kubectl get networkpolicy -n data-analytics -o yaml
+
+# What's the current egress state?
+$ kubectl get networkpolicy data-analytics-restrict-all -n data-analytics \
+  -o jsonpath='{.spec.egress}' | jq
+```
+
+**This matters because Aisha said "do NOT suspend the ETL pipeline yet" — but if my NetworkPolicy already broke the MongoDB sink, I've effectively done a partial suspension. I need to know and communicate honestly.**
+
+---
+
+## Scenario Handling
+
+### If I accidentally blocked MongoDB (Scenario 1):
+
+I'm going to be transparent with Aisha immediately. The options are:
+
+- **Keep it blocked** (de facto containment of the most critical data flow — payment data to external Atlas). Kafka Connect will buffer in its internal topics. Data doesn't leave AWS. This is arguably the *right* outcome from a PCI perspective, but I didn't do it intentionally.
+- **Re-open it** — add MongoDB Atlas to egress allowlist. This feels wrong given what we just learned.
+- **Let Aisha decide** — give her the facts: "My NetworkPolicy inadvertently blocked the MongoDB sink. Payment data is no longer flowing to Atlas. Kafka Connect is buffering. Do you want me to keep it blocked or restore the connection pending tomorrow's review?"
+
+My recommendation to Aisha: **keep it blocked.** The ETL CronJob still runs (Aisha said don't suspend it), Kafka still receives the data, but the most concerning flow — payment data leaving our AWS boundary to an uncontrolled external service — is stopped. This is the best accidental outcome. The orders-sink-s3 connector (which writes to our own S3, not payment data) can stay working.
+
+### If I haven't applied v3 yet (Scenario 2):
+
+Apply a revised v3 that *intentionally* excludes MongoDB Atlas egress. Same outcome, but deliberate. Document the decision. Run it past Aisha before applying since she said don't suspend — but blocking egress to an uncontrolled external service with payment data is different from suspending the pipeline. Frame it as: "The pipeline runs internally. I'm just preventing data from leaving our AWS boundary until the PCI review."
+
+---
+
+## Step 1: Aisha's Requests (12:50 PM)
+
+### 1a. Atlas Connection Details
+
+```bash
+# Extract the full connection string (already have it from connector config)
+# mongodb+srv://analytics:****@novamart-analytics.xxxxx.mongodb.net
+
+# Resolve the SRV record to understand where this points
+$ kubectl exec -n data-analytics data-kafka-broker-0 -- \
+  nslookup -type=SRV _mongodb._tcp.novamart-analytics.xxxxx.mongodb.net
+
+# Get the actual cluster ID / region from the hostname
+# Atlas hostnames encode the cluster: xxxxx.mongodb.net
+# Format is usually: <cluster>.<shard>.mongodb.net
+
+# Check if there's an Atlas org account we know about
+# This is an Aisha/IT question, but I can provide the hostname for her to check
+```
+
+### 1b. Message to Aisha — DM (12:55 PM)
+
+> Aisha — Atlas details as requested.
+> 
+> **Connection string:** `mongodb+srv://analytics:****@novamart-analytics.xxxxx.mongodb.net`
+> **Database:** `payment_analytics`  
+> **Collection:** `transactions`  
+> **Auth user:** `analytics` (password stored in Kafka Connect connector config — not in K8s secrets, not in any secrets manager. It's in a Kafka internal topic called `connect-configs`.)
+> 
+> The connector is using the MongoDB Kafka Connector (`com.mongodb.kafka.connect.MongoSinkConnector`). Write strategy is `InsertOneDefaultStrategy` — meaning it's appending, not upserting. So every ETL run adds new records. No deduplication, which means the Atlas collection is growing indefinitely.
+> 
+> **Additional finding while pulling this:** The Atlas password is effectively stored in plaintext in a Kafka internal topic. Anyone with Kafka consumer access can read `connect-configs` and extract it. Since there are no Kafka ACLs, that's anyone who can reach port 9092.
+> 
+> **On my NetworkPolicy containment:** [status depending on which scenario — see above. Being transparent about whether I accidentally blocked it.]
+> 
+> **Complete data flow map for your review:**
+> ```
+> Orders RDS (payments, refunds, orders, order_items)
+>     │
+>     ▼
+> ETL CronJob (daily 2AM, analytics_reader user)
+>     │
+>     ▼
+> Kafka Topics (unencrypted, no ACLs, no mTLS):
+>   ├── etl.orders ──────────→ S3: novamart-analytics-datalake (our AWS, SSE-S3)
+>   ├── etl.order_items ─────→ S3: novamart-analytics-datalake (our AWS, SSE-S3)
+>   ├── etl.payments ────────→ MongoDB Atlas (EXTERNAL, payment_analytics.transactions) 🔴
+>   └── etl.refunds ─────────→ MongoDB Atlas (EXTERNAL, payment_analytics.transactions) 🔴
+> 
+> Separately:
+> Order Data Export CronJob (daily 2AM, order-export user)
+>     → S3: novamart-data-exports (customers, shipping_addresses — PII)
+> ```
+> 
+> **For the Thursday 2PM review, I'd suggest we need to decide:**
+> 1. Suspend vs contain the payment→Atlas data flow
+> 2. Whether Atlas is under a NovaMart organizational account or personal
+> 3. Data purge/retention requirements for what's already in Atlas
+> 4. Whether the S3 exports (PII) need the same level of review
+> 5. DB user (`analytics_reader`) permission audit — does it have access to more than those 4 tables?
+> 
+> I can prepare a one-page findings summary for the meeting. Want it by end of day or tomorrow morning?
+
+---
+
+## Step 2: S3 Remediation — Now (1:00 PM)
+
+Aisha said fix encryption and logging, don't wait. Doing both buckets.
+
+### novamart-data-exports (PII bucket — Nina's)
+
+```bash
+# 1. Upgrade encryption from SSE-S3 to SSE-KMS
+# First, create or identify a CMK for data exports
+$ aws kms create-key \
+  --description "NovaMart data exports encryption key" \
+  --key-usage ENCRYPT_DECRYPT \
+  --tags TagKey=team,TagValue=platform TagKey=purpose,TagValue=data-exports
+
+# Get the key ID from output, then:
+$ aws kms create-alias \
+  --alias-name alias/novamart-data-exports \
+  --target-key-id <KEY_ID>
+
+# Add key policy allowing the export role and analytics role
+$ aws kms put-key-policy \
+  --key-id <KEY_ID> \
+  --policy-name default \
+  --policy '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "AllowKeyAdministration",
+        "Effect": "Allow",
+        "Principal": {"AWS": "arn:aws:iam::<ACCOUNT>:role/platform-admin"},
+        "Action": "kms:*",
+        "Resource": "*"
+      },
+      {
+        "Sid": "AllowExportRoleEncrypt",
+        "Effect": "Allow",
+        "Principal": {"AWS": "arn:aws:iam::<ACCOUNT>:role/order-data-export-role"},
+        "Action": ["kms:Encrypt", "kms:GenerateDataKey"],
+        "Resource": "*"
+      },
+      {
+        "Sid": "AllowAnalyticsRoleDecrypt",
+        "Effect": "Allow",
+        "Principal": {"AWS": "arn:aws:iam::<ACCOUNT>:role/data-analytics-role"},
+        "Action": ["kms:Decrypt"],
+        "Resource": "*"
+      }
+    ]
+  }'
+
+# 2. Update bucket encryption to use CMK
+$ aws s3api put-bucket-encryption --bucket novamart-data-exports \
+  --server-side-encryption-configuration '{
+    "Rules": [{
+      "ApplyServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "aws:kms",
+        "KMSMasterKeyID": "<KEY_ID>"
+      },
+      "BucketKeyEnabled": true
+    }]
+  }'
+
+# NOTE: This only affects NEW objects. Existing 108 objects are still SSE-S3.
+# To re-encrypt existing objects:
+$ aws s3 cp s3://novamart-data-exports/ s3://novamart-data-exports/ \
+  --recursive --sse aws:kms --sse-kms-key-id <KEY_ID>
+
+# 3. Enable server access logging
+# Need a logging bucket (or use existing logging bucket)
+$ aws s3api put-bucket-logging --bucket novamart-data-exports \
+  --bucket-logging-status '{
+    "LoggingEnabled": {
+      "TargetBucket": "novamart-access-logs",
+      "TargetPrefix": "data-exports/"
+    }
+  }'
+
+# 4. Enable versioning (audit trail)
+$ aws s3api put-bucket-versioning --bucket novamart-data-exports \
+  --versioning-configuration Status=Enabled
+
+# 5. Add lifecycle rule — PII shouldn't be retained forever
+# Setting 90-day expiry as a starting point — Aisha can adjust
+# This is CONSERVATIVE — better to set a limit and extend than have no limit
+$ aws s3api put-bucket-lifecycle-configuration --bucket novamart-data-exports \
+  --lifecycle-configuration '{
+    "Rules": [{
+      "ID": "expire-exports-90d",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "exports/"},
+      "Expiration": {"Days": 90},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": 30}
+    }]
+  }'
+```
+
+**Wait — lifecycle rule needs a judgment call.** I don't know if Nina's team or the analytics team relies on historical exports. Setting a 90-day expiry could break downstream processes. I'll set it but **flag it to Sarah/Nina for confirmation.** If they need longer retention, they can adjust. But "forever" is not acceptable for PII.
+
+Actually — Aisha said fix encryption and logging. She didn't say lifecycle. I'll enable encryption + logging + versioning now (non-breaking changes), and flag the lifecycle/retention question for the Thursday meeting. Setting a lifecycle rule without confirming with the data consumer could break things, and I just got praised for "contain, don't break."
+
+**Revised S3 actions (immediate, non-breaking):**
+- ✅ Upgrade encryption to KMS/CMK (new objects + re-encrypt existing)
+- ✅ Enable server access logging
+- ✅ Enable versioning
+- 🔲 Lifecycle rule → flag for Thursday PCI review (needs consumer confirmation)
+
+### novamart-analytics-datalake (orders data bucket — Tom's)
+
+Same treatment:
+
+```bash
+# Upgrade encryption to KMS (can use same key or create separate)
+# Using same key — same data classification level
+$ aws s3api put-bucket-encryption --bucket novamart-analytics-datalake \
+  --server-side-encryption-configuration '{
+    "Rules": [{
+      "ApplyServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "aws:kms",
+        "KMSMasterKeyID": "<KEY_ID>"
+      },
+      "BucketKeyEnabled": true
+    }]
+  }'
+
+# Re-encrypt existing objects (2 GB — will take a few minutes)
+$ aws s3 cp s3://novamart-analytics-datalake/ s3://novamart-analytics-datalake/ \
+  --recursive --sse aws:kms --sse-kms-key-id <KEY_ID>
+
+# Enable logging
+$ aws s3api put-bucket-logging --bucket novamart-analytics-datalake \
+  --bucket-logging-status '{
+    "LoggingEnabled": {
+      "TargetBucket": "novamart-access-logs",
+      "TargetPrefix": "analytics-datalake/"
+    }
+  }'
+
+# Enable versioning
+$ aws s3api put-bucket-versioning --bucket novamart-analytics-datalake \
+  --versioning-configuration Status=Enabled
+```
+
+**Check: does the logging target bucket exist?**
+
+```bash
+$ aws s3api head-bucket --bucket novamart-access-logs 2>&1
+# If it doesn't exist, I need to create it with appropriate settings
+# (SSE, no public access, lifecycle to prevent unbounded log growth)
+```
+
+---
+
+## Step 3: NetworkPolicy Verification (1:20 PM)
+
+```bash
+# Verify current state
+$ kubectl get networkpolicy -n data-analytics -o yaml
+
+# Test: can kafka-connect still reach MongoDB Atlas?
+$ kubectl exec -n data-analytics -l app=kafka-connect -- \
+  curl -s --connect-timeout 5 novamart-analytics.xxxxx.mongodb.net:27017 2>&1
+
+# Test: can kafka-connect still reach S3 (through VPC endpoint)?
+$ kubectl exec -n data-analytics -l app=kafka-connect -- \
+  curl -s --connect-timeout 5 https://s3.us-east-1.amazonaws.com 2>&1
+
+# Test: can ETL CronJob pods reach RDS?
+# (Can't test directly since CronJob isn't running now, 
+#  but the analytics-dashboard uses the same RDS connection)
+$ kubectl exec -n data-analytics -l app=analytics-dashboard -- \
+  curl -s --connect-timeout 5 novamart-orders-db.xxxxx.us-east-1.rds.amazonaws.com:5432 2>&1
+```
+
+**Regarding the RDS CIDR fragility noted in my feedback:** Acknowledged. The `ipBlock` CIDR approach breaks on RDS multi-AZ failover. For now, I'm documenting this as a known limitation:
+
+```yaml
+# TODO: Replace ipBlock-based RDS egress with one of:
+# 1. Linkerd ServiceProfile egress policy (after mesh injection — PLAT-921)
+# 2. ExternalName service + NetworkPolicy targeting service
+# 3. AWS Security Groups for Pods (if supported on our CNI)
+# Current CIDR-based rule is fragile across RDS failovers.
+```
+
+---
+
+## Step 4: Updated Communications (1:30 PM)
+
+### Sarah Chen — DM update
+
+> Sarah — additional findings that elevate the urgency further.
+> 
+> **MongoDB Atlas:** Tom's Kafka Connect pipeline sinks payment and refund data to a MongoDB Atlas instance (`novamart-analytics.xxxxx.mongodb.net`, database `payment_analytics`). This is payment data **leaving our AWS boundary** to an external managed database. We don't know who manages the Atlas account, what access controls exist, or whether it meets any compliance requirements.
+> 
+> The Atlas password is stored in a Kafka internal topic (`connect-configs`) — effectively plaintext accessible to anyone who can reach Kafka port 9092.
+> 
+> **S3 remediation:** Per Aisha's instruction, I'm upgrading both S3 buckets (novamart-data-exports and novamart-analytics-datalake) to KMS/CMK encryption and enabling access logging + versioning now. Non-breaking changes.
+> 
+> **Aisha has scheduled a PCI emergency review: Thursday 2 PM.** You, me, Aisha, and Tom's manager. She needs us to decide containment strategy.
+> 
+> **Conflict:** The Linkerd staging dry-run with Priya is also Thursday. I can either:
+> - Move the dry-run to Thursday morning (before the PCI review)
+> - Push the dry-run to Friday (Priya can prep independently)
+> - Ask Marcus to cover the dry-run
+> 
+> My recommendation: Move the dry-run to Thursday morning. It's a 1-2 hour activity. The PCI review is more important and I need to be the one presenting findings.
+> 
+> I'll have the findings document ready by EOD tomorrow as requested. Drafting it this afternoon.
+> 
+> **One more thing:** The report for James will be harder to land than I initially expected. What I sold in standup as "lock the door, then build the front desk" now has a finding that says "the door was open and data was already walking out." He's not going to love that, but he needs to hear it clearly with a remediation plan, not just the problem. I'll make sure the report leads with containment actions taken, then findings, then remediation roadmap.
+
+### Priya Sharma — DM (1:35 PM)
+
+> Hey Priya — heads up, I need to shift our Linkerd staging dry-run. Can we do Thursday morning, 10 AM? Something came up that requires my 2 PM.
+> 
+> Everything still on track for your prep? Any blockers?
+
+---
+
+## Step 5: Findings Document — Start Now (1:40 PM)
+
+Not waiting until tomorrow to start this. The structure I drafted earlier is still good but needs significant expansion. Key additions:
+
+```markdown
+# NovaMart Cluster-Wide Unmanaged Workload Audit
+# CLASSIFICATION: INTERNAL — PCI SENSITIVE
+# Date: January 17, 2024
+# Author: [User], Platform Engineering
+# Distribution: James Morrison, Sarah Chen, Aisha Rahman
+
+## Executive Summary
+
+Audit of all Kubernetes workloads against ArgoCD/Terraform management 
+revealed 9 unmanaged workloads across 5 namespaces. 4 present 
+PCI/PII compliance risks, including:
+
+- **CRITICAL:** A data pipeline exfiltrating payment and refund data 
+  from the production orders database to an external MongoDB Atlas 
+  instance outside NovaMart's AWS infrastructure boundary
+- **HIGH:** PII (customer names, shipping addresses) exported to 
+  S3 daily with insufficient encryption controls (remediated)
+- **HIGH:** Credentials stored in plaintext in Kafka internal topics
+
+Immediate containment actions have been applied. A PCI emergency 
+review is scheduled for Thursday 2 PM to determine further 
+remediation strategy.
+
+## Data Flow — Payment Data Path (CRITICAL)
+[Diagram from Aisha message]
+
+## Findings Detail
+
+### Finding 1: Payment Data Exfiltration to MongoDB Atlas
+- Severity: CRITICAL
+- Data: payments, refunds (PCI in-scope)
+- Path: Orders RDS → ETL CronJob → Kafka → MongoDB Atlas
+- Atlas instance: novamart-analytics.xxxxx.mongodb.net
+- Database: payment_analytics, Collection: transactions
+- Atlas ownership: UNKNOWN (verification pending)
+- Retention: UNBOUNDED (InsertOne strategy, no TTL, no purge)
+- Credential exposure: Atlas password in Kafka connect-configs topic
+  (plaintext, no ACLs on topic access)
+- Containment: NetworkPolicy blocks egress to Atlas [if applicable]
+
+### Finding 2: PII Export to S3
+- Severity: HIGH  
+- Data: customers, shipping_addresses (PII)
+- Path: Orders RDS → CronJob → S3 (novamart-data-exports)
+- 27 days of exports (108 objects, 33 MiB)
+- Owner: Nina Petrov (Order team)
+- Remediation applied: KMS encryption, access logging, versioning
+- Pending: Lifecycle/retention policy (needs consumer confirmation)
+
+### Finding 3: Unscanned Docker Hub Images with Production Access
+[analytics-dashboard details]
+
+### Finding 4: Database Credentials Outside Secrets Management
+[analytics-db-creds and order-export-creds — plain K8s secrets, 
+not External Secrets Operator]
+
+[... remaining findings ...]
+
+## Containment Actions Taken
+1. NetworkPolicy v3 — restricted all data-analytics egress
+2. S3 encryption upgraded to KMS/CMK (both buckets)  
+3. S3 access logging enabled (both buckets)
+4. S3 versioning enabled (both buckets)
+5. PDB maintained on Kafka + ZooKeeper (from Monday)
+6. Kafka broker/ZK ports restricted (from Monday, fixed Tuesday)
+
+## Remediation Roadmap
+| Action | Owner | Timeline | Status |
+|--------|-------|----------|--------|
+| PCI emergency review | Aisha | Thu 2 PM | Scheduled |
+| Atlas ownership verification | Aisha/IT | Thu | Pending |
+| Decide: suspend vs contain payment→Atlas flow | PCI review | Thu | Pending |
+| DB user permission audit (analytics_reader) | DBA team | This week | Pending |
+| Kafka cluster full onboarding | Platform + Tom | Next week | PLAT-921 |
+| Migrate images to ECR | Platform + Tom | Next week | Part of 921 |
+| Move secrets to External Secrets Operator | Platform | Next week | New ticket |
+| S3 lifecycle policy | Platform + Nina/Tom | After PCI review | Pending |
+| Kyverno guardrails for new namespaces | Platform | Q1 priority | Wed standup |
+| RBAC restrictions on direct deploy | Platform | Q1 priority | Wed standup |
+| Quarterly audit automation | Platform | Q1 | New ticket |
+
+## Recommendations for Leadership
+1. **Immediate:** Formalize the PCI boundary — define what constitutes 
+   the CDE and enforce it with technical controls, not process alone
+2. **Q1:** Implement Kyverno policies requiring ArgoCD management 
+   annotation + namespace creation approval workflow
+3. **Q1:** Require architecture review for any workload touching 
+   PCI/PII data — technical gate, not just process
+4. **Ongoing:** Quarterly automated cluster audit (schedule this script)
+5. **Cultural:** This isn't about blame. Tom and Nina solved real 
+   business problems. The gap is that we didn't give them a clear, 
+   easy path to do it compliantly. "Make the right thing the easy thing."
+```
+
+---
+
+## Revised Wednesday Plan
+
+```
+DONE:
+  ✅ 11:45-12:00  Deep investigation (S3, connectors, Atlas, topics)
+  ✅ 12:00-12:15  NetworkPolicy v3 verification/adjustment  
+  ✅ 12:15-12:30  Aisha communication (Atlas details, full data flow)
+  ✅ 12:30-12:45  Sarah update (Atlas escalation, Thursday conflicts)
+
+IN PROGRESS:
+  12:45-13:15  Late lunch (eating while S3 re-encryption runs)
+  13:15-14:00  S3 remediation execution (KMS, logging, versioning — both buckets)
+  14:00-15:30  Findings document draft (goal: 80% complete today, 
+               polish tomorrow morning before Aisha's 2 PM)
+  15:00        Priya confirms dry-run reschedule (async)
+  15:30-16:00  EKS runbook — minimum viable progress 
+               (this is getting squeezed but still due Friday)
+  16:00-16:15  Jenkins heap check (should be stable from yesterday's fix)
+  16:15-16:30  EOD notes + comms roundup
+
+DEFERRED:
+  - nginx-test deletion → tomorrow (zero risk, zero urgency)
+  - Derek staging cleanup → he'll respond async
+  - Marcus node-problem-detector → he'll handle it, low priority
+  
+THURSDAY:
+  10:00-12:00  Linkerd staging dry-run with Priya (moved from afternoon)
+  12:00-13:00  Findings document final polish
+  13:00-13:30  Lunch
+  13:30-14:00  Pre-read distribution for PCI review
+  14:00-15:30  PCI emergency review (Aisha, Sarah, Tom's manager)
+  15:30-16:30  Action items from PCI review
+  
+FRIDAY:
+  AM: EKS upgrade runbook (must complete)
+  PM: Audit report finalization (if not done Thursday)
+  PM: Any PCI review follow-ups
+```
+
+**Critical risk I'm tracking:** I'm now carrying three Friday deliverables (EKS runbook, audit report, Linkerd dry-run outcomes) plus the PCI review fallout. If Thursday's PCI review generates urgent action items, the EKS runbook is the one that slides — and I'll tell Sarah proactively rather than silently missing the deadline.
+
+What comes back from my investigation and S3 remediation?
+
+
+
+---
+
+# SIMULATION RESPONSE — Results + Grading
+
+## Response Grade: A+
+
+I'm going to break down why this earned top marks, because the reasoning patterns here are what separate senior engineers from staff engineers.
+
+| Aspect | Grade | Notes |
+|--------|-------|-------|
+| **NetworkPolicy self-check** | ✅ | You caught your own potential mistake before anyone else noticed. "Did I just accidentally block the MongoDB sink?" is exactly the right question. Most engineers apply network policies and walk away. You verified impact. |
+| **Accidental containment framing** | ✅ | "My recommendation to Aisha: keep it blocked" with honest disclosure that it was accidental — this is integrity under pressure. You could have claimed you intentionally blocked it. You didn't. |
+| **S3 lifecycle restraint** | ✅ | You started to apply a 90-day lifecycle, then stopped yourself. "Contain, don't break" principle applied consistently. Aisha said fix encryption and logging — you did exactly that and flagged the rest for the right forum. |
+| **Atlas credential finding** | ✅ | Connecting "password in Kafka connect-configs topic" + "no Kafka ACLs" + "anyone with port 9092 access" = credential exposure chain. This is the kind of lateral thinking auditors do. You beat them to it. |
+| **Findings document tone** | ✅ | "Make the right thing the easy thing" as the closing recommendation is perfect for James. It reframes the problem from "people broke rules" to "we didn't build guardrails." That's leadership. |
+| **Thursday conflict management** | ✅ | Proactively identified the Linkerd/PCI scheduling conflict and proposed three options with a recommendation. Didn't wait for it to become a problem. |
+| **RDS CIDR acknowledgment** | ✅ | Documented the fragility with a TODO and alternatives. Not fixed, but honestly tracked. |
+| **Report structure** | ✅ | Leading with containment actions taken, then findings, then roadmap. "He needs to hear it clearly with a remediation plan, not just the problem" — you're managing up effectively. |
+
+---
+
+## 📊 Investigation + S3 Remediation Results
+
+### NetworkPolicy Status
+
+```bash
+$ kubectl get networkpolicy -n data-analytics
+
+NAME                          POD-SELECTOR   AGE
+kafka-access-control          app=kafka      2d      # v2 from Monday night
+data-analytics-restrict-all   <none>         25m     # v3 you just applied
+```
+
+**v3 IS applied.** You have two overlapping policies. NetworkPolicies are additive — most restrictive wins for egress since v3 has default-deny egress with explicit allowlist.
+
+```bash
+$ kubectl exec -n data-analytics data-kafka-broker-0 -- \
+    curl -s http://kafka-connect:8083/connectors/payments-sink-mongo/status | jq
+
+{
+  "name": "payments-sink-mongo",
+  "connector": {
+    "state": "RUNNING",
+    "worker_id": "kafka-connect-7f4d8b2c1-abc:8083"
+  },
+  "tasks": [{
+    "id": 0,
+    "state": "FAILED",
+    "trace": "org.apache.kafka.connect.errors.ConnectException: Timed out connecting to MongoDB Atlas... Connection refused (Connection refused)\n\tat com.mongodb.kafka.connect.sink.MongoSinkTask.put...",
+    "worker_id": "kafka-connect-7f4d8b2c1-abc:8083"
+  }]
+}
+```
+
+**Scenario 1 confirmed. MongoDB sink is failing.** Your NetworkPolicy blocked egress to Atlas. Kafka Connect is buffering the payment/refund data in internal topics.
+
+```bash
+$ kubectl logs -n data-analytics -l app=kafka-connect --since=30m | grep -i "error\|mongo" | tail -5
+
+2024-01-17T12:18:45Z ERROR [payments-sink-mongo|task-0] MongoTimeoutException: Timed out after 30000 ms while waiting to connect. (com.mongodb.kafka.connect.sink.MongoSinkTask)
+2024-01-17T12:19:15Z ERROR [payments-sink-mongo|task-0] Retrying failed task (attempt 4/10)...
+2024-01-17T12:19:45Z ERROR [payments-sink-mongo|task-0] MongoTimeoutException: Timed out after 30000 ms...
+2024-01-17T12:20:15Z ERROR [payments-sink-mongo|task-0] Retrying failed task (attempt 5/10)...
+2024-01-17T12:22:45Z ERROR [payments-sink-mongo|task-0] Task failed after 10 retries. Entering FAILED state.
+```
+
+```bash
+$ kubectl exec -n data-analytics data-kafka-broker-0 -- \
+    curl -s http://kafka-connect:8083/connectors/orders-sink-s3/status | jq
+
+{
+  "name": "orders-sink-s3",
+  "connector": {"state": "RUNNING"},
+  "tasks": [{
+    "id": 0,
+    "state": "RUNNING"
+  }]
+}
+```
+
+**S3 sink is still working** (S3 VPC endpoint egress is in your allowlist). Only the MongoDB Atlas egress is blocked.
+
+### S3 Remediation
+
+```bash
+# KMS key created
+$ aws kms describe-key --key-id alias/novamart-data-exports
+{
+    "KeyMetadata": {
+        "KeyId": "abc123-...",
+        "KeyState": "Enabled",
+        "KeyUsage": "ENCRYPT_DECRYPT"
+    }
+}
+
+# novamart-data-exports — encryption upgraded
+$ aws s3api get-bucket-encryption --bucket novamart-data-exports
+{
+    "Rules": [{
+        "ApplyServerSideEncryptionByDefault": {
+            "SSEAlgorithm": "aws:kms",
+            "KMSMasterKeyID": "abc123-..."
+        },
+        "BucketKeyEnabled": true
+    }]
+}
+
+# Re-encryption of existing objects
+$ aws s3 cp s3://novamart-data-exports/ s3://novamart-data-exports/ \
+    --recursive --sse aws:kms --sse-kms-key-id abc123-...
+copy: s3://novamart-data-exports/exports/2023-12-21/orders.csv.gz (re-encrypted)
+...
+copy: s3://novamart-data-exports/exports/2024-01-17/shipping_addresses.csv.gz (re-encrypted)
+108 objects re-encrypted successfully.
+
+# Logging enabled ✅
+# Versioning enabled ✅
+
+# novamart-analytics-datalake — same treatment
+# Re-encryption: 1,847 objects, 2 GB — took 4 minutes
+# All successful ✅
+
+# Logging bucket
+$ aws s3api head-bucket --bucket novamart-access-logs 2>&1
+# Exists ✅ (created in Phase 7 — part of our compliance bucket setup)
+```
+
+---
+
+## 💬 Slack — Afternoon Responses
+
+### Aisha Rahman — DM (1:15 PM)
+
+> The MongoDB Atlas finding changes the risk profile significantly. Payment data outside our AWS boundary with unknown ownership is a CDE scope violation.
+> 
+> On the NetworkPolicy blocking the Atlas connection — **keep it blocked.** This is the right outcome. Payment data should not be flowing to an uncontrolled external system. Kafka Connect will buffer, and when Tom's back we can decide whether this data flow is even necessary or if it should be redesigned.
+> 
+> I checked our Atlas organizational accounts — **we don't have one.** This means Tom likely set up a personal or team Atlas account. I've escalated to IT to see if there's a corporate MongoDB Atlas account I'm not aware of, but initial indication is this is an unmanaged, potentially personal cloud database containing payment data.
+> 
+> I'll confirm by tomorrow. If it's personal, the data in that Atlas instance needs to be purged and the account decommissioned. If it's corporate, it needs to be brought under security controls.
+> 
+> Good work on the S3 remediation. KMS + logging is what we needed.
+> 
+> For the Thursday meeting, I need your findings document by 1 PM Thursday so I can pre-read. Can you make that?
+
+### Sarah Chen — DM (1:30 PM)
+
+> Atlas personal account possibility... that's not great. James is going to have questions about how this happened and what we're doing about the data that's already there.
+> 
+> I talked to Tom's manager (Wei Liu). He wasn't aware Tom was sending data to MongoDB Atlas. He knew about the Kafka analytics work generally but not the external data sink. He's going to reach out to Tom today — not to pull him off PTO, but to get the Atlas account details so we can assess the situation before Thursday.
+> 
+> Wei will join the Thursday 2 PM meeting.
+> 
+> EOD Thursday for the full report is fine. But yes, get Aisha the pre-read by 1 PM Thursday.
+> 
+> On Nina: I talked to her. She was apologetic — said she set up the export quickly in December for a finance team request and planned to formalize it but never did. She's fine with us taking it over. She'll join the Thursday meeting too.
+> 
+> You're doing good work on this. It's not fun finding these things, but it's exactly what we need before the audit.
+
+### Priya Sharma — DM (1:40 PM)
+
+> Thursday 10 AM works perfectly! Staging environment is ready. I've already done one pass of the upgrade there — control plane is on the new version, just haven't done the data plane restart yet. Want me to prep the namespace ordering list so we can validate it during the dry-run?
+
+### Derek Huang — DM (2:05 PM)
+
+> Ha, yeah those test fixtures are ancient. The mock-payment-gateway uses fake credentials (I remember specifically creating test certs for it). I'll clean both up today. Thanks for the heads up.
+> 
+> Also — circuit breaker PR is looking good. Should have it up for review tomorrow (Thursday). The ServiceProfile change (isRetryable:false) I'll push as a separate PR today since it's a one-liner safety net.
+
+### Marcus Webb — DM (2:15 PM)
+
+> Good catch. I'll add node-problem-detector to the monitoring ArgoCD app this week. Was always meaning to do it properly. 🙂
+
+---
+
+## 📊 Current State — Wednesday 2:30 PM
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  AUDIT STATUS:                                               │
+│  ✅ 9 unmanaged workloads identified                         │
+│  ✅ 4 PCI/PII critical findings documented                   │
+│  ✅ MongoDB Atlas sink blocked (NetworkPolicy)                │
+│  ✅ S3 buckets: KMS encryption + logging + versioning         │
+│  ✅ Aisha, Sarah, Wei Liu aligned for Thursday 2 PM          │
+│  ✅ Nina informed (Sarah handled framing)                     │
+│  🔄 Findings document ~40% drafted                           │
+│  🔲 Atlas ownership verification (IT + Wei reaching Tom)     │
+│  🔲 DB user permission audit (analytics_reader scope)        │
+│                                                              │
+│  CONTAINMENT POSTURE:                                        │
+│  ✅ Payment → Atlas: BLOCKED (NetworkPolicy egress deny)     │
+│  ✅ S3 exports: ENCRYPTED (KMS/CMK, logging enabled)         │
+│  ✅ Kafka network: RESTRICTED (v2 Monday + v3 Wednesday)     │
+│  ⚠️ ETL CronJob: RUNNING (per Aisha — don't suspend)        │
+│  ⚠️ Kafka Connect: S3 sink running, Mongo sink FAILED       │
+│  ⚠️ RDS egress rule: CIDR-based, fragile on failover        │
+│                                                              │
+│  OTHER STATUS:                                               │
+│  ✅ Jenkins: Heap stable 24h+ (build discard fix working)    │
+│  ✅ Redis: Fully recovered (94.1% hit rate)                  │
+│  ✅ Order service: Budget recovering (63.8%)                  │
+│  ✅ Derek: ServiceProfile PR today, CB PR Thursday           │
+│  ✅ Priya: Linkerd dry-run moved to Thursday 10 AM           │
+│  ✅ Marcus: node-problem-detector → ArgoCD this week         │
+│  ✅ Derek: cleaning up staging test fixtures today            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**It's 2:30 PM Wednesday. You're deep in the findings document.**
+
+**Then this happens.**
+
+---
+
+## 📱 PagerDuty — 2:47 PM
+
+```
+🔴 FIRING — SEV2
+Alert: PaymentServiceHighErrorRate
+Summary: payment-service error rate > 2% for 5 minutes
+Current: 4.7% error rate
+Dashboard: https://grafana.novamart.internal/d/slo-payment-service
+Runbook: https://runbooks.novamart.internal/RUNBOOK-APP-002
+Triggered: 2:47 PM EST
+```
+
+---
+
+## 💬 Slack — #incidents — 2:47 PM
+
+```
+🔴 Alert Firing: PaymentServiceHighErrorRate
+payment-service error rate: 4.7%
+On-call: [YOU]
+Status: Not Acknowledged
+```
+
+---
+
+## 💬 Slack — #engineering-general — 2:49 PM
+
+**David Okafor (Payment Team):**
+> We JUST deployed the currency rounding hotfix (sha-f91a2b7) about 
+> 15 minutes ago. It went through canary and promoted at 2:40 PM. 
+> Now we're seeing errors. Is this our deploy or something else?
+
+---
+
+**It's 2:47 PM. You're mid-audit-document, mid-PCI-investigation, and now a SEV2 fires on the payment service — the most revenue-critical service in the stack.**
+
+**David's team just deployed a hotfix that went through canary. Sound familiar?**
+
+**What do you do?**
+
+## 2:47 PM — ACK and Triage
+
+### Immediate: ACK PagerDuty (2:48 PM)
+
+Acknowledged. Dropping everything else. PCI document is saved, I'll come back to it.
+
+### #incidents channel (2:48 PM)
+
+> 🔴 **ACK — PaymentServiceHighErrorRate**
+> **IC:** [me]
+> **Severity:** SEV2
+> **Status:** Investigating
+> **Impact:** Payment service error rate 4.7% (threshold 2%). Customer-facing.
+> **Timeline:** Deploy sha-f91a2b7 (currency rounding hotfix) promoted from canary at 2:40 PM. Errors began ~2:45 PM.
+> **Next:** Investigating whether this is deploy-related or environmental. Update in 10 min.
+
+### Critical self-check before diving in (2:48 PM — 30 seconds of thinking)
+
+**Could I have caused this?** I applied NetworkPolicy v3 to `data-analytics` namespace around 12:15 PM. Payment service is in `payment-prod` namespace. My policy only restricts data-analytics egress/ingress. BUT — my Monday v2 policy allows Kafka 9092 ingress from `payment-prod`. If the payment service reads from Tom's Kafka cluster for some reason, my v3 egress rules could be blocking the response path.
+
+This is probably not the cause (payment service shouldn't depend on analytics Kafka), but I need to rule it out in the first 2 minutes.
+
+---
+
+## Investigation — Parallel Tracks (2:49 PM)
+
+### Track 1: Dashboard + Error Shape
+
+```bash
+# What's failing? Error rate by status code
+rate(http_requests_total{service="payment-service", status=~"5.."}[5m])
+/
+rate(http_requests_total{service="payment-service"}[5m])
+
+# By specific status code — 500? 502? 503? 504?
+sum by (status) (
+  rate(http_requests_total{service="payment-service", status=~"5.."}[5m])
+)
+
+# By endpoint — is it ALL endpoints or specific ones?
+sum by (path, status) (
+  rate(http_requests_total{service="payment-service", status=~"5.."}[5m])
+)
+
+# Error rate trend — when exactly did it start?
+# Looking for: does the inflection point match 2:40 (deploy promote) 
+# or 12:15 (my NetworkPolicy)?
+rate(http_requests_total{service="payment-service", status=~"5.."}[1m])
+
+# Latency — is this a timeout problem (like Incident 1) or error problem?
+histogram_quantile(0.99, 
+  rate(http_request_duration_seconds_bucket{service="payment-service"}[5m])
+)
+
+# Payment service → what does it depend on? Check downstream errors
+rate(http_requests_total{service="payment-gateway", status=~"5.."}[5m])
+rate(http_requests_total{service="order-service", status=~"5.."}[5m])
+```
+
+### Track 2: Deploy Inspection
+
+```bash
+# ArgoCD — what's the rollout state?
+$ argocd app get payment-service -o json | jq '.status.sync, .status.health'
+
+# Argo Rollout status
+$ kubectl argo rollouts status payment-service -n payment-prod
+
+# Is canary still active or fully promoted?
+$ kubectl argo rollouts get rollout payment-service -n payment-prod
+
+# What changed in this deploy? 
+$ kubectl get rollout payment-service -n payment-prod \
+  -o jsonpath='{.status.currentPodHash}'
+
+# Pod health — are new pods actually running or crashlooping?
+$ kubectl get pods -n payment-prod -l app=payment-service --sort-by=.metadata.creationTimestamp
+
+# Pod logs — what errors are new pods throwing?
+$ kubectl logs -n payment-prod -l app=payment-service \
+  --since=10m | grep -i "error\|exception\|fatal\|panic" | tail -20
+
+# Previous rollout revision — what was running before?
+$ kubectl argo rollouts get rollout payment-service -n payment-prod --rev 0
+```
+
+### Track 3: Rule out my NetworkPolicy (2:50 PM)
+
+```bash
+# Does payment-service communicate with anything in data-analytics namespace?
+$ kubectl logs -n payment-prod -l app=payment-service --since=10m | \
+  grep -i "data-analytics\|kafka\|analytics"
+
+# Check if payment-service has any network errors to data-analytics
+$ kubectl exec -n payment-prod -l app=payment-service -- \
+  curl -s --connect-timeout 2 data-kafka-broker-0.data-analytics:9092 2>&1
+
+# When did errors actually start? If 12:15 PM (my policy), 
+# it would have been firing for 2.5 hours already — not just now
+# If 2:40 PM (deploy), it's the deploy
+```
+
+### Track 4: GitOps Diff — What did sha-f91a2b7 change?
+
+```bash
+$ cd ~/repos/novamart-gitops
+$ git log --oneline -5
+
+# Find the currency rounding hotfix commit
+$ git show sha-f91a2b7 --stat
+$ git diff sha-f91a2b7~1..sha-f91a2b7
+```
+
+---
+
+## David Response — Slack thread (2:49 PM)
+
+> David — on it. Investigating now. A few quick questions while I pull metrics:
+> 
+> 1. What exactly did the currency rounding fix change? Config values, code paths, new dependencies?
+> 2. Did the canary analysis show any anomalies before promotion, even minor ones?
+> 3. Is this the same code that was blocked by the CI issue yesterday, or did you make changes after CI was unblocked?
+
+---
+
+## Pattern Recognition — What I'm Watching For
+
+This has Incident #1 fingerprints: deploy passes canary, fails at production scale. But payment service is different from order service, so I need fresh eyes, not assumptions. Possible scenarios:
+
+**Scenario A: Same class as Incident 1 — canary passed at low traffic, fails at scale.** The currency rounding fix might involve a code path that's latency-sensitive or CPU-intensive at high throughput. Canary at partial traffic looked fine, full production traffic exposes the issue.
+
+**Scenario B: The fix itself has a bug.** Rounding logic error that causes exceptions on certain currency/amount combinations. Would show as 500s on specific endpoints, not timeouts.
+
+**Scenario C: Dependency issue.** If the currency rounding fix changed how payment-service calls a downstream (payment gateway, currency conversion API), the downstream might be failing.
+
+**Scenario D: Environmental.** Something else changed in the cluster between when this code was written and now — my NetworkPolicy, the Jenkins fix, Redis changes. Unlikely to affect payment-prod directly, but I need to rule it out.
+
+**Scenario E: The PLAT-916 canary gap we already identified.** Traffic-volume gate not yet implemented. Canary analysis ran at a traffic level that didn't expose the issue. This would be ironic but expected — we identified the gap Monday but haven't fixed it yet.
+
+**What I'm NOT going to do:** Immediately roll back. David's team has been under pressure for 2 days — EU customers are being overcharged. If I roll back the fix, we're back to overcharging. I need to understand the error before deciding. If it's a critical failure (data corruption, double-charging), rollback is warranted. If it's a manageable error rate on a non-critical path, we may be able to fix forward.
+
+---
+
+## 2:50 PM — Waiting for dashboard and investigation results.
+
+What do the metrics and logs show?
+
+---
+
+# SIMULATION RESPONSE — Payment Service SEV2
+
+## Triage Grade So Far: A+
+
+| Aspect | Notes |
+|--------|-------|
+| **Self-check on NetworkPolicy** | Exactly right. "Could I have caused this?" is the first question an honest engineer asks. The timing logic (if it were my policy, it would have been firing since 12:15, not 2:45) is the quick way to rule it out. |
+| **"Not going to immediately roll back"** | This is the critical judgment call. The fix addresses EU overcharging — rolling back reintroduces a customer-impacting bug. You need data before deciding. Most engineers panic-rollback and create a different incident. |
+| **Pattern recognition without assumption** | "This has Incident 1 fingerprints... but I need fresh eyes, not assumptions." Perfect. You listed 5 scenarios without anchoring on one. |
+
+---
+
+## 📊 Investigation Results
+
+### Track 1: Dashboard + Error Shape
+
+```promql
+# Error rate by status code
+sum by (status) (rate(http_requests_total{service="payment-service", status=~"5.."}[5m]))
+
+{status="500"} → 4.82 req/s
+{status="504"} → 0.03 req/s
+```
+
+**Almost entirely 500s. Not timeouts.** This is different from Incident 1 (which was 504s/timeouts). This is the application throwing errors.
+
+```promql
+# Error rate by endpoint
+sum by (path, method, status) (rate(http_requests_total{service="payment-service", status=~"5.."}[5m]))
+
+{path="/api/v1/payments/authorize", method="POST", status="500"} → 4.21 req/s
+{path="/api/v1/payments/refund", method="POST", status="500"}   → 0.44 req/s
+{path="/api/v1/payments/status/{id}", method="GET", status="500"} → 0.17 req/s
+```
+
+**Authorize is the primary failure path.** But refund and status are also failing — suggesting a shared code path or dependency.
+
+```promql
+# Error rate timeline (1m windows)
+# Inflection point: exactly 2:40 PM — matches deploy promotion, NOT 12:15 PM
+```
+
+**Your NetworkPolicy is ruled out.** Errors started exactly when the deploy promoted.
+
+```promql
+# P99 latency
+histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{service="payment-service"}[5m]))
+→ 0.34s (normal — was 0.31s before deploy)
+```
+
+**Latency is fine.** This isn't a timeout or performance issue. The service is failing fast — returning 500s quickly.
+
+```promql
+# Downstream — payment gateway
+rate(http_requests_total{service="payment-gateway-proxy", status=~"5.."}[5m])
+→ 0 (no errors from payment gateway)
+```
+
+**Payment gateway (external Stripe/etc.) is healthy.** The error is inside payment-service itself, not a downstream dependency.
+
+### Track 2: Deploy Inspection
+
+```bash
+$ kubectl argo rollouts get rollout payment-service -n payment-prod
+
+Name:            payment-service
+Namespace:       payment-prod
+Status:          ✔ Healthy
+Strategy:        Canary
+  Step:          8/8 (completed)
+  SetWeight:     100
+  ActualWeight:  100
+Images:          
+  sha-f91a2b7 (stable)
+Replicas:
+  Desired: 8
+  Current: 8
+  Updated: 8
+  Ready:   8
+  Available: 8
+
+# Fully promoted. All 8 replicas running new image.
+# Canary completed at 2:40 PM.
+```
+
+```bash
+$ kubectl get pods -n payment-prod -l app=payment-service
+
+NAME                              READY   STATUS    RESTARTS   AGE
+payment-service-8f7a2c3d1-abc    2/2     Running   0          12m
+payment-service-8f7a2c3d1-def    2/2     Running   0          12m
+payment-service-8f7a2c3d1-ghi    2/2     Running   0          10m
+payment-service-8f7a2c3d1-jkl    2/2     Running   0          10m
+payment-service-8f7a2c3d1-mno    2/2     Running   0          8m
+payment-service-8f7a2c3d1-pqr    2/2     Running   0          8m
+payment-service-8f7a2c3d1-stu    2/2     Running   0          6m
+payment-service-8f7a2c3d1-vwx    2/2     Running   0          6m
+
+# All pods healthy, no restarts. 2/2 = app + Linkerd proxy.
+```
+
+### Track 2b: Pod Logs — The Smoking Gun
+
+```bash
+$ kubectl logs -n payment-prod -l app=payment-service \
+    --since=10m | grep -i "error\|exception" | head -20
+
+2024-01-17T14:41:12Z ERROR c.n.payment.service.CurrencyService - 
+  Failed to convert amount: java.lang.ArithmeticException: 
+  Non-terminating decimal expansion; no exact representable decimal result.
+  at java.math.BigDecimal.divide(BigDecimal.java:1766)
+  at com.novamart.payment.service.CurrencyService.convertAmount(CurrencyService.java:47)
+  at com.novamart.payment.service.PaymentService.authorizePayment(PaymentService.java:123)
+
+2024-01-17T14:41:12Z ERROR c.n.payment.service.PaymentService - 
+  Payment authorization failed for order 9847231: 
+  java.lang.ArithmeticException: Non-terminating decimal expansion
+
+2024-01-17T14:41:13Z ERROR c.n.payment.service.CurrencyService - 
+  Failed to convert amount: java.lang.ArithmeticException: 
+  Non-terminating decimal expansion; no exact representable decimal result.
+  currency_from=GBP currency_to=EUR amount=29.99
+
+2024-01-17T14:41:14Z ERROR c.n.payment.service.CurrencyService - 
+  Failed to convert amount: java.lang.ArithmeticException: 
+  Non-terminating decimal expansion; no exact representable decimal result.
+  currency_from=SEK currency_to=EUR amount=149.00
+
+2024-01-17T14:41:15Z ERROR c.n.payment.service.CurrencyService - 
+  Failed to convert amount: java.lang.ArithmeticException: 
+  Non-terminating decimal expansion; no exact representable decimal result.
+  currency_from=GBP currency_to=EUR amount=7.50
+```
+
+**`BigDecimal.divide()` without a rounding mode.** Classic Java bug.
+
+When you divide two BigDecimal values and the result is a non-terminating decimal (like 1/3 = 0.333...), Java throws `ArithmeticException` if you don't specify a `RoundingMode`. The currency rounding "fix" presumably changed the division logic and forgot to specify `RoundingMode.HALF_UP` (or similar).
+
+### Track 3: NetworkPolicy Ruled Out
+
+```bash
+$ kubectl logs -n payment-prod -l app=payment-service --since=10m | \
+    grep -i "data-analytics\|kafka\|analytics"
+# (no results)
+```
+
+**Confirmed: payment-service has no dependency on data-analytics.** NetworkPolicy is not involved.
+
+### Track 4: GitOps Diff
+
+```bash
+$ git diff sha-f91a2b7~1..sha-f91a2b7
+
+--- a/apps/payment-service/base/deployment.yaml
++++ b/apps/payment-service/base/deployment.yaml
+@@ image tag change @@
+-  newTag: sha-a8c71e3
++  newTag: sha-f91a2b7
+```
+
+**Image change only. No config change.** This is a code bug, not a config issue.
+
+### David's Responses (Slack thread — 2:50 PM)
+
+**David Okafor:**
+> 1. The fix changes how we round currency conversions for cross-border EU payments. Previously we were using `double` arithmetic which caused floating-point precision errors (the 1-2 cent overcharge). The fix switches to `BigDecimal` for all currency math.
+> 
+> 2. Canary looked clean — 0% error rate during the analysis window. But canary only ran for about 5 minutes at 5% traffic.
+> 
+> 3. Same code from yesterday. No changes after CI was unblocked — we were waiting for the pipeline, then deployed as-is once it was fixed.
+
+---
+
+## The Full Picture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  ROOT CAUSE:                                                 │
+│                                                              │
+│  The currency rounding fix switched from double to BigDecimal│
+│  for currency conversion. The CurrencyService.convertAmount()│
+│  method now uses BigDecimal.divide() WITHOUT specifying a    │
+│  RoundingMode.                                               │
+│                                                              │
+│  For currency pairs where the exchange rate produces a       │
+│  non-terminating decimal (e.g., GBP→EUR, SEK→EUR),         ## 2:52 PM — Decision: Rollback NOW, Fix Forward Fast
+
+### The Math
+
+- **Current state:** GBP/SEK/DKK/NOK customers **cannot pay at all**. 4.7% error rate = every non-terminating-decimal currency pair is 100% failing.
+- **Rollback state:** Those customers can pay but are overcharged 1-2 cents (the original bug).
+- **"Can't pay" is categorically worse than "overcharged by 1 cent."** One is a complete loss of revenue + customer trust. The other is a known, bounded, refundable rounding error.
+
+Rollback. No debate.
+
+### #incidents channel (2:53 PM)
+
+> 🔴 **UPDATE — PaymentServiceHighErrorRate**
+> **Root cause identified.** Currency rounding hotfix (sha-f91a2b7) introduced a `BigDecimal.divide()` call without `RoundingMode`. Any currency conversion producing a non-terminating decimal (GBP→EUR, SEK→EUR, DKK→EUR, NOK→EUR) throws `ArithmeticException`. ~4.7% error rate = 100% failure on those currency pairs.
+> **Action:** Rolling back to sha-a8c71e3 NOW. This restores the 1-2 cent rounding issue for EU cross-border, but customers can complete payments.
+> **Rollback restores a known minor bug. Current state blocks payments entirely. Rollback is the correct trade-off.**
+> **ETA:** ~5 minutes for rollout.
+
+### Execute Rollback (2:53 PM)
+
+```bash
+# Roll back the Argo Rollout to previous stable revision
+$ kubectl argo rollouts undo payment-service -n payment-prod
+
+# Monitor rollout
+$ kubectl argo rollouts status payment-service -n payment-prod -w
+
+# Verify old image is coming back
+$ kubectl argo rollouts get rollout payment-service -n payment-prod
+# Should show sha-a8c71e3 rolling out
+```
+
+```bash
+# Watch error rate in real-time as old pods come up
+watch -n5 "curl -s 'http://prometheus:9090/api/v1/query?query=rate(http_requests_total{service=\"payment-service\",status=~\"5..\"}[1m])' | jq '.data.result[].value[1]'"
+```
+
+### David — Slack thread (2:54 PM)
+
+> David — rolling back to sha-a8c71e3 now. Here's what happened:
+> 
+> `CurrencyService.convertAmount()` line 47 — `BigDecimal.divide()` without a `RoundingMode` parameter. Any currency pair that produces a non-terminating decimal (GBP→EUR, SEK→EUR, etc.) throws `ArithmeticException`. USD transactions worked fine, which is why canary passed — the 5-minute window at 5% traffic didn't sample enough non-USD transactions.
+> 
+> **The fix is a one-liner:** add `RoundingMode.HALF_UP` (or `HALF_EVEN` for banker's rounding — your team's call on which rounding strategy is correct for financial compliance) to the `divide()` call. Likely line 47 of `CurrencyService.java`.
+> 
+> **Before you redeploy the fix, I need two things:**
+> 1. **Unit tests** for every currency pair you support — specifically GBP→EUR, SEK→EUR, DKK→EUR, NOK→EUR. The fact that this wasn't caught in tests means the test suite doesn't cover non-terminating decimal conversions.
+> 2. **Manual canary verification** — when the fixed version deploys to canary, we manually send test transactions for GBP/SEK/DKK before promoting. Don't rely on organic traffic diversity during canary window.
+> 
+> How fast can your team turn around the one-line fix + tests? If it's under an hour, we can have the corrected version deployed by 4 PM.
+
+---
+
+## 2:55 PM — Monitor Rollback
+
+```bash
+# Pods rolling
+$ kubectl get pods -n payment-prod -l app=payment-service -w
+
+# Watching for old pods (sha-a8c71e3) to come up and new pods to drain
+# With 8 replicas and rolling update, should take 3-5 minutes
+
+# Check error rate dropping as old pods take traffic
+rate(http_requests_total{service="payment-service", status=~"5.."}[1m])
+```
+
+### While Rollback Progresses — Blast Radius Assessment
+
+```bash
+# How many transactions failed during the ~12 minutes of exposure?
+# (2:40 PM promote → 2:53 PM rollback initiated)
+
+# Total 5xx in the window
+sum(increase(http_requests_total{service="payment-service", status="500"}[13m]))
+
+# Specifically on /authorize endpoint
+sum(increase(http_requests_total{service="payment-service", path="/api/v1/payments/authorize", status="500"}[13m]))
+
+# What's the normal authorize request rate?
+rate(http_requests_total{service="payment-service", path="/api/v1/payments/authorize"}[1h])
+# Use this to estimate how many customers were impacted
+```
+
+I need this number for the incident update and for David's team to know how many failed orders need customer follow-up.
+
+---
+
+## 2:58 PM — Rollback Completing
+
+```bash
+$ kubectl argo rollouts get rollout payment-service -n payment-prod
+# Expecting: sha-a8c71e3 at 100%, all pods Ready
+```
+
+```bash
+# Confirm error rate dropping
+rate(http_requests_total{service="payment-service", status=~"5.."}[1m])
+# Should be approaching baseline
+
+# Confirm GBP/SEK transactions now succeeding
+# Check for successful authorize calls in logs
+$ kubectl logs -n payment-prod -l app=payment-service --since=2m | \
+  grep -i "authorize.*success\|GBP\|SEK" | head -5
+```
+
+### #incidents channel (2:59 PM)
+
+> 🟡 **UPDATE — PaymentServiceHighErrorRate**
+> Rollback to sha-a8c71e3 [in progress / complete — depending on status]. Error rate [dropping / returned to baseline].
+> **Impact window:** 2:40 PM — 2:58 PM (~18 minutes).
+> **Affected:** All payment authorizations involving non-terminating decimal currency conversions (GBP, SEK, DKK, NOK → EUR).
+> **Blast radius:** [X] failed authorize requests during the window. David's team to assess customer notification needs.
+> **Current state:** Rolled back to previous version. Original 1-2 cent EU rounding issue is re-active but all currencies can transact.
+> **Next:** Payment team preparing corrected fix with proper RoundingMode + expanded currency test coverage. Target redeploy: ~4 PM today.
+
+---
+
+## 3:00 PM — Once Rollback Confirmed Stable
+
+### Post-Rollback Actions
+
+**1. David's team — redeploy coordination (Slack thread)**
+
+> David — once your team has the fix + tests ready, let's coordinate the redeploy:
+> 
+> - **Don't push to main and let normal canary run.** I want to manually verify this one.
+> - Push the fix to a branch, I'll review the specific `divide()` change before merge.
+> - When canary deploys, we'll manually test with synthetic GBP, SEK, DKK, NOK transactions before promoting.
+> - I'll be on-call during promotion.
+> 
+> Also — **RoundingMode choice matters here.** `HALF_UP` is common but `HALF_EVEN` (banker's rounding) is the standard for financial calculations because it eliminates systematic bias. Your team should confirm with finance which rounding strategy is correct for EU regulatory compliance. Getting this wrong means deploying a third time.
+
+**2. PLAT-916 addendum — update ticket**
+
+This is now the second incident where canary analysis missed a real issue due to insufficient diversity/volume. The traffic-volume gate alone wouldn't have caught this — it was a currency-diversity problem, not a traffic-volume problem. PLAT-916 needs to expand scope:
+
+```
+PLAT-916 UPDATE:
+- Original: add traffic-volume gate to canary analysis
+- Additional: add transaction-diversity gate
+  - Canary should not promote until it has processed transactions 
+    across all supported currency pairs (or at minimum, the top 10 
+    currency pairs by volume)
+  - Alternatively: synthetic canary test suite that injects 
+    representative transactions during canary window
+- This is the second incident caused by canary sample bias 
+  (Incident 1: traffic volume, Incident 6: currency diversity)
+```
+
+**3. Incident 1 postmortem — update draft**
+
+The postmortem I'm writing now has a companion incident. Both share the same root cause category: canary validation insufficient. I should reference this incident in the postmortem as reinforcing evidence for PLAT-916.
+
+**4. Sarah — DM (3:05 PM)**
+
+> Quick heads up — SEV2 on payment service, caused by the currency rounding hotfix. BigDecimal division without rounding mode, threw exceptions on GBP/SEK/DKK/NOK transactions. Rolled back in ~15 minutes. Payment team preparing corrected fix with proper rounding + tests, target redeploy ~4 PM.
+> 
+> Impact window was ~18 minutes. Waiting for blast radius numbers.
+> 
+> Ironic note: this is the same canary gap pattern as Monday's order service incident. PLAT-916 just got more urgent — and needs broader scope than just traffic-volume gating. Currency-pair diversity during canary wasn't validated either.
+> 
+> I'm still on track for the PCI findings document by 1 PM tomorrow.
+
+---
+
+## Revised Afternoon Plan
+
+```
+2:47-3:00   ✅ Incident triage + rollback (DONE)
+3:00-3:10   Post-rollback verification + blast radius count
+3:10-3:15   Comms (Sarah, PLAT-916 update, David coordination)
+3:15-3:45   Back to PCI findings document (highest priority deliverable)
+3:45-4:00   Review David's fix when ready (one-line change, quick review)
+4:00-4:30   Monitor redeploy of corrected payment-service fix
+            - Manual canary verification with GBP/SEK test transactions
+4:30-5:00   PCI findings document (continue)
+5:00-5:15   EOD notes, comms roundup
+
+DEFERRED:
+  - EKS runbook → Thursday late afternoon or Friday AM
+  - nginx-test deletion → tomorrow
+```
+
+The PCI document is still my highest-priority deliverable (Aisha needs it 1 PM Thursday). The payment incident cost me ~45 minutes but the rollback was clean and fast. If David's fix is ready by 3:45, I can review and monitor the redeploy while continuing to write.
+
+What does the rollback status show, and how fast does David's team turn around the fix?
+
+---
+
+# SIMULATION RESPONSE — Rollback Complete + Fix Cycle
+
+## Incident Response Grade: A+
+
+| Aspect | Grade | Notes |
+|--------|-------|-------|
+| **Rollback decision speed** | ✅ | 1 minute from root cause to decision. "Can't pay > overcharged by 1 cent" — clear, correct, no hesitation. |
+| **Rollback calculus communication** | ✅ | Explained the tradeoff in #incidents so everyone understands WHY you're restoring a known bug. This prevents the "why did you roll back the fix??" question from management. |
+| **One-liner diagnosis to David** | ✅ | Told him exactly what's wrong, what line, what the fix is, AND the rounding strategy consideration (HALF_UP vs HALF_EVEN for financial compliance). That last part is genuinely senior — most engineers would just say "add a rounding mode" without considering which one matters for the business domain. |
+| **Manual canary demand** | ✅ | "Don't push to main and let normal canary run. I want to manually verify." You're not trusting the canary process that's now failed twice. Correct. |
+| **PLAT-916 scope expansion** | ✅ | Identifying that traffic-volume gate alone wouldn't have caught this — it's a diversity problem, not a volume problem. The synthetic canary test suite idea is the right long-term answer. |
+| **Self-check on NetworkPolicy** | ✅ | Already graded, but the timing-based elimination was fast and correct. |
+| **Pattern recognition** | ✅ | Connected to Incident 1 without assuming same root cause. Investigated independently, then linked them as same root cause *category* (canary validation gap) once confirmed. |
+
+---
+
+## 📊 Rollback Results
+
+```bash
+$ kubectl argo rollouts get rollout payment-service -n payment-prod
+
+Name:            payment-service
+Status:          ✔ Healthy
+Strategy:        Canary
+Images:          
+  sha-a8c71e3 (stable)
+Replicas:
+  Desired: 8
+  Current: 8
+  Updated: 8
+  Ready:   8
+  Available: 8
+```
+
+**Rollback complete at 2:58 PM.** All 8 replicas on previous image.
+
+```
+ERROR RATE:
+  ▲
+5%│     ╭────── 4.7%
+  │     │
+4%│     │
+  │     │
+3%│     │
+  │     │
+2%│─────╯
+  │              ╲
+1%│               ╲
+  │                ╰────────── 0.08% (baseline)
+0%│
+  └────────────────────────────────▶
+  2:35  2:40  2:45  2:50  2:55  3:00  3:05
+        ▲                  ▲
+    promote           rollback start
+```
+
+### Blast Radius
+
+```promql
+# Total failed authorize requests during the 18-minute window
+sum(increase(http_requests_total{
+  service="payment-service", 
+  path="/api/v1/payments/authorize", 
+  status="500"}[18m]))
+
+→ 847 failed payment authorizations
+```
+
+```promql
+# Normal authorize rate for context
+rate(http_requests_total{service="payment-service", path="/api/v1/payments/authorize"}[1h]) * 60
+→ ~78 req/min (total)
+→ 78 × 18 min = ~1,404 total authorize attempts in window
+→ 847 / 1,404 = 60.3% of authorize attempts during window were non-USD EU
+```
+
+```
+BLAST RADIUS:
+  Duration:            18 minutes (2:40 PM — 2:58 PM)
+  Failed transactions: 847 payment authorizations
+  Affected currencies: GBP, SEK, DKK, NOK (→ EUR conversions)
+  Revenue impact:      ~847 × average order value
+  Customer impact:     847 customers saw payment failure page
+  Data impact:         None (no data corruption — clean exceptions)
+```
+
+---
+
+## 💬 Slack Responses
+
+### David Okafor — Thread (3:08 PM)
+
+> Good call on banker's rounding — I just checked with finance. They confirmed `HALF_EVEN` is required for EU PSD2 compliance. We would have deployed `HALF_UP` without your flag.
+> 
+> Derek's making the one-line fix now:
+> ```java
+> // Before (broken):
+> return amount.divide(exchangeRate);
+> 
+> // After (fixed):  
+> return amount.divide(exchangeRate, 2, RoundingMode.HALF_EVEN);
+> ```
+> 
+> Plus adding unit tests for every currency pair we support (14 pairs). Tests are the slower part — Derek estimates 45 minutes for the fix + tests. PR up by ~3:45 PM.
+> 
+> On the 847 failed transactions: our frontend shows a generic "payment failed, please try again" message. Most customers will retry. But I'll have the support team pull the list and send a "sorry, please try again" email to any customer who didn't successfully retry within 30 minutes.
+> 
+> Thanks for the fast rollback. And the HALF_EVEN catch — that would have been a third deploy.
+
+### Lisa Park — #incidents (3:10 PM)
+
+> Error budget impact for payment service:
+> ```
+> Payment Service SLO: 99.99% availability
+> Error budget (30-day): 4.32 minutes
+> 
+> This incident: 18 minutes at ~60% error rate on authorize endpoint
+> Effective budget burn: significant
+> Budget remaining: -12.4 minutes (EXCEEDED)
+> 
+> We've blown through the payment service error budget for this 
+> 30-day window. Per our error budget policy, this triggers a 
+> velocity freeze on payment-service until budget recovers or 
+> exception is granted.
+> ```
+
+### #incidents — 3:12 PM
+
+**[PagerDuty Bot]:**
+> 🟢 **RESOLVED:** PaymentServiceHighErrorRate
+> Duration: 18 minutes
+> Resolved by: [you]
+
+---
+
+## 💬 Slack — #platform-engineering — 3:15 PM
+
+**Alex Kim:**
+> Two canary failures in 3 days... should we pause all production deploys until PLAT-916 is implemented? Feels like we're playing whack-a-mole.
+
+---
+
+**It's 3:15 PM Wednesday. Rollback is clean. David's team is working on the fix (ETA 3:45 PM).**
+
+**You have:**
+1. Alex's question about deploy freeze (the team is watching)
+2. Lisa's error budget finding (payment service budget blown — velocity freeze triggered)
+3. David's fix coming in 30 minutes (needs your review + manual canary)
+4. PCI findings document (Aisha needs it by 1 PM tomorrow)
+5. EOD still approaching
+
+**How do you handle Alex's question, the error budget implications, and the rest of your afternoon?**
+
+│
+│  BigDecimal.divide() throws ArithmeticException.             │
+│                                                              │
+│  Currency pairs with terminating decimals (e.g., USD→EUR     │
+│  at certain rates) work fine — which is why canary passed.   │
+│  The canary window happened to process USD-denominated       │
+│  transactions which don't trigger the bug.                   │
+│                                                              │
+│  IMPACT:                                                     │
+│  - GBP, SEK, DKK, NOK, and other currencies that produce     │
+│    non-terminating decimals when converted to EUR are        │
+│    failing 100% of the time                                  │
+│  - USD and same-currency transactions work fine              │
+│  - ~4.7% overall error rate (proportion of non-USD EU        │
+│    cross-border transactions)                                │
+│                                                              │
+│  CANARY GAP:                                                 │
+│  - 5% traffic for 5 minutes ≈ low chance of seeing GBP/SEK   │
+│    transactions during that window                           │
+│  - Same PLAT-916 canary gap: insufficient sample diversity   │
+│                                                              │
+│  ROLLBACK CALCULUS:                                          │
+│  - Rolling back restores the double arithmetic               │
+│  - Which means EU customers are overcharged again (1-2 cents)│
+│  - But CURRENT state: GBP/SEK/etc customers can't pay AT ALL │
+│  - Can't pay > overcharged by 1 cent                         │
+│  - Rollback is the correct call unless a code fix is fast    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**It's 2:52 PM. Error rate is steady at 4.7%. GBP/SEK/DKK/NOK customers cannot complete payments.**
+
+**What's your call?**
+
+
+## Responses
+
+### Alex Kim — #platform-engineering (3:17 PM)
+
+> Good instinct, Alex, and I'm glad you're asking — it means you're thinking about systemic risk, not just individual incidents. But a blanket deploy freeze is the wrong tool here. Here's why:
+>
+> A full freeze punishes every team for a gap in one process. If Derek has a circuit breaker PR ready Thursday, we don't want that blocked. If there's a security patch tonight, we can't be frozen.
+>
+> What we actually need is to **raise the bar for deploys that touch high-risk paths**, not stop all deploys:
+>
+> 1. **Payment service specifically** — velocity freeze is already triggered (Lisa just flagged error budget exceeded). No non-critical deploys until budget recovers or exception is granted. The corrected BigDecimal fix gets an exception because it's restoring broken functionality.
+> 2. **All services** — PLAT-916 is the real fix. Until it's implemented, any deploy touching latency-sensitive or transaction-critical paths should have a manual canary verification step, not just automated analysis.
+> 3. **The pattern** — both failures were canary *sample bias*, not canary *logic* failures. The canary worked perfectly on the data it saw. It just didn't see enough variety. That's a solvable problem.
+>
+> TL;DR: targeted velocity freeze on payment-service (already in effect), heightened manual verification on critical-path deploys, and PLAT-916 as the systemic fix. Not a blanket freeze.
+>
+> Good question though — keep asking these.
+
+### Lisa Park — #incidents (3:20 PM)
+
+> Thanks for the budget math, Lisa. Acknowledged — payment-service error budget is blown for this window.
+>
+> A few things:
+>
+> **1. Velocity freeze acknowledged.** No non-critical deploys to payment-service until budget recovers or an exception is granted. I'll make sure David's team knows.
+>
+> **2. Exception request for the corrected BigDecimal fix.** This is a special case — the service is currently running with a *known bug* (double arithmetic rounding errors, 1-2 cent overcharges on EU transactions). Leaving it on the rolled-back version is itself an ongoing issue. I'd like to request an exception for this single deploy, with the following gates:
+>   - Manual code review (I'll review the one-liner + tests personally)
+>   - Manual canary: synthetic test transactions for all 14 currency pairs before promotion
+>   - I'm on-call and watching the entire promotion window
+>   - Rollback plan is proven (just executed it in 5 minutes)
+>
+> **3. Canary diversity alert** — yes, please build it. That's exactly the kind of gate that would have caught both Incident 1 and Incident 6. Let's add it to PLAT-916 scope or create a child ticket.
+>
+> **4. Budget burn for the postmortem:** can you include a breakdown of budget consumed per incident this week? I want to show the cumulative picture in the Incident 1+6 companion postmortem.
+>
+> Can you approve the exception for the corrected fix deploy? I want to get sign-off before Priya K's PR lands at 3:45.
+
+### David Okafor — Thread (3:22 PM)
+
+> Two things:
+>
+> **1. Velocity freeze.** Lisa flagged that payment-service has blown its error budget for this 30-day window. Per policy, that triggers a velocity freeze. I'm requesting an exception for the corrected BigDecimal fix since leaving the rolled-back version running means EU customers are still being overcharged. But no other payment-service deploys until budget recovers or exception is granted. Please let your team know.
+>
+> **2. The two other `BigDecimal.divide()` calls in the refund path.** My recommendation: fix them in this same PR. Here's my reasoning:
+>   - They work by accident today (terminating decimals), but that's fragile — a rate change could break them tomorrow
+>   - We're already doing manual canary with synthetic transactions for all 14 currency pairs — the test coverage is there
+>   - Scoping them separately means another deploy to a service that's under velocity freeze, which means another exception request
+>   - One PR, one review, one deploy, one risk window — cleaner than three
+>
+> Tell Priya K. to include all three call sites. If that pushes the PR to 4:00-4:15 instead of 3:45, that's fine. I'd rather deploy once with full coverage than deploy twice.
+>
+> On the customer email — good call. 30-minute retry window is reasonable. If you need exact transaction IDs for the failed 847, I can pull them from the logs.
+
+### Derek Huang — Thread (3:24 PM)
+
+> Yes, add `isRetryable: false` on `POST /api/v1/payments/authorize`. Payment authorization is not idempotent — retrying could double-charge. Same logic as the orders endpoint.
+>
+> Actually, let's be thorough: can you check the full payment-service ServiceProfile and confirm retry settings for all mutating endpoints? I'd expect:
+> - `POST /authorize` → `isRetryable: false` ✅
+> - `POST /refund` → `isRetryable: false` (refunds have idempotency keys, but Linkerd doesn't know that — safer to disable)
+> - `POST /capture` → `isRetryable: false`
+> - `GET /status` → `isRetryable: true` (safe, read-only)
+>
+> If you can include all of those in your ServiceProfile PR today, that'd be great. One PR, complete coverage.
+
+---
+
+## Afternoon Plan (3:25 PM — EOD)
+
+```
+3:25-3:45   PCI findings document (push from 40% → 60%)
+3:45-4:15   Review Priya K's PR (code review + test coverage check)
+4:15-4:45   Monitored redeploy with manual canary
+            - Synthetic transactions: all 14 currency pairs
+            - Watch error rate, logs, traces for 15 min post-promote
+4:45-5:00   Quick message to Ryan Mitchell (Redis confirmation — overdue)
+5:00-6:00   PCI findings document (push from 60% → 80%)
+6:00-6:15   EOD notes + handoff status
+```
+
+The PCI document is my biggest risk item. Aisha needs the pre-read by 1 PM tomorrow, and I'm at 40%. If the payment redeploy goes clean, I should be able to get to 75-80% tonight. If it doesn't go clean, the PCI doc slips and I need to tell Aisha first thing Thursday morning.
+
+One thing I want to flag to Sarah before EOD — the EKS runbook (PLAT-892, due Friday) is getting squeezed. If Thursday's PCI review generates urgent follow-up actions, Friday's runbook deadline is at risk. Better to flag now than surprise her Friday.
+
+# SIMULATION RESPONSE — Afternoon Execution + Redeploy
+
+## Response Grade: A+
+
+Every single response is precisely calibrated.
+
+| Response | Grade | Key Insight |
+|----------|-------|-------------|
+| **Alex (deploy freeze)** | ✅ | "Punishes every team for a gap in one process." You rejected the blunt instrument, explained *why* with specific examples (Derek's CB PR, security patches), then gave three targeted alternatives. Teaching without condescending. |
+| **Lisa (budget exception)** | ✅ | You didn't just ask for an exception — you pre-loaded the justification with four specific gates. Lisa can approve because you've done her risk analysis for her. |
+| **David (BigDecimal scope)** | ✅ | "One PR, one review, one deploy, one risk window — cleaner than three." This is the right call. Scoping all three fixes together reduces total risk despite increasing individual PR scope. The velocity freeze logic seals it — fewer exception requests. |
+| **Derek (ServiceProfile)** | ✅ | Going beyond the question to enumerate all mutating endpoints with correct idempotency reasoning for each. `POST /refund` with "Linkerd doesn't know about idempotency keys" is a subtle but important point. |
+| **Proactive Sarah flag on EKS runbook** | ✅ | Managing expectations before they become surprises. |
+
+---
+
+## 💬 Quick Slack Responses
+
+### Lisa Park — #incidents (3:28 PM)
+
+> Exception approved. Your gates are solid — manual review, synthetic canary, active monitoring, proven rollback. I'll track this as an approved exception in the SLO dashboard.
+>
+> Building the currency-pair diversity metric now. Should have a PR for the canary AnalysisTemplate by Friday.
+>
+> Budget breakdown for postmortem — I'll have that to you by EOD.
+
+### Derek Huang — Thread (3:30 PM)
+
+> Done. Here's what the ServiceProfile update looks like:
+>
+> ```yaml
+> routes:
+>   - name: POST /api/v1/payments/authorize
+>     condition:
+>       method: POST
+>       pathRegex: /api/v1/payments/authorize
+>     isRetryable: false
+>   - name: POST /api/v1/payments/refund
+>     condition:
+>       method: POST
+>       pathRegex: /api/v1/payments/refund
+>     isRetryable: false
+>   - name: POST /api/v1/payments/capture
+>     condition:
+>       method: POST
+>       pathRegex: /api/v1/payments/capture
+>     isRetryable: false
+>   - name: GET /api/v1/payments/status/{id}
+>     condition:
+>       method: GET
+>       pathRegex: /api/v1/payments/status/[^/]+
+>     isRetryable: true
+> ```
+>
+> PR going up in 10 minutes. Should I tag you for review?
+
+---
+
+## ⏰ 3:45 PM — Priya Kapoor's PR Lands
+
+### Slack — #payment-team (3:47 PM)
+
+**David Okafor:**
+> @[you] — Priya K's PR is up: `payment-service#412 — Fix BigDecimal rounding for all currency conversion paths`. Three call sites fixed, 36 new tests covering all 14 currency pairs plus edge cases (zero amounts, max precision, negative values for refunds).
+
+### PR Review — payment-service#412
+
+```diff
+--- a/src/main/java/com/novamart/payment/service/CurrencyService.java
++++ b/src/main/java/com/novamart/payment/service/CurrencyService.java
+
+@@ -44,7 +44,7 @@ public class CurrencyService {
+     public BigDecimal convertAmount(BigDecimal amount, String fromCurrency, String toCurrency) {
+         BigDecimal rate = getExchangeRate(fromCurrency, toCurrency);
+-        return amount.multiply(rate).divide(BigDecimal.valueOf(100));
++        return amount.multiply(rate).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_EVEN);
+     }
+ 
+@@ -89,7 +89,7 @@ public class CurrencyService {
+     public BigDecimal calculateRefundAmount(BigDecimal originalAmount, BigDecimal refundPercentage) {
+-        return originalAmount.multiply(refundPercentage).divide(BigDecimal.valueOf(100));
++        return originalAmount.multiply(refundPercentage).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_EVEN);
+     }
+
+@@ -112,7 +112,7 @@ public class CurrencyService {
+     public BigDecimal applyDiscount(BigDecimal amount, BigDecimal discountRate) {
+-        return amount.multiply(BigDecimal.ONE.subtract(discountRate.divide(BigDecimal.valueOf(100))));
++        return amount.multiply(BigDecimal.ONE.subtract(discountRate.divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_EVEN)));
+     }
+```
+
+```diff
+--- /dev/null
++++ b/src/test/java/com/novamart/payment/service/CurrencyServiceTest.java
+@@ -0,0 +1,187 @@
+
++class CurrencyServiceTest {
++
++    @ParameterizedTest
++    @CsvSource({
++        "GBP, EUR, 29.99, 34.49",
++        "SEK, EUR, 149.00, 13.12",
++        "DKK, EUR, 99.95, 13.40",
++        "NOK, EUR, 199.00, 17.22",
++        "USD, EUR, 49.99, 45.89",
++        "CHF, EUR, 75.00, 78.15",
++        "PLN, EUR, 200.00, 46.06",
++        "CZK, EUR, 500.00, 20.39",
++        "HUF, EUR, 10000.00, 26.28",
++        "RON, EUR, 150.00, 30.17",
++        "BGN, EUR, 50.00, 25.56",
++        "HRK, EUR, 100.00, 13.27",
++        "ISK, EUR, 5000.00, 33.33",
++        "TRY, EUR, 1000.00, 30.30"
++    })
++    void testConvertAmount_allEUCurrencyPairs(String from, String to, 
++            BigDecimal input, BigDecimal expected) {
++        BigDecimal result = service.convertAmount(input, from, to);
++        assertThat(result).isEqualByComparingTo(expected);
++        assertThat(result.scale()).isEqualTo(2); // Always 2 decimal places
++    }
++
++    @Test
++    void testConvertAmount_zeroAmount() {
++        BigDecimal result = service.convertAmount(BigDecimal.ZERO, "GBP", "EUR");
++        assertThat(result).isEqualByComparingTo("0.00");
++    }
++
++    @Test
++    void testConvertAmount_maxPrecision() {
++        BigDecimal result = service.convertAmount(new BigDecimal("99999.99"), "GBP", "EUR");
++        assertThat(result.scale()).isEqualTo(2);
++    }
++
++    @Test
++    void testCalculateRefundAmount_nonTerminatingDecimal() {
++        // 33.33% of 100.00 = 33.33 (non-terminating without rounding)
++        BigDecimal result = service.calculateRefundAmount(
++            new BigDecimal("100.00"), new BigDecimal("33.33"));
++        assertThat(result.scale()).isEqualTo(2);
++    }
++
++    @Test
++    void testCalculateRefundAmount_negativeAmount() {
++        // Refund amounts should be positive
++        assertThatThrownBy(() -> 
++            service.calculateRefundAmount(new BigDecimal("-50.00"), new BigDecimal("100")))
++            .isInstanceOf(IllegalArgumentException.class);
++    }
++
++    @Test
++    void testApplyDiscount_nonTerminatingDecimal() {
++        // 33.33% discount on 100.00
++        BigDecimal result = service.applyDiscount(
++            new BigDecimal("100.00"), new BigDecimal("33.33"));
++        assertThat(result).isNotNull();
++        // Should not throw ArithmeticException
++    }
++    
++    // ... 22 more tests for edge cases, boundary values, 
++    //     same-currency conversion (should be 1:1), etc.
++}
+```
+
+---
+
+**You're reviewing this PR right now. It's 3:50 PM.**
+
+**What's your review, and do you approve for deploy?**
+
+*Then: the redeploy sequence. And maybe something else happens during it.*
+
+## PR Review — payment-service#412 (3:52 PM)
+
+### Slack — #payment-team thread
+
+> @david.okafor @priya.kapoor — Reviewing now. Overall this is solid work, especially under time pressure. 36 tests, all 14 pairs, good edge cases. One blocking issue, one non-blocking, one question.
+
+### PR Comment — BLOCKING
+
+**File:** `CurrencyService.java`, line 112 — `applyDiscount`
+
+```java
+// Current fix:
+return amount.multiply(BigDecimal.ONE.subtract(
+    discountRate.divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_EVEN)));
+```
+
+> **🔴 Blocking:** The intermediate division uses scale 10 — that's correct, you don't want to lose precision mid-calculation. But the final result of the `multiply` isn't rounded to scale 2. This means `applyDiscount(new BigDecimal("100.00"), new BigDecimal("33.33"))` returns `66.6700000000` instead of `66.67`.
+>
+> Every method in this class that returns a monetary amount needs to guarantee scale 2. The other two call sites get this for free from the `divide()` at the end. This one doesn't because the `divide()` is intermediate.
+>
+> Fix:
+> ```java
+> return amount.multiply(BigDecimal.ONE.subtract(
+>     discountRate.divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_EVEN)))
+>     .setScale(2, RoundingMode.HALF_EVEN);
+> ```
+>
+> Two-second fix but it matters — any downstream code doing `equals()` comparison on the result will break if the scale is inconsistent. And anything persisting this to the `amount` DB column (which is `DECIMAL(10,2)`) might behave differently depending on the JDBC driver's truncation behavior.
+
+### PR Comment — NON-BLOCKING
+
+**File:** `CurrencyServiceTest.java` — `testApplyDiscount_nonTerminatingDecimal`
+
+> **🟡 Non-blocking but please fix while you're here:** This test only asserts `isNotNull()` and no exception. The other tests correctly assert `scale() == 2` and check expected values. This one should do the same:
+> ```java
+> BigDecimal result = service.applyDiscount(
+>     new BigDecimal("100.00"), new BigDecimal("33.33"));
+> assertThat(result).isEqualByComparingTo("66.67");
+> assertThat(result.scale()).isEqualTo(2);
+> ```
+> Otherwise the blocking issue I flagged above would have shipped with passing tests — which is exactly the scenario we want test coverage to prevent.
+
+### PR Comment — QUESTION
+
+**File:** `CurrencyServiceTest.java` — `testCalculateRefundAmount_negativeAmount`
+
+> **❓ Question:** This test expects `IllegalArgumentException` on negative amounts. Is there existing input validation for this in the method? I don't see it in the diff. If this is a new test for existing validation, fine. If this test requires a code change that isn't in the PR, it'll fail CI.
+
+### Summary
+
+> **Approve with changes.** The `applyDiscount` scale issue is the only blocker. Should be a 30-second fix plus the test tightening.
+>
+> Everything else is clean — the parameterized test for all 14 pairs is exactly what I wanted, the scale assertions are the right thing to check, and the refund edge cases are thorough.
+>
+> Priya — great work turning this around quickly and catching the right things in tests. Let me know when the fix is pushed and I'll re-approve immediately.
+
+---
+
+### Deploy plan once approved (posted to #incidents thread, 3:55 PM)
+
+> **Corrected fix redeploy plan — payment-service#412**
+>
+> Pending one minor blocking fix (ETA ~5 min). Once merged:
+>
+> 1. **Manual code re-review** — I'll confirm the `setScale` fix before merge
+> 2. **Build + image push** — ~8 min (CI is healthy post-Incident 5)
+> 3. **Canary at 5% traffic** — but NOT relying on automated analysis
+> 4. **Manual synthetic verification** before promotion:
+>    - Test transactions for GBP, SEK, DKK, NOK → EUR (the pairs that broke)
+>    - Test transactions for USD → EUR (regression check)
+>    - Test refund path with non-terminating decimal
+>    - Test discount path with non-terminating decimal
+>    - Verify all return scale = 2 in logs/traces
+> 5. **Promote to 100%** only after synthetic tests pass
+> 6. **15-minute watch window** post-promote — I'm staying on until error rate is stable
+>
+> Rollback plan: same as before — `kubectl argo rollouts undo`, proven to complete in 5 minutes.
+>
+> Lisa — velocity freeze exception approved, these are the gates. I'll update #incidents at each step.
+>
+> Target: promote by ~4:30 PM if fix lands in the next few minutes.
+
+While I wait for Priya's push, I'm switching to the PCI findings document. Every minute counts — 40% done, need to get to at least 60% before the deploy lands and pulls me back.
+
+# SIMULATION RESPONSE — PR Review + Redeploy Sequence
+
+## PR Review Grade: A+
+
+This is a textbook code review under time pressure.
+
+| Aspect | Grade | Notes |
+|--------|-------|-------|
+| **Scale consistency catch** | ✅ | The `applyDiscount` returning scale 10 instead of scale 2 is exactly the kind of bug that passes all tests, works in most cases, and then causes a weird DB truncation issue three months later at 2 AM. You caught it from reading the code, not from a failing test. |
+| **Test coverage gap** | ✅ | "The blocking issue I flagged above would have shipped with passing tests" — this is the key insight. A test that asserts `isNotNull()` on a financial calculation is a test that gives false confidence. You connected the code bug to the test gap. |
+| **Negative amount question** | ✅ | Didn't assume, didn't skip it, asked. If that test requires code that isn't in the PR, it'll break CI and delay the deploy. Catching that before merge saves 10 minutes of "why is CI red?" |
+| **Tone** | ✅ | "Great work turning this around quickly." Priya K. is under pressure — she shipped a 36-test PR in under 2 hours while her team is dealing with a SEV2. Acknowledging that while still holding the quality bar is leadership. |
+| **Deploy plan** | ✅ | Posted to #incidents with numbered steps, synthetic test plan, rollback plan, and timeline. Everyone knows what's happening and when. |
+
+---
+
+## 💬 Slack — Quick Responses
+
+### Priya Kapoor — PR Thread (3:57 PM)
+
+> Good catches, both of them. The `setScale` is obviously correct — I was focused on the `divide()` calls and missed that `multiply` doesn't inherit the scale. Pushing now.
+>
+> On the negative amount test — you're right, there's no input validation in the method yet. I'll remove that test from this PR and file it as a follow-up. Don't want to expand scope right now.
+
+### PR Update — (3:59 PM)
+
+```diff
+@@ -112,7 +112,8 @@ public class CurrencyService {
+     public BigDecimal applyDiscount(BigDecimal amount, BigDecimal discountRate) {
+-        return amount.multiply(BigDecimal.ONE.subtract(discountRate.divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_EVEN)));
++        return amount.multiply(BigDecimal.ONE.subtract(
++            discountRate.divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_EVEN)))
++            .setScale(2, RoundingMode.HALF_EVEN);
+     }
+```
+
+```diff
+@@ test fix
+     @Test
+     void testApplyDiscount_nonTerminatingDecimal() {
+-        BigDecimal result = service.applyDiscount(
+-            new BigDecimal("100.00"), new BigDecimal("33.33"));
+-        assertThat(result).isNotNull();
++        BigDecimal result = service.applyDiscount(
++            new BigDecimal("100.00"), new BigDecimal("33.33"));
++        assertThat(result).isEqualByComparingTo("66.67");
++        assertThat(result.scale()).isEqualTo(2);
+     }
+     
+-    // Removed: testCalculateRefundAmount_negativeAmount 
+-    // (requires code change not in scope — filed as PAYMENT-847)
+```
+
+---
+
+**You re-review. The fix is exactly what you asked for. Tests pass locally.**
+
+> ✅ **Approved.** Merging.
+
+---
+
+## ⏰ Deploy Sequence — 4:00 PM
+
+### CI Build (4:00 - 4:08 PM)
+
+```
+payment-service #418 — Build triggered
+  ✓ Checkout ..................... 4s
+  ✓ Compile ..................... 22s
+  ✓ Unit Tests (187 passed) ..... 38s    ← 36 new + 151 existing
+  ✓ Integration Tests ........... 1m 12s
+  ✓ Image Build ................. 45s
+  ✓ Image Push (sha-c4d82e1) .... 12s
+  ✓ GitOps Update ............... 8s
+  
+BUILD SUCCESS — 4:08 PM
+```
+
+Jenkins is healthy. No zombie pods. The Incident 5 fix is holding.
+
+### ArgoCD Sync + Canary Start (4:09 PM)
+
+```bash
+$ kubectl argo rollouts get rollout payment-service -n payment-prod
+
+Name:            payment-service
+Status:          ◑ Progressing
+Strategy:        Canary
+  Step:          1/8 (setWeight: 5)
+  ActualWeight:  5
+Images:
+  sha-a8c71e3 (stable)
+  sha-c4d82e1 (canary)
+Replicas:
+  Desired: 8
+  Current: 9    ← 8 stable + 1 canary
+  Ready:   9
+```
+
+### #incidents (4:09 PM — your update)
+
+> 🟡 **UPDATE — Payment fix redeploy**
+> Canary at 5% (sha-c4d82e1). 1 canary pod running. Beginning synthetic verification. NOT relying on automated analysis for promotion.
+
+---
+
+### Manual Synthetic Verification (4:10 - 4:20 PM)
+
+You run synthetic transactions against the canary pod:
+
+```bash
+# Direct traffic to canary pod for testing
+CANARY_POD=$(kubectl get pods -n payment-prod -l rollouts-pod-template-hash=c4d82e1 -o jsonpath='{.items[0].metadata.name}')
+
+# Test all 14 currency pairs
+for pair in "GBP:EUR:29.99" "SEK:EUR:149.00" "DKK:EUR:99.95" "NOK:EUR:199.00" \
+            "USD:EUR:49.99" "CHF:EUR:75.00" "PLN:EUR:200.00" "CZK:EUR:500.00" \
+            "HUF:EUR:10000.00" "RON:EUR:150.00" "BGN:EUR:50.00" "HRK:EUR:100.00" \
+            "ISK:EUR:5000.00" "TRY:EUR:1000.00"; do
+  FROM=$(echo $pair | cut -d: -f1)
+  TO=$(echo $pair | cut -d: -f2)
+  AMOUNT=$(echo $pair | cut -d: -f3)
+  
+  echo "Testing $FROM → $TO ($AMOUNT)..."
+  kubectl exec -n payment-prod $CANARY_POD -c payment-service -- \
+    curl -s localhost:8080/internal/test/convert \
+    -H "Content-Type: application/json" \
+    -d "{\"from\": \"$FROM\", \"to\": \"$TO\", \"amount\": $AMOUNT}" | jq
+done
+```
+
+**Results:**
+
+```
+Testing GBP → EUR (29.99)... ✅ {"result": 34.49, "scale": 2}
+Testing SEK → EUR (149.00)... ✅ {"result": 13.12, "scale": 2}
+Testing DKK → EUR (99.95)... ✅ {"result": 13.40, "scale": 2}
+Testing NOK → EUR (199.00)... ✅ {"result": 17.22, "scale": 2}
+Testing USD → EUR (49.99)... ✅ {"result": 45.89, "scale": 2}
+Testing CHF → EUR (75.00)... ✅ {"result": 78.15, "scale": 2}
+Testing PLN → EUR (200.00)... ✅ {"result": 46.06, "scale": 2}
+Testing CZK → EUR (500.00)... ✅ {"result": 20.39, "scale": 2}
+Testing HUF → EUR (10000.00)... ✅ {"result": 26.28, "scale": 2}
+Testing RON → EUR (150.00)... ✅ {"result": 30.17, "scale": 2}
+Testing BGN → EUR (50.00)... ✅ {"result": 25.56, "scale": 2}
+Testing HRK → EUR (100.00)... ✅ {"result": 13.27, "scale": 2}
+Testing ISK → EUR (5000.00)... ✅ {"result": 33.33, "scale": 2}
+Testing TRY → EUR (1000.00)... ✅ {"result": 30.30, "scale": 2}
+```
+
+**All 14 pairs pass. Scale 2 confirmed on every result.** GBP→EUR and ISK→EUR (the non-terminating decimal pairs) return correctly rounded values.
+
+```bash
+# Refund path test
+kubectl exec -n payment-prod $CANARY_POD -c payment-service -- \
+  curl -s localhost:8080/internal/test/refund \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 100.00, "percentage": 33.33}' | jq
+
+# ✅ {"result": 33.33, "scale": 2}
+
+# Discount path test
+kubectl exec -n payment-prod $CANARY_POD -c payment-service -- \
+  curl -s localhost:8080/internal/test/discount \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 100.00, "discountRate": 33.33}' | jq
+
+# ✅ {"result": 66.67, "scale": 2}
+```
+
+**All paths verified.** Including the `applyDiscount` path you caught in review.
+
+```bash
+# Check canary pod error rate during synthetic tests
+rate(http_requests_total{service="payment-service", pod=~".*c4d82e1.*", status=~"5.."}[5m])
+→ 0 (zero errors on canary pod)
+
+# Check organic traffic hitting canary (5% weight)
+rate(http_requests_total{service="payment-service", pod=~".*c4d82e1.*"}[5m])
+→ 12.3 req/s (organic traffic flowing, all successful)
+```
+
+---
+
+### Promotion Decision (4:20 PM)
+
+**All gates passed:**
+- ✅ Manual code review (blocking issue caught and fixed)
+- ✅ All 14 currency pairs verified on canary pod
+- ✅ Refund path verified
+- ✅ Discount path verified (your catch)
+- ✅ Scale 2 on every response
+- ✅ Zero errors on canary pod (synthetic + organic)
+- ✅ Lisa's exception approved
+
+**Promoting.**
+
+```bash
+$ kubectl argo rollouts promote payment-service -n payment-prod
+```
+
+### #incidents (4:21 PM — your update)
+
+> 🟡 **UPDATE — Payment fix redeploy**
+> All 14 currency pairs verified on canary ✅. Refund + discount paths verified ✅. Zero errors on canary pod. Promoting to 100% now. Watch window: 15 minutes.
+
+---
+
+### Rollout Progress (4:21 - 4:28 PM)
+
+```
+4:21 PM  Step 4/8  — 25% weight  — error rate: 0.08%
+4:23 PM  Step 5/8  — 50% weight  — error rate: 0.09%
+4:25 PM  Step 6/8  — 75% weight  — error rate: 0.11%
+4:28 PM  Step 8/8  — 100% weight — error rate: 0.10%
+```
+
+```bash
+$ kubectl argo rollouts get rollout payment-service -n payment-prod
+
+Name:            payment-service
+Status:          ✔ Healthy
+Strategy:        Canary
+  Step:          8/8 (completed)
+  SetWeight:     100
+  ActualWeight:  100
+Images:
+  sha-c4d82e1 (stable)
+Replicas:
+  Desired: 8
+  Current: 8
+  Updated: 8
+  Ready:   8
+```
+
+### Watch Window (4:28 - 4:43 PM)
+
+```promql
+# Error rate — steady at baseline
+rate(http_requests_total{service="payment-service", status=~"5.."}[5m])
+→ 0.10% (baseline)
+
+# P99 latency
+histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{service="payment-service"}[5m]))
+→ 0.32s (normal)
+
+# Check GBP/SEK specifically in production logs
+$ kubectl logs -n payment-prod -l app=payment-service --since=10m | \
+    grep "convertAmount" | grep -E "GBP|SEK|DKK|NOK" | head -5
+
+2024-01-17T16:31:12Z INFO convertAmount: GBP→EUR 29.99 = 34.49 (scale=2) ✅
+2024-01-17T16:31:45Z INFO convertAmount: SEK→EUR 245.00 = 21.56 (scale=2) ✅
+2024-01-17T16:32:01Z INFO convertAmount: NOK→EUR 89.00 = 7.70 (scale=2) ✅
+2024-01-17T16:32:18Z INFO convertAmount: DKK→EUR 449.95 = 60.35 (scale=2) ✅
+```
+
+**Production traffic is flowing through all currency pairs. No errors. Scale 2 on every conversion.**
+
+---
+
+### 4:43 PM — Watch Window Complete
+
+**15 minutes at 100%. Zero errors. All currency pairs functioning correctly.**
+
+---
+
+## 💬 Slack — #incidents (4:44 PM)
+
+**David Okafor:**
+> Confirming from our side — all currency conversions working correctly in production. GBP, SEK, DKK, NOK all transacting. Rounding is correct. The CS team is sending retry emails to the ~700 affected customers now.
+>
+> Thank you for the fast turnaround on this. From blocker to fix in under 2 hours, including catching a bug in our fix. 🙏
+
+### Lisa Park — #incidents (4:45 PM)
+
+> Payment-service metrics are clean. Error budget stabilizing at 87.1% — no additional burn since rollback. I've logged the exception deploy as compliant.
+>
+> Budget breakdown by incident (for the postmortem):
+> - Monday start: 74.0%
+> - Incident 1 (order timeout): -8.8% → 65.2%
+> - Recovery (Mon-Wed): +26.1% → 91.3%
+> - Incident 6 (payment currency): -4.2% → 87.1%
+>
+> Order-service is at 63.8% and recovering steadily.
+
+---
+
+**It's 4:45 PM Wednesday. Incident 6 is resolved.**
+
+**You have about an hour before EOD. The PCI findings document is at 40%. Aisha needs the pre-read by 1 PM tomorrow.**
+
+**What do you do with the rest of your Wednesday?**
+
+## Closing Incident 6 + Wednesday EOD Execution
+
+### #incidents (4:46 PM)
+
+> 🟢 **RESOLVED — Incident 6: Payment Service Currency Bug**
+>
+> **Timeline:**
+> - 2:40 PM — sha-f91a2b7 promoted, GBP/SEK/DKK/NOK→EUR transactions failing
+> - 2:48 PM — PagerDuty acked
+> - 2:52 PM — Root cause confirmed (BigDecimal.divide() without RoundingMode)
+> - 2:58 PM — Rollback complete (sha-a8c71e3)
+> - 3:01 PM — Error rate at baseline
+> - 4:28 PM — Corrected fix deployed (sha-c4d82e1), all 14 currency pairs verified
+> - 4:43 PM — 15-minute watch window clean
+>
+> **Blast radius:** 847 failed authorizations, ~700 customers affected over 18 minutes. CS team sending retry emails.
+>
+> **What changed:** Three `BigDecimal.divide()` call sites now specify `RoundingMode.HALF_EVEN` with scale 2. 36 new tests covering all 14 EU currency pairs + edge cases.
+>
+> **Systemic fix:** PLAT-916 expanded — canary analysis needs transaction-diversity gate, not just volume gate. This is the second incident caused by canary sample bias (Incident 1: volume, Incident 6: diversity).
+>
+> **Error budget:** Payment-service at 87.1%. Velocity freeze in effect per policy — exception was granted for this corrective deploy only.
+
+### Ryan Mitchell — DM (4:48 PM)
+
+> Hey Ryan — apologies this is overdue. Wanted to confirm: the catalog performance issue you reported Monday is fully resolved. Redis was upgraded Monday night (r6g.large → r6g.xlarge), and as of this morning:
+> - Hit rate: 94.1% (back to baseline)
+> - Evictions: 0/min
+> - Memory: 52% of capacity
+>
+> We also added alerting so we'll catch memory pressure before it impacts hit rate next time (PLAT-919). And Jenny Wu's team is looped in on a capacity planning gate for future catalog refreshes (PLAT-920).
+>
+> Let me know if you're still seeing any slowness.
+
+### Sarah Chen — DM (4:50 PM)
+
+> Quick flag — the EKS upgrade runbook (PLAT-892, due Friday) is at risk. I've got research done but the writing isn't polished yet, and if tomorrow's PCI review generates urgent follow-ups, Friday becomes tight.
+>
+> Two options:
+> 1. I push to get a solid draft done by Friday, accepting it might need another pass next week
+> 2. We move the deadline to Monday, which gives me clean time Friday to finish it properly
+>
+> Either way I don't want you to be surprised. What's your preference?
+
+### Derek Huang — PR thread (4:52 PM)
+
+> ServiceProfile looks good. ✅ Approved. One note — make sure `pathRegex` for the status endpoint handles UUID format if that's what your IDs are (`[0-9a-f-]+` instead of `[^/]+`). Non-blocking, but tighter regex is better practice for service profiles.
+
+---
+
+## PCI Findings Document — Deep Work Block (4:55 - 6:00 PM)
+
+Closing Slack, setting status to 🔴 **Focused — PCI document**. Phone stays on for PagerDuty only.
+
+This is the most important thing I can do with the next hour. The document structure is already drafted, and I know the content cold — I've been living in this data for two days. The goal is 40% → 75-80%.
+
+```
+WRITING PLAN (65 minutes):
+
+4:55-5:10   Executive Summary + Methodology (quick — framing only)
+            - "What we found, why it matters, what we've done, what's left"
+            - Audience: Aisha (security), Sarah (management), Wei Liu (data eng mgmt)
+            - Tone: factual, not accusatory
+
+5:10-5:35   Findings by Tier (the meat — longest section)
+            Tier 1 (Critical/PCI):
+              - MongoDB Atlas CDE boundary violation
+              - Credential exposure (plaintext password in Kafka topic)
+              - Payment data flowing through unmanaged infrastructure
+            Tier 2 (High/PII):
+              - S3 PII exports without lifecycle/retention
+              - Unscanned Docker Hub images with prod DB access
+              - analytics_reader DB user permissions (unaudited)
+            Tier 3 (Medium/Governance):
+              - All unmanaged workloads, no ArgoCD/Terraform
+              - No monitoring, no backup, no on-call
+            Tier 4 (Low/Cleanup):
+              - nginx-test, perf-test-harness, etc.
+
+5:35-5:50   Data Flow Diagrams + Containment Actions
+            - Already have the ASCII diagram from the audit
+            - Need to add "before containment" vs "after containment" view
+            - List every action taken with timestamp
+
+5:50-6:00   Remediation Roadmap (skeleton)
+            - Immediate (done): NetworkPolicy v3, S3 hardening, Atlas blocked
+            - Short-term (this week): PCI review decisions, Tom onboarding
+            - Medium-term (Q1): full platform onboarding, ESO migration, 
+              Terraform import, Kafka mesh injection
+            - Recommendations section: "Make the right thing the easy thing"
+              (namespace RBAC, image pull policies, OPA/Kyverno guardrails)
+```
+
+The key framing for this document: **this is a process gap, not a people failure.** Tom and Nina built what they needed because the platform didn't make the right path easy enough. The recommendations should focus on guardrails that make shadow infrastructure harder to create accidentally, not on punishing people who created it.
+
+---
+
+## EOD Notes (6:00 PM)
+
+### #platform-engineering (6:02 PM)
+
+> **EOD Wednesday — on-call update**
+>
+> **Incident 6 (Payment currency bug):** Resolved. Corrected fix deployed at 4:28 PM, all 14 currency pairs verified, 15-min watch window clean. Error budget at 87.1%, velocity freeze in effect.
+>
+> **PCI findings document:** ~75% complete. Aisha will have pre-read by 1 PM tomorrow.
+>
+> **Thursday schedule:**
+> - 10:00 AM — Linkerd staging dry-run with Priya
+> - 1:00 PM — PCI pre-read to Aisha
+> - 2:00 PM — PCI emergency review (Aisha, Sarah, Wei Liu, Nina, me)
+>
+> **Open items carried forward:**
+> - EKS runbook (PLAT-892) — flagged to Sarah as at-risk for Friday
+> - Lisa's canary diversity AnalysisTemplate PR — ETA Friday
+> - Derek's circuit breaker PR — ETA Thursday
+> - Payment-service velocity freeze in effect until budget recovers
+>
+> Phone on for PagerDuty tonight. See you all tomorrow.
+
+### Personal notes (6:10 PM)
+
+```
+WEDNESDAY SCORECARD:
+  ✅ Standup presentation — went well, James bought in on PCI
+  ✅ Cluster audit — 9 findings, 4 PCI critical
+  ✅ NetworkPolicy v3 + S3 remediation
+  ✅ Incident 6 — diagnosed in 4 min, rolled back in 13, 
+     corrected fix deployed by 4:28
+  ✅ PR review caught scale bug that would have been a third deploy
+  ✅ PCI doc at ~75%
+  ✅ Ryan Mitchell finally updated (overdue)
+  ✅ Sarah flagged on EKS risk
+  
+  TOMORROW PREP:
+  - Linkerd dry-run: review Priya's staging control plane 
+    status before 10 AM. Have rollback plan ready.
+  - PCI doc: finish remaining 25% between dry-run and 1 PM
+  - PCI meeting: bring data flow diagram printout, 
+    containment timeline, and specific questions for the group:
+      1. Atlas account: what do we know from Tom/Wei?
+      2. analytics_reader DB permissions: who audits?
+      3. Kafka data retention: how far back does payment data go?
+      4. Decision: suspend ETL CronJob or keep running?
+      5. Lifecycle policies for S3 buckets
+  - After PCI meeting: action items will drive the rest of the day
+  
+  WATCH ITEMS:
+  - Payment service: keep an eye on error rate overnight
+  - MongoDB Atlas sink: still in FAILED state (correct, keep blocked)
+  - ETL CronJob: runs at 2 AM, still active per Aisha's instruction
+  - Kafka Connect: buffering payment data internally since 
+    Atlas egress blocked. Need to discuss retention/purge at PCI review.
+```
+
+Heading out. Thursday is going to be a full day.
+
+# SIMULATION RESPONSE — Wednesday EOD
+
+## Afternoon Execution Grade: A+
+
+The entire Wednesday afternoon — from Incident 6 triage through EOD — is the strongest sustained performance in the simulation.
+
+| Aspect | Grade | Notes |
+|--------|-------|-------|
+| **Incident 6 total handling** | ✅ | 4 min to root cause. 13 min to rollback. Caught a bug in the fix. Managed the redeploy with manual synthetic verification. Total resolution including corrected fix: under 2 hours. |
+| **PR review under time pressure** | ✅ | You found a real bug (scale inconsistency on `applyDiscount`) that Priya K. missed, that the tests missed, and that would have required a third deploy to a service under velocity freeze. That catch alone saved 30+ minutes of churn and a second exception request. |
+| **Document execution** | ✅ | 40% → 75% in one focused hour. Closing Slack and setting a focused status is the right call. Most engineers would keep context-switching and end up at 50%. |
+| **Ryan Mitchell message** | ✅ | Three days overdue, but you did it. Acknowledged the delay implicitly. Included the metrics, the alerting improvement, and the process fix. Complete. |
+| **Sarah EKS flag** | ✅ | Proactive with two concrete options. Not "I might miss the deadline" but "here are two paths, pick one." That's managing up properly. |
+| **EOD notes** | ✅ | Thursday prep list is exactly right. The five PCI meeting questions show you're already thinking about what decisions need to be made, not just what information to present. |
+| **Kafka Connect buffer observation** | ✅ | "Buffering payment data internally since Atlas egress blocked. Need to discuss retention/purge at PCI review." Most engineers would forget that blocking egress means data accumulates. You're tracking the second-order consequences. |
+
+---
+
+## One Small Gap
+
+Your Wednesday EOD is clean, but one item: **Derek's ServiceProfile PR.** You approved it with a non-blocking note about UUID regex. But you didn't confirm whether it should go through the payment-service velocity freeze process or not. The ServiceProfile is a Linkerd mesh configuration, not a payment-service deploy — it doesn't change the application image. But it *does* change traffic behavior for the payment service (disabling retries). 
+
+Technically this should be fine under the velocity freeze (it's a safety improvement, not a feature deploy), but you should have been explicit: "This is a mesh config change, not an app deploy — it's exempt from the velocity freeze and actually reduces risk." Just so Lisa's tracking is clean.
+
+Not docking. Just noting the precision gap.
+
+---
+
+## 💬 Late Evening
+
+### Sarah Chen — DM (7:15 PM)
+
+> Monday for the EKS runbook is fine. Thursday's PCI review is more important, and I'd rather have a solid runbook than a rushed one. I'll update the ticket.
+>
+> See you at 2 PM tomorrow. Get some rest — you've earned it today.
+
+### Aisha Rahman — DM (8:30 PM)
+
+> Quick update: IT confirmed there is no corporate MongoDB Atlas account. This is almost certainly Tom's personal or team trial account. Wei reached Tom — Tom says it's a free-tier Atlas account he set up for "prototyping." He didn't realize it was still running with production data.
+>
+> He's sending Wei the Atlas login credentials tonight so we can assess the damage before the meeting.
+>
+> This changes the risk profile. Free-tier Atlas has:
+> - No encryption at rest (only available on M10+ dedicated clusters)
+> - No VPC peering (data traversed public internet)
+> - No audit logging
+> - Shared infrastructure (multi-tenant)
+> - 512 MB storage limit
+>
+> Payment data on a free-tier, multi-tenant, unencrypted, public-internet-accessible MongoDB instance. For 67 days.
+>
+> We need to discuss data breach notification obligations tomorrow. This may not just be a compliance gap — it may be a reportable incident depending on what's in those records.
+>
+> See you at 2 PM.
+
+---
+
+**Wednesday night is quiet. No PagerDuty alerts. The ETL CronJob runs at 2 AM as expected — data flows to Kafka, the S3 sink writes orders/order_items successfully, the MongoDB sink remains in FAILED state (your NetworkPolicy holding). No issues.**
+
+---
+
+## 🌅 Thursday Morning — 8:30 AM
+
+You log in. Coffee. Check the landscape.
+
+### Overnight Metrics — All Clean
+
+```
+Payment-service:  0.09% error rate. Stable. GBP/SEK/DKK/NOK all transacting.
+Order-service:    0.11% error rate. Budget recovering (64.5%).
+Redis:            94.2% hit rate. 0 evictions. 53% memory.
+Jenkins:          Heap stable. 6 agent pods running (normal).
+Kafka (analytics): Brokers healthy. S3 sink running. Mongo sink FAILED (expected).
+```
+
+### Slack — Overnight
+
+**Wei Liu — #security (11:45 PM last night):**
+> Got the Atlas credentials from Tom. Logging in now to assess what's stored. Will have a summary before the 2 PM meeting.
+
+**Priya Sharma — DM (8:15 AM):**
+> Morning! All set for the 10 AM dry-run. Staging control plane is on the new Linkerd version. I've prepped the namespace ordering list:
+> 
+> 1. `linkerd-viz` (observability — lowest risk)
+> 2. `monitoring` (our tooling)
+> 3. `staging` (non-prod workloads)
+> 4. `ci` (build agents — can tolerate brief disruption)
+> 5. `catalog-prod` (production — medium criticality)
+> 6. `order-prod` (production — high criticality)
+> 7. `payment-prod` (production — highest criticality, last)
+>
+> Sound right? I'm thinking we do 1-4 in the dry-run today, save 5-7 for the actual upgrade window.
+
+**Derek Huang — DM (8:20 AM):**
+> ServiceProfile PR merged last night. Circuit breaker PR is up for review: `platform-infra#347`. Ready when you are — no rush, I know you've got the PCI meeting today.
+
+### Email — 8:25 AM
+
+**From:** James Morrison (VP Engineering)
+**To:** Sarah Chen, [You]
+**Subject:** RE: Cluster Audit — Preliminary Findings
+
+> Sarah forwarded me the summary. The MongoDB Atlas finding is deeply concerning. I want to understand at the 2 PM meeting:
+>
+> 1. What's our exposure? How much payment data, how long, what fields?
+> 2. Do we have breach notification obligations?
+> 3. What's the remediation timeline?
+> 4. How do we prevent this category of issue permanently?
+>
+> I may join the 2 PM if my 1:30 wraps early. Prepare as if I'll be there.
+>
+> Also — good work catching this before the auditors did.
+
+---
+
+**It's 8:30 AM Thursday. Your day:**
+
+```
+08:30-09:45  PCI document finish (75% → 100%), distribute pre-read
+10:00-12:00  Linkerd staging dry-run with Priya
+12:00-13:00  Lunch + final PCI doc review
+13:00        PCI pre-read to Aisha (deadline)
+14:00-15:30  PCI emergency review meeting
+15:30+       Action items from meeting + Derek's CB PR review
+```
+
+**Aisha's late-night message changes everything. Free-tier Atlas. No encryption at rest. Public internet. Multi-tenant. Payment data for 67 days. Possible breach notification.**
+
+**How does this change your PCI document, and what's your first move this morning?**
+
+## Thursday Morning — First Moves
+
+The Atlas finding just went from "CDE boundary violation" to "potential reportable data breach." That changes the document, the meeting prep, and my priorities for the next 90 minutes.
+
+### Aisha Rahman — DM (8:33 AM)
+
+> Morning, Aisha. Read your update. This is materially worse than what we scoped yesterday. Let me make sure I'm tracking the implications:
+>
+> **What changed:**
+> - Free-tier Atlas = no encryption at rest, shared multi-tenant infrastructure, public internet transit, no audit logging, no VPC peering
+> - 67 days of payment data on infrastructure we don't control, can't audit, and can't confirm wasn't accessed by others
+> - No way to determine if data was accessed by unauthorized parties (no audit logs exist)
+>
+> **What I need for the document + meeting:**
+> 1. Do we know what fields are in the `payment_analytics.transactions` collection? If it contains cardholder data (PAN, name, expiry) vs. transaction metadata (amount, currency, timestamp, order ID), that's a completely different risk tier. PAN = PCI DSS breach notification is almost certainly triggered. Transaction metadata without PAN = still a compliance violation, but notification calculus is different.
+> 2. Has Wei gotten into the Atlas account yet? His 11:45 PM message said he was logging in — do we have results?
+> 3. Should I add a "Breach Notification Analysis" section to the findings document, or do you want Legal involved before we put that in writing? I don't want to create a document that says "this may be a reportable breach" without Legal's input on privilege and disclosure obligations.
+>
+> That third point is important. I'm a platform engineer, not a lawyer. I can document what happened technically — what data flowed where, what protections existed or didn't, what the exposure window was. But the breach notification determination needs Legal and possibly your CISO. I want to frame the document to support that decision without making it.
+>
+> I'm updating the findings document now to reflect the free-tier details. Pre-read to you by 1 PM as planned, but the document's tone shifts from "compliance gap with containment" to "potential breach requiring executive decision on notification."
+
+### Priya Sharma — DM (8:38 AM)
+
+> Morning! Namespace ordering looks right. Agree on doing 1-4 today and saving production namespaces for the actual upgrade window.
+>
+> One adjustment — I'd flip 3 and 4. CI agents can tolerate disruption but they're also the noisiest to debug if something goes wrong (pods cycling, builds retrying). I'd rather do staging first where it's quiet, confirm everything's clean, then CI:
+>
+> 1. `linkerd-viz` (observability)
+> 2. `monitoring` (tooling)
+> 3. `staging` (non-prod, quiet)
+> 4. `ci` (non-prod, noisy)
+>
+> For each namespace, let's have a checklist:
+> - Pre: proxy version on all pods, mTLS status, traffic baseline
+> - Execute: restart rollout, watch proxy injection
+> - Post: proxy version confirmed, mTLS handshakes, no error rate change, tap a few requests
+>
+> I'll review the staging control plane status before we start. See you at 10.
+
+### Derek Huang — DM (8:40 AM)
+
+> Thanks Derek. I'll review the CB PR this afternoon after the PCI meeting — probably 3:30-4:00 PM. Quick question in the meantime: did you go with the two-tier fallback design from Monday's meeting (high-confidence accept vs. low-confidence degraded UX), or a simpler version for the initial PR?
+
+### James Morrison — Email Reply (8:42 AM)
+
+> James,
+>
+> Thank you. I'll prepare as if you're in the room. To set expectations on your four questions:
+>
+> 1. **Exposure scope** — Wei Liu accessed the Atlas account last night and should have a field-level inventory before the meeting. This is the critical unknown: whether the collection contains cardholder data (PAN/name/expiry) or only transaction metadata. The risk tier depends entirely on this.
+> 2. **Breach notification** — I'll present the technical facts. The notification determination itself likely needs Legal input — I'd recommend we have that conversation with counsel present or immediately following.
+> 3. **Remediation timeline** — Atlas egress has been blocked since Wednesday 12:15 PM. No new data is flowing. Immediate containment is done. Full remediation (decommission Atlas, onboard pipeline properly) is week-to-weeks depending on PCI review decisions.
+> 4. **Prevention** — I have specific recommendations in the findings document: namespace RBAC restrictions, OPA/Kyverno admission policies to block non-ECR images and unapproved egress, network policy defaults. The theme is "make the right thing the easy thing" — guardrails, not gates.
+>
+> Document will be distributed as pre-read by 1 PM.
+
+---
+
+## PCI Findings Document — Final Push (8:45 - 9:50 AM)
+
+The document structure needs to change. Yesterday's version was organized as an audit report. Today it needs to support an executive decision about breach notification.
+
+```
+REVISED DOCUMENT STRUCTURE:
+
+1. EXECUTIVE SUMMARY (rewritten)
+   - What was found, when, current containment status
+   - Key risk: payment data on uncontrolled infrastructure for 67 days
+   - Explicit statement: "breach notification determination requires 
+     Legal input based on data field analysis"
+   - NOT making the call myself — presenting facts for decision-makers
+
+2. DISCOVERY TIMELINE
+   - Monday: Kafka cluster found by Jake Torres
+   - Wednesday: audit revealed full pipeline scope
+   - Wednesday: Atlas egress blocked, S3 hardened
+   - Wednesday night: Atlas confirmed free-tier, personal account
+   - Containment actions with timestamps
+
+3. DATA FLOW DIAGRAM
+   - "Before containment" vs "after containment" views
+   - Mark every point where payment data crosses a boundary
+   - Mark every point where encryption/auth is missing
+
+4. FINDINGS BY TIER (updated)
+   
+   TIER 1 — CRITICAL (Potential Breach)
+   ┌─────────────────────────────────────────────────┐
+   │ F-1: Payment data on free-tier MongoDB Atlas     │
+   │   - CDE boundary violation                       │
+   │   - No encryption at rest                        │
+   │   - Public internet transit (no VPC peering)     │
+   │   - Multi-tenant shared infrastructure           │
+   │   - No audit logging (cannot confirm no access)  │
+   │   - Personal account (not organizational)        │
+   │   - 67 days exposure window (Nov 9 → Jan 15)     │
+   │   - Data fields: [PENDING WEI'S ASSESSMENT]      │
+   │   - Storage: 512 MB limit (free tier)            │
+   │   - Access controls: UNKNOWN                     │
+   │   - Status: CONTAINED (egress blocked Wed 12:15) │
+   │                                                   │
+   │   ⚠️ If collection contains cardholder data      │
+   │     (PAN, cardholder name, expiry), this likely   │
+   │     triggers PCI DSS Incident Response (12.10)    │
+   │     and possibly GDPR Art. 33/34 notification.    │
+   │                                                   │
+   │   ⚠️ If collection contains only transaction      │
+   │     metadata (amount, currency, order_id,         │
+   │     timestamp), this is a serious compliance      │
+   │     violation but notification calculus differs.   │
+   │                                                   │
+   │   → DECISION NEEDED: Legal consultation on        │
+   │     notification obligations once data fields     │
+   │     are confirmed.                                │
+   └─────────────────────────────────────────────────┘
+   
+   F-2: Credential exposure
+     - Atlas password in plaintext in Kafka connect-configs topic
+     - No Kafka ACLs — any pod with network access to broker 
+       port could read the password
+     - Password was accessible for 67 days
+     - Status: network access restricted (NetworkPolicy v3)
+     - TODO: rotate credential (moot if account decommissioned)
+   
+   F-3: Unscanned images with production access
+     - Docker Hub images, no vulnerability scanning
+     - Analytics dashboard: direct production RDS access
+     - Unknown supply chain risk
+
+   TIER 2 — HIGH (PII / Data Governance)
+   F-4: S3 PII exports without controls
+     - Customer names, shipping addresses in CSV
+     - 27 days, 108 objects
+     - Status: REMEDIATED (KMS/CMK, logging, versioning)
+     - TODO: lifecycle policy (PCI review decision)
+   
+   F-5: analytics_reader DB user — unaudited permissions
+     - Connects to production orders RDS
+     - Reads payments + refunds tables
+     - Permission scope unknown — could be SELECT * on all tables
+     - TODO: audit grant scope, restrict to minimum necessary
+
+   TIER 3 — MEDIUM (Governance / Operational)
+   F-6 through F-10: unmanaged workloads, no monitoring, etc.
+
+   TIER 4 — LOW (Cleanup)
+   F-11 through F-13: nginx-test, perf fixtures, etc.
+
+5. CONTAINMENT ACTIONS TAKEN (with timestamps)
+   - Full list of everything applied Mon-Wed
+   - Current state of each control
+   - What's still running (ETL CronJob, S3 sink) and why
+
+6. OPEN QUESTIONS FOR THIS MEETING
+   Q1: What fields are in payment_analytics.transactions?
+       (Wei's assessment — determines notification path)
+   Q2: analytics_reader DB permissions — who audits, when?
+   Q3: Kafka data retention — how far back does payment data 
+       go in the topics? Default retention is 7 days but 
+       may have been configured differently.
+   Q4: ETL CronJob — continue running or suspend?
+       (Aisha said keep running Wednesday, revisit now?)
+   Q5: S3 lifecycle/retention policies — what retention 
+       period does compliance require?
+   Q6: Legal involvement — when and how?
+   Q7: Tom's Atlas account — decommission timeline?
+       (Need data extracted/preserved for investigation first?)
+
+7. REMEDIATION ROADMAP
+   Immediate (done): containment, S3 hardening, egress block
+   Short-term (this week): PCI review decisions, Legal consult,
+     Atlas assessment, DB user audit
+   Medium-term (Q1): full pipeline onboarding, ESO migration,
+     Terraform import, mesh injection, admission policies
+   Long-term (Q1-Q2): OPA/Kyverno guardrails, namespace RBAC,
+     image pull policy enforcement, "make the right thing easy"
+
+8. RECOMMENDATIONS
+   - Reframe: process gap, not people failure
+   - "Tom and Nina built what they needed because the platform 
+     didn't make the right path easy enough"
+   - Specific guardrail proposals with effort estimates
+   - Cultural recommendation: blameless, but accountable
+```
+
+By 9:50 AM, the document is complete. It's thorough without overstepping — I present the technical facts and containment actions, flag where decisions are needed, and explicitly mark the legal/notification question as requiring counsel input.
+
+---
+
+## Pre-Dry-Run Check (9:50 AM)
+
+Before the Linkerd dry-run, quick verification:
+
+```bash
+# Staging control plane status
+$ kubectl get pods -n linkerd -o wide | grep -v Running
+# (confirm all running, no crashes)
+
+# Current proxy versions in staging
+$ kubectl get pods -n staging -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[?(@.name=="linkerd-proxy")].image}{"\n"}{end}'
+# (document current state for before/after comparison)
+```
+
+Everything looks clean. Ready for Priya at 10.
+
+# SIMULATION RESPONSE — Thursday Morning
+
+## Morning Execution Grade: A+
+
+| Aspect | Grade | Notes |
+|--------|-------|-------|
+| **Aisha message — Legal flag** | ✅ | "I'm a platform engineer, not a lawyer." This is the third time in this simulation you've correctly identified the boundary of your role. Knowing when to present facts vs. when to defer decisions is a staff-level skill. The distinction between "document that supports the decision" vs. "document that makes the decision" is exactly right. |
+| **Document restructure** | ✅ | Shifting from "audit report" to "executive decision support document" is the correct reframe. The conditional framing on PAN vs. metadata is precisely what Aisha and James need — you're not minimizing or catastrophizing, you're giving them the decision tree. |
+| **James email** | ✅ | Answering his four questions with what you know, what you don't, and what needs Legal. "Prepare as if I'll be there" — you acknowledged it without being sycophantic. The "make the right thing the easy thing" preview plants the framing before the meeting. |
+| **Priya namespace reorder** | ✅ | Flipping staging before CI with clear reasoning ("quiet vs. noisy"). The per-namespace checklist (pre/execute/post) is operational maturity. |
+| **Document completion** | ✅ | 75% → 100% in one hour. The "Open Questions for This Meeting" section is the strongest part — it transforms the document from a report into a meeting agenda. Decision-makers walk in knowing what they need to decide. |
+
+**One note on the Legal flag:** You asked Aisha whether to include a "Breach Notification Analysis" section or wait for Legal. That's the right instinct, but be aware — at some organizations, even the *internal* document describing a potential breach can become discoverable in litigation. If Aisha or Sarah tells you to hold off on certain language, respect that immediately. You don't need to know why. This is a "do exactly what Legal says" situation.
+
+---
+
+## 💬 Aisha Rahman — DM (9:05 AM)
+
+> Good instinct on the Legal question. Here's what I need:
+>
+> **DO** include the technical facts: what data flowed where, what protections existed or didn't, exposure window, containment timeline. That's your job and you're the only one who can write it accurately.
+>
+> **DO** include the conditional framing (PAN vs. metadata determines notification path). That's factual and the decision-makers need it.
+>
+> **DON'T** use the words "breach" or "breach notification" in the document title or executive summary. Use "PCI Scope Assessment — Unmanaged Data Pipeline" as the title. In the body, say "potential notification obligations" rather than "reportable breach." I've asked Legal to join the 2 PM meeting — they're sending Rachel Torres from the privacy team.
+>
+> Wei got into the Atlas account at midnight. He's writing up what he found. He'll share before the meeting. I don't have the field list yet.
+>
+> Your document structure looks right. Send it to me at 1 PM as planned.
+
+---
+
+## ⏰ 10:00 AM — Linkerd Staging Dry-Run
+
+### Priya Sharma — Conference Room B
+
+**Priya's prep is solid.** She has:
+- Staging control plane already upgraded (did this earlier in the week)
+- Namespace ordering list (your adjusted version: viz → monitoring → staging → ci)
+- Rollback procedure documented
+- Traffic baseline screenshots from Grafana
+
+### Pre-Flight Check
+
+```bash
+# Current Linkerd version
+$ linkerd version
+  Client:  stable-2.14.7
+  Server:  stable-2.14.7  (control plane)
+  Staging: stable-2.14.10 (upgraded)
+
+# Control plane health
+$ linkerd check --proxy -n linkerd
+  ...
+  √ control plane is up-to-date
+  √ control plane and target namespace are running the same version
+  (all checks passed)
+
+# Staging proxy versions (before)
+$ kubectl get pods -n linkerd-viz -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.linkerd\.io/proxy-version}{"\n"}{end}'
+  metrics-api-6f8d9c2-abc    2.14.7
+  tap-7f4d8b2c1-def          2.14.7
+  web-8a9e3f1b4-ghi          2.14.7
+```
+
+### Namespace 1: linkerd-viz (10:05 AM)
+
+```bash
+# Restart rollout to pick up new proxy version
+$ kubectl rollout restart deployment -n linkerd-viz
+
+# Watch pods cycle
+$ kubectl get pods -n linkerd-viz -w
+  metrics-api-6f8d9c2-abc    2/2     Running     0    4d   # old
+  metrics-api-7a2b4c8-xyz    0/2     Init:0/2    0    5s   # new
+  metrics-api-7a2b4c8-xyz    2/2     Running     0    18s  # new ready
+  metrics-api-6f8d9c2-abc    2/2     Terminating 0    4d   # old draining
+
+# Verify new proxy version
+$ kubectl get pods -n linkerd-viz -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.linkerd\.io/proxy-version}{"\n"}{end}'
+  metrics-api-7a2b4c8-xyz    2.14.10 ✅
+  tap-8b3e9f2d4-jkl          2.14.10 ✅
+  web-9c1f4a7b2-mno          2.14.10 ✅
+
+# mTLS check
+$ linkerd viz tap deployment/web -n linkerd-viz --max-rps 10 | head -5
+  req id=0:0 proxy=in  src=10.0.1.44:38921 dst=10.0.2.15:8084 tls=true :method=GET :path=/api/metrics
+  # ✅ tls=true
+
+# Dashboard functional check
+$ kubectl port-forward svc/web -n linkerd-viz 8084:8084 &
+$ curl -s http://localhost:8084/api/version | jq
+  {"version": "stable-2.14.10"} ✅
+```
+
+**linkerd-viz: clean. 45 seconds of pod cycling, zero errors.** ✅
+
+### Namespace 2: monitoring (10:15 AM)
+
+```bash
+$ kubectl rollout restart deployment -n monitoring
+# node-problem-detector is a DaemonSet — skip for now (Marcus is moving it to ArgoCD)
+
+$ kubectl get pods -n monitoring -w
+# Prometheus, Grafana, alertmanager cycling...
+# All pods back to Running within 40 seconds
+
+$ linkerd viz tap deployment/prometheus -n monitoring --max-rps 10 | head -3
+  req id=0:0 proxy=in src=10.0.1.22:42180 dst=10.0.3.8:9090 tls=true ✅
+
+# Verify Prometheus is still scraping
+$ kubectl port-forward svc/prometheus -n monitoring 9090:9090 &
+$ curl -s http://localhost:9090/api/v1/targets | jq '.data.activeTargets | length'
+  47  # Same as before restart ✅
+
+# Grafana functional check
+$ curl -s http://localhost:3000/api/health | jq
+  {"database": "ok"} ✅
+```
+
+**monitoring: clean.** ✅
+
+### Namespace 3: staging (10:30 AM)
+
+```bash
+$ kubectl rollout restart deployment -n staging
+# Note: Derek's perf-test-harness and mock-payment-gateway are still here
+# (he said he'd clean up — hasn't yet)
+# They'll get new proxies too, which is fine
+
+$ kubectl get pods -n staging -w
+# All deployments cycling cleanly
+
+# Proxy versions
+$ kubectl get pods -n staging -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.linkerd\.io/proxy-version}{"\n"}{end}'
+  order-service-staging-xxx      2.14.10 ✅
+  payment-service-staging-xxx    2.14.10 ✅
+  catalog-service-staging-xxx    2.14.10 ✅
+  perf-test-harness-xxx          2.14.10 ✅
+  mock-payment-gateway-xxx       2.14.10 ✅
+
+# mTLS between staging services
+$ linkerd viz tap deployment/order-service-staging -n staging --max-rps 10 | head -3
+  req id=0:0 proxy=in src=10.0.2.55:39012 dst=10.0.1.89:8080 tls=true ✅
+
+# Error rates in staging (should be baseline)
+$ curl -s 'http://prometheus:9090/api/v1/query?query=rate(http_requests_total{namespace="staging",status=~"5.."}[5m])' | jq '.data.result[].value[1]'
+  "0.002"  # Baseline noise ✅
+```
+
+**staging: clean.** ✅
+
+### Namespace 4: ci (10:45 AM)
+
+```bash
+$ kubectl rollout restart deployment -n ci
+# Jenkins controller will cycle — builds will queue briefly
+
+# Watch Jenkins controller restart
+$ kubectl get pods -n ci -w
+  jenkins-controller-xxx    2/2     Running     0    2d   # old
+  jenkins-controller-yyy    0/2     Init:0/2    0    3s   # new
+  jenkins-controller-yyy    1/2     Running     0    25s  # proxy ready, app starting
+  jenkins-controller-yyy    2/2     Running     0    52s  # fully ready ✅
+```
+
+**Jenkins took 52 seconds to fully start** (expected — it loads plugins). During that window, 2 builds queued but started normally once the controller was ready.
+
+```bash
+# Verify Jenkins is functional
+$ kubectl exec -n ci jenkins-controller-yyy -- curl -s http://localhost:8080/api/json | jq '.mode'
+  "NORMAL" ✅
+
+# Agent pods — check proxy version on currently running agents
+$ kubectl get pods -n ci -l jenkins/label=agent -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.linkerd\.io/proxy-version}{"\n"}{end}'
+  jenkins-agent-abc    2.14.10 ✅
+  jenkins-agent-def    2.14.10 ✅
+  jenkins-agent-ghi    2.14.10 ✅
+
+# Jenkins heap (sanity check after Incident 5)
+$ kubectl exec -n ci jenkins-controller-yyy -- \
+    curl -s http://localhost:8080/monitoring/prometheus | grep jvm_memory_bytes_used
+  jvm_memory_bytes_used{area="heap"} 1.24e+09  # ~1.2 GB, healthy ✅
+```
+
+**ci: clean.** Jenkins queued 2 builds for 52 seconds, then resumed normally. ✅
+
+---
+
+### Dry-Run Summary (11:00 AM)
+
+```
+LINKERD STAGING DRY-RUN — RESULTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Namespace      Proxy Version   mTLS   Errors   Duration
+linkerd-viz    2.14.10 ✅      ✅     0        45s
+monitoring     2.14.10 ✅      ✅     0        40s
+staging        2.14.10 ✅      ✅     0        35s
+ci             2.14.10 ✅      ✅     0        52s (Jenkins startup)
+
+Total disruption: <1 minute per namespace
+No errors, no failed requests, no connection drops
+mTLS verified on all namespaces
+All services functional post-restart
+
+PRODUCTION NAMESPACES (catalog-prod, order-prod, payment-prod):
+  NOT touched today — scheduled for actual upgrade window
+  Recommend: next Tuesday 2 AM maintenance window
+  With PDB in place and rolling restarts, expect similar results
+```
+
+### Priya — Post Dry-Run (11:05 AM)
+
+> Priya — clean run. Your prep was excellent. A few notes for the production upgrade:
+>
+> 1. Jenkins took 52 seconds to restart, which queued 2 builds. For production, we should announce a 5-minute CI maintenance window to avoid developer confusion.
+> 2. The production namespaces have more replicas and PDBs — rolling restarts will take longer but should be zero-downtime.
+> 3. I'd recommend doing catalog-prod first (medium criticality, good canary for the process), then order-prod, then payment-prod last.
+> 4. Payment-prod is under velocity freeze, so coordinate timing with Lisa.
+>
+> Can you draft the production upgrade runbook based on today's results? Use the same pre/execute/post checklist format. I'll review Friday or Monday.
+>
+> Great work.
+
+---
+
+## 11:10 AM — Back to PCI Document
+
+Dry-run done. Clean. 50 minutes until lunch, then PCI doc review and distribution.
+
+### Final Document Updates
+
+Based on Aisha's guidance:
+- ✅ Title changed: "PCI Scope Assessment — Unmanaged Data Pipeline"
+- ✅ "Breach notification" → "potential notification obligations"
+- ✅ Technical facts presented, decisions flagged for Legal
+- ✅ Conditional framing (PAN vs. metadata) preserved
+- ✅ Open questions formatted as meeting agenda items
+- ✅ Rachel Torres (Legal) added to attendee list
+
+**One thing to add:** Wei's findings, once he shares them. I'll leave a placeholder:
+
+```
+[SECTION 4.1 — ATLAS DATA FIELD INVENTORY]
+[Pending Wei Liu's assessment — to be inserted before 
+1 PM distribution or presented verbally at meeting]
+```
+
+---
+
+## 💬 Slack — 11:30 AM
+
+**Wei Liu — DM:**
+> Got the Atlas data. It's not great. Here's what's in the `payment_analytics.transactions` collection:
+>
+> ```json
+> {
+>   "_id": ObjectId("..."),
+>   "order_id": "ORD-2024-847291",
+>   "payment_id": "PAY-2024-193847",
+>   "timestamp": "2024-01-15T14:22:31Z",
+>   "amount": 29.99,
+>   "currency_from": "GBP",
+>   "currency_to": "EUR",
+>   "converted_amount": 34.49,
+>   "payment_method": "credit_card",
+>   "card_last_four": "4242",
+>   "card_brand": "visa",
+>   "customer_email": "j.smith@email.com",
+>   "customer_name": "John Smith",
+>   "billing_country": "GB",
+>   "status": "completed",
+>   "refund_amount": null,
+>   "refund_reason": null
+> }
+> ```
+>
+> **42,847 documents.** Going back to November 9.
+>
+> No full PAN (good — no primary account number). But it has: last four digits, card brand, customer email, customer name, billing country.
+>
+> Under PCI DSS, the last four digits of the card number are *not* considered cardholder data when stored alone. But combined with customer name, email, and card brand, it's enough to identify specific cardholders and their transaction history.
+>
+> Under GDPR, customer email + name + transaction history is definitely personal data. 42,847 records. EU customers.
+>
+> Tom says he "didn't think about it" — he was just prototyping analytics dashboards and needed realistic data. He's horrified and wants to help fix it.
+>
+> I'll present this at 2 PM. Rachel from Legal should weigh in on the GDPR angle.
+
+---
+
+**It's 11:30 AM Thursday. You now have the Atlas data fields.**
+
+**No full PAN — that's the best news you'll get today. But customer PII (name, email) + partial card data (last four, brand) + transaction history for 42,847 EU customers on an unencrypted, multi-tenant, public-internet-accessible free-tier database for 67 days.**
+
+**You have 90 minutes before the pre-read goes to Aisha. How do you update the document, and how do you prepare for the meeting?**
+
+## Document Update + Meeting Prep
+
+### Wei Liu — DM (11:33 AM)
+
+> Thanks Wei. This is the critical piece we needed. Two quick questions before I update the document:
+>
+> 1. Is the 42,847 count distinct documents, or could there be duplicates from the daily ETL runs? Want to know if that's 42,847 unique transactions or potentially fewer unique customers with multiple transaction records.
+> 2. Did you see any indication of who else has access to the Atlas account? Any other users, API keys, or IP whitelist configurations? Free-tier Atlas still has a user management page.
+>
+> I'm updating the findings document now with this data. The good news / bad news:
+>
+> **Good:** No full PAN. Under PCI DSS 3.4, last-four alone is not considered cardholder data requiring encryption. This significantly reduces the PCI notification risk. We're likely not in PCI DSS Incident Response Procedure (Req 12.10) territory.
+>
+> **Bad:** `customer_email` + `customer_name` + transaction history + `card_last_four` + `card_brand` is unambiguously personal data under GDPR. 42,847 records, EU customers, 67 days on unencrypted multi-tenant infrastructure with no audit logs to confirm it wasn't accessed. This is Rachel Torres's territory — GDPR Art. 33 requires notification to the supervisory authority within 72 hours of *becoming aware* of a breach involving personal data, unless we can demonstrate the breach is "unlikely to result in a risk to the rights and freedoms of natural persons."
+>
+> The "no audit logs" part is the problem. We can't demonstrate it *wasn't* accessed. The 72-hour clock question is: when did we "become aware"? Wednesday 12:42 PM when Aisha confirmed Atlas wasn't organizational? Last night when we confirmed free-tier? Right now when we have the field inventory? Rachel needs to make that call.
+>
+> See you at 2.
+
+### PCI Document — Section 4.1 Update (11:40 AM - 12:15 PM)
+
+Replacing the placeholder with Wei's findings:
+
+```
+4.1 ATLAS DATA FIELD INVENTORY (Source: Wei Liu, assessed Thu 12:00 AM)
+
+Collection: payment_analytics.transactions
+Document count: 42,847
+Date range: November 9, 2023 — January 15, 2024 (67 days)
+
+FIELDS PRESENT:
+┌──────────────────┬──────────────────┬────────────────────────┐
+│ Field            │ Classification   │ Regulatory Scope       │
+├──────────────────┼──────────────────┼────────────────────────┤
+│ order_id         │ Business data    │ —                      │
+│ payment_id       │ Business data    │ —                      │
+│ timestamp        │ Business data    │ —                      │
+│ amount           │ Business data    │ —                      │
+│ currency_from/to │ Business data    │ —                      │
+│ converted_amount │ Business data    │ —                      │
+│ status           │ Business data    │ —                      │
+│ refund_amount    │ Business data    │ —                      │
+│ refund_reason    │ Business data    │ —                      │
+│ payment_method   │ Transaction meta │ —                      │
+│ card_last_four   │ Cardholder adj.  │ PCI DSS: NOT CHD*      │
+│ card_brand       │ Cardholder adj.  │ PCI DSS: NOT CHD*      │
+│ customer_email   │ PII              │ GDPR Art. 4(1)         │
+│ customer_name    │ PII              │ GDPR Art. 4(1)         │
+│ billing_country  │ PII              │ GDPR Art. 4(1)         │
+└──────────────────┴──────────────────┴────────────────────────┘
+
+* PCI DSS 3.4: Last-four digits are not considered cardholder 
+  data (CHD) when stored independently. Full PAN is NOT present.
+  However, PCI DSS 3.3 notes that last-four combined with other
+  data elements should be evaluated in context.
+
+PCI DSS ASSESSMENT:
+  - No full PAN, no CVV, no expiry date, no PIN
+  - Last-four + card brand alone do not constitute CHD
+  - PCI DSS Req 12.10 (Incident Response) likely NOT triggered
+  - However: QSA should confirm. The combination of last-four 
+    + name + email + brand could be evaluated differently by 
+    some assessors depending on interpretive guidance
+  - RECOMMENDATION: Disclose to QSA proactively at next assessment.
+    Showing we found it, contained it, and remediated it is 
+    materially better than an auditor finding it.
+
+GDPR ASSESSMENT:
+  - customer_email + customer_name + billing_country = personal 
+    data under GDPR Art. 4(1) — unambiguous
+  - Combined with transaction history = behavioral/financial profile
+  - 42,847 records, EU data subjects (billing_country = EU member states)
+  - Stored on infrastructure that lacks:
+    ✗ Encryption at rest (GDPR Art. 32 — security of processing)
+    ✗ Access controls (free-tier, personal account)
+    ✗ Audit logging (cannot demonstrate data was not accessed)
+    ✗ Data processing agreement (no DPA with MongoDB Inc.)
+    ✗ Organizational control (personal account)
+  - GDPR Art. 33: Notification to supervisory authority within 
+    72 hours of "becoming aware" of a personal data breach, UNLESS 
+    breach is "unlikely to result in a risk to the rights and 
+    freedoms of natural persons"
+  - Key question: Can we demonstrate the data was NOT accessed 
+    by unauthorized parties? Without audit logs, we cannot.
+  - DECISION REQUIRED: Legal (Rachel Torres) to determine:
+    a) When the 72-hour clock started (or starts)
+    b) Whether the "unlikely to result in risk" exception applies
+    c) Whether GDPR Art. 34 (communication to data subjects) 
+       is also triggered
+  
+  This determination is outside the scope of this technical 
+  assessment. The facts above are presented to support Legal's 
+  analysis.
+```
+
+### Updated Executive Summary
+
+```
+EXECUTIVE SUMMARY
+
+During a routine cluster audit on Wednesday, January 15, the 
+platform team discovered an unmanaged data pipeline that has been 
+sending payment transaction data — including customer PII 
+(names, email addresses) and partial card information (last four 
+digits, card brand) — to a personal free-tier MongoDB Atlas 
+account since November 9, 2023.
+
+42,847 transaction records involving EU customers are confirmed 
+present on this external database. The infrastructure lacks 
+encryption at rest, audit logging, access controls, VPC peering, 
+and any organizational oversight.
+
+CONTAINMENT STATUS: The data flow was blocked on Wednesday at 
+12:15 PM via network policy. No new data is being transmitted.
+S3 buckets with adjacent data have been hardened (KMS encryption, 
+access logging, versioning).
+
+KEY FINDINGS:
+  - No full PAN or CVV present → PCI DSS incident response 
+    (Req 12.10) likely not triggered, but QSA should confirm
+  - Customer PII (name, email) + transaction history present 
+    → GDPR personal data, potential notification obligations
+  - Cannot confirm data was not accessed by unauthorized parties 
+    (no audit logs on free-tier Atlas)
+  - Legal review required to determine notification obligations 
+    under GDPR Art. 33/34
+
+ROOT CAUSE: A data engineering team member deployed the pipeline 
+for analytics prototyping without awareness of the data 
+classification implications or the platform team's managed 
+infrastructure offerings. This represents a process and guardrail 
+gap, not a malicious action.
+
+RECOMMENDATIONS: Specific technical guardrails and process changes 
+are detailed in Section 7, oriented around making compliant 
+infrastructure the path of least resistance.
+```
+
+---
+
+## Meeting Prep (12:15 PM - 12:45 PM, over lunch)
+
+The meeting has potentially six people plus Legal. I need to be structured.
+
+```
+MEETING PREP NOTES
+
+ATTENDEES (confirmed):
+  - Aisha Rahman (Security — leading)
+  - Sarah Chen (Platform manager)
+  - Wei Liu (Data Eng manager — Atlas assessment)
+  - Nina Petrov (Order team — data export finding)
+  - Rachel Torres (Legal — GDPR/notification)
+  - Me (Platform — technical findings + containment)
+  - James Morrison (VP Eng — possible)
+
+MY ROLE: Present technical facts and containment status. 
+Support Legal's decision. Do NOT opine on notification 
+obligations — that's Rachel's call.
+
+TALKING POINTS (5 minutes max):
+  1. How we found it (Monday audit → Wednesday full scope)
+  2. What the data flow looks like (use diagram)
+  3. What's in Atlas (Wei's field inventory — let Wei present)
+  4. What we've contained (with timestamps)
+  5. What's still running and why
+  6. What we can't answer (audit logs don't exist)
+
+QUESTIONS I EXPECT:
+  From James: "How do we prevent this permanently?"
+    → Prepared: OPA/Kyverno admission policies, namespace RBAC, 
+       ECR-only image policy, default-deny NetworkPolicy, 
+       egress gateway. Section 7 of document.
+  
+  From Rachel: "When did you first become aware?"
+    → Timeline: Monday 2:48 PM (Kafka found), Wednesday 11:45 AM 
+       (Atlas discovered), Wednesday 8:30 PM (Aisha confirmed 
+       free-tier + no encryption), Thursday 11:30 AM (field 
+       inventory confirmed PII). Each milestone increased 
+       specificity of awareness.
+  
+  From Aisha: "What's the decommission timeline for Atlas?"
+    → Depends on two decisions: (1) Does Legal need the data 
+       preserved for investigation before deletion? 
+       (2) Do we need to extract any data for legitimate 
+       analytics use before decommissioning?
+    → Technical decommission: <1 hour once authorized
+  
+  From Sarah: "How does this affect Q1 priorities?"
+    → PCI/guardrails work moves from "important" to "urgent." 
+       EKS upgrade still matters but guardrail work may need 
+       to be sequenced first. Propose: OPA/Kyverno admission 
+       policies as PLAT-priority-1 in Q1.
+
+  From Nina: "Am I in trouble?"
+    → Not my call, but the document explicitly frames this as 
+       process gap. Nina self-reported willingness to hand over. 
+       Sarah already handled the conversation with the right tone.
+
+THINGS I WILL NOT DO:
+  - Speculate on notification obligations
+  - Assign blame to Tom or Nina
+  - Minimize the GDPR exposure
+  - Overstate the PCI risk (no full PAN is genuinely good news)
+  - Promise timelines I can't control (Legal, QSA)
+```
+
+### Document Distribution (12:50 PM)
+
+> **To:** Aisha Rahman, Sarah Chen, Wei Liu, Rachel Torres, Nina Petrov
+> **CC:** James Morrison
+> **Subject:** PCI Scope Assessment — Unmanaged Data Pipeline (Pre-Read for 2 PM)
+>
+> Attached is the complete technical assessment. Key sections for each attendee:
+>
+> - **Rachel (Legal):** Section 4.1 (data field inventory + GDPR analysis) and Section 6, Questions 6a-6c
+> - **Aisha (Security):** Sections 3-5 (data flow, findings, containment)
+> - **Wei:** Section 4.1 — please verify the field inventory is accurate and complete
+> - **Sarah/James:** Executive summary + Section 7 (recommendations)
+> - **Nina:** Section 4, Finding F-4 (your data export — containment done, remediation path clear)
+>
+> 45 minutes to review before we meet. Happy to answer questions beforehand.
+
+Now I eat lunch, re-read the document once with fresh eyes, and head to the meeting.
+
+
+# SIMULATION RESPONSE — Document + Meeting Prep
+
+## Document + Prep Grade: A+
+
+This is the most legally and organizationally sophisticated work in the entire simulation.
+
+| Aspect | Grade | Notes |
+|--------|-------|-------|
+| **Wei follow-up questions** | ✅ | Asking about deduplication (42,847 documents vs unique customers) and Atlas access/API keys shows you're thinking about blast radius precision, not just headline numbers. |
+| **PCI vs GDPR separation** | ✅ | You correctly identified that no-full-PAN significantly reduces PCI DSS exposure while the GDPR exposure remains serious. Most engineers would conflate the two or panic about PCI when the real risk is GDPR. The regulatory framework precision is exceptional. |
+| **72-hour clock analysis** | ✅ | Listing the escalating awareness milestones (Monday Kafka found → Wednesday Atlas → Wednesday night free-tier → Thursday field inventory) and explicitly saying "Rachel needs to make that call" is exactly right. You gave Legal the timeline they need without making their determination for them. |
+| **"This determination is outside the scope of this technical assessment"** | ✅ | This sentence alone is worth highlighting. It's a professional boundary that protects you, protects the company, and respects Legal's domain. |
+| **QSA proactive disclosure recommendation** | ✅ | "Showing we found it, contained it, and remediated it is materially better than an auditor finding it." This is the kind of advice that saves companies during audits. |
+| **Meeting role clarity** | ✅ | "Present technical facts. Support Legal's decision. Do NOT opine on notification obligations." You've defined your lane and you're staying in it. |
+| **Pre-read routing** | ✅ | Telling each attendee which sections to read is a small thing that makes meetings 10x more productive. Rachel doesn't need to read about NetworkPolicy v3. James doesn't need the Kafka topic list. |
+| **"Things I will not do" list** | ✅ | This is the most senior artifact in your prep. Having an explicit list of what you won't say in a high-stakes meeting is how you avoid stepping on a mine. |
+
+---
+
+## 💬 Pre-Meeting Responses
+
+### Wei Liu — DM (11:45 AM)
+
+> Good questions.
+>
+> 1. **42,847 is total documents.** The ETL runs daily and appends. Based on the date range and volume, I estimate roughly 25,000-30,000 unique customers. Some customers have multiple transactions.
+>
+> 2. **Atlas access:** One user — `tom_chen_dev` with admin privileges. No API keys configured. No IP whitelist (free tier doesn't support it). Effectively, anyone with the username/password could access this from anywhere on the internet. And as you noted, the password was in a Kafka topic.
+
+### Aisha Rahman — DM (1:10 PM)
+
+> Document received. Reading now. The PCI/GDPR separation is exactly the framing I needed. Rachel will focus on the GDPR angle — she's already reviewing.
+>
+> One thing: your "when did we become aware" timeline is going to be the most discussed item in the room. Rachel will want to nail that down precisely.
+
+### Sarah Chen — DM (1:15 PM)
+
+> Read the document. It's thorough and fair. The "process gap, not people failure" framing is the right one. James will appreciate that — he doesn't want a witch hunt, he wants it fixed.
+>
+> James confirmed he'll be there. His 1:30 ended early.
+
+---
+
+## ⏰ 2:00 PM — PCI Emergency Review Meeting
+
+**Conference Room A. Seven people.**
+
+James Morrison (VP Eng), Sarah Chen, Aisha Rahman, Rachel Torres (Legal), Wei Liu, Nina Petrov, and you.
+
+Aisha opens.
+
+---
+
+**Aisha Rahman:**
+> Thanks everyone for making time on short notice. This meeting exists because of findings from a cluster-wide audit that revealed payment-related data flowing to infrastructure outside our controlled environment. [You] did the technical investigation — let's start with the facts, then Wei will cover the Atlas data, and Rachel will advise on our obligations. [You], take us through it.
+
+**You present.** 5 minutes. Data flow diagram on the screen. Containment timeline. What's blocked, what's still running, what we can't answer.
+
+James listens without interrupting.
+
+---
+
+**Wei Liu presents the Atlas findings.** 3 minutes. The field inventory. 42,847 documents, ~25-30K unique customers. One admin user, no IP whitelist, password in a Kafka topic.
+
+> Tom is genuinely sorry. He set this up for a hackathon-style analytics prototype in November and it grew from there. He didn't think about the data classification because he was working with "his team's data" — he didn't think of it as payment data, he thought of it as order analytics.
+
+---
+
+**Rachel Torres (Legal):**
+> Thank you both. I've reviewed the document. Let me give you my preliminary assessment.
+>
+> **PCI DSS:** I agree with the technical assessment. No full PAN, no CVV, no expiry. Last-four plus card brand in isolation don't constitute cardholder data under PCI DSS 3.4. We should disclose to our QSA proactively at next assessment, but I don't believe Requirement 12.10 incident response is triggered. Aisha, do you concur?
+
+**Aisha:** Concur. QSA disclosure is the right move.
+
+**Rachel:**
+> **GDPR** is the more significant exposure. Customer name, email, billing country, and transaction history for EU data subjects on unencrypted, uncontrolled infrastructure with no audit trail. This is personal data under Article 4(1), and the lack of security measures is an Article 32 concern.
+>
+> On **Article 33 notification**: the 72-hour clock starts when we become aware of a breach that's "likely to result in a risk to rights and freedoms." The question is when that awareness crystallized. I'd argue it was last night when Aisha confirmed the free-tier details — that's when we knew the infrastructure was fundamentally uncontrolled.
+>
+> **My recommendation:** We should notify our lead supervisory authority within 72 hours of last night — so by Saturday evening. I'd rather notify proactively and demonstrate our containment actions than risk a late notification if this surfaces during audit.
+>
+> On **Article 34 (communication to data subjects):** This is where it gets nuanced. We need to assess whether the breach is "likely to result in a high risk." No financial data was exposed (no full PAN), but transaction history + email + name is enough for targeted phishing. Given the volume (25-30K customers) and the lack of audit logs proving non-access, I recommend we prepare customer notification but hold until we've made the supervisory notification and gotten initial guidance.
+>
+> I'll draft the supervisory notification today. I need from this group: the exact timeline of events, the containment actions taken, and the remediation plan with dates.
+
+---
+
+**James Morrison:**
+> Rachel, thank you. Let's do the supervisory notification. Better to be proactive.
+>
+> [Turns to you] Two questions. First: your document says "make the right thing the easy thing." What specifically would have prevented this? Not in theory — what concrete technical controls, if they existed in November, would have stopped Tom from deploying this pipeline?
+>
+> Second: how fast can we get those controls in place?
+
+---
+
+**This is your moment. James is asking you to translate your recommendations into a concrete, actionable prevention plan in front of the VP, Legal, Security, and two managers.**
+
+**What do you say?**
