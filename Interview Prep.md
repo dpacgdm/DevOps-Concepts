@@ -1,6 +1,4 @@
----
-
-ROUND 0: PHONE SCREEN — BREADTH CHECK
+# ROUND 0: PHONE SCREEN — BREADTH CHECK
 
 **Interviewer:** Senior SRE (Screening)
 **Duration:** 30 minutes
