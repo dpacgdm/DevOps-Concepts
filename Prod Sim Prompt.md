@@ -919,3 +919,594 @@ MONDAY:
 **The room is waiting. Your phone is buzzing. Three seconds.**
 
 **Go.**
+
+# HANDOFF DOCUMENT v4 — ADDENDUM (Things to Add)
+
+*All content below is NEW since the v4 document was created. Add to the respective sections.*
+
+---
+
+## ADD TO: SIMULATION TIMELINE (after "14:04 User's phone buzzes")
+
+```
+THURSDAY (continued)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+14:04  Phone buzzes: ETL job failure alert. User pockets phone,
+       does not break eye contact with James. Answers questions.
+14:04  ANSWERS JAMES — Five concrete prevention controls:
+       1. Image source restriction (OPA/Kyverno, reject non-ECR) — 1-2 weeks
+       2. Namespace RBAC (platform-provisioned templates) — 1-3 weeks
+       3. Default-deny NetworkPolicy on all namespaces — 2-3 weeks
+       4. Egress gateway (single choke point for outbound) — 4-6 weeks
+       5. Drift detection (weekly scan for non-ArgoCD workloads) — Monday
+       Key line: "If we only build walls without building a door, 
+       the next person will climb the wall."
+14:10  Nina speaks up — validates "make the right thing easy" framing.
+       "The right way would have been a two-week platform onboarding 
+       process for a 50-line CronJob. So I deployed directly."
+       Sarah: "The platform team hasn't built the self-service tooling."
+14:15  James: "I don't just want guardrails. I want the self-service 
+       catalog Nina's describing."
+14:18  Rachel: needs specific dates (not ranges) by 10 AM Friday.
+       "Evidence of completion" column for each control.
+14:20  Wei: transition period needed for Tom's team (3 analysts depend 
+       on data daily). Can S3 sink keep running?
+14:22  User confirms S3 sink running, but hedges: "I should confirm 
+       it's still healthy after encryption changes. Let me verify 
+       within the hour."
+14:24  Aisha confirms: containment posture stays. ETL CronJob runs, 
+       Atlas stays blocked.
+14:25  User asks Nina directly: "What would 'easy' look like?"
+       Nina: "A template I can clone, fill in source/destination, 
+       submit a PR. Deployed within a day or two."
+14:28  Revised timeline presented to James with self-service factored in:
+       - Drift detection: Monday Jan 22
+       - Image admission warn mode: Friday Jan 26
+       - Self-service template + default-deny: mid-February
+       - Egress gateway: end of Q1
+       "The wall and the door at the same time."
+14:32  James: "Do that." Summarizes seven commitments.
+       Aisha: Atlas stays blocked, data preserved until Legal clears purge.
+       Rachel: "Don't purge anything until I say so."
+       James: "Make Monday productive with Tom. Not an ambush."
+       Sarah: Setting up Monday 10 AM meeting (Tom, Wei, user, Sarah).
+14:38  Meeting ends. Rachel catches user at door: "Include 'evidence 
+       of completion' column. Deployment date plus test or audit result."
+14:39  User in hallway. Pulls out phone. ETL alert is 35 min old.
+
+14:41  Slack to Wei: investigating ETL + S3 health, will message 
+       within the hour
+14:42  Investigation begins                                  [ETL INVESTIGATION]
+
+       FINDING 1: Alert NOT from PLAT-919. 
+         Pre-existing KubeJobFailed rule with `for: 12h` clause.
+         ETL failed at 2 AM, alert fired at 2 PM. Twelve hours exactly.
+         PLAT-919 is correctly scoped to Redis. ✅
+
+       FINDING 2: ETL job succeeded at data processing.
+         Read all 4 tables from RDS ✅
+         Wrote all 4 topics to Kafka ✅
+         S3 sink verified RUNNING ✅
+         Atlas sink verified FAILED → exit code 1
+         Job "failed" because built-in health check expects ALL sinks healthy.
+         Atlas sink intentionally blocked = expected "failure."
+
+       FINDING 3: KMS PERMISSION GAP (self-inflicted) 🔴
+         S3 sink tried to write with explicit KMS → 403 AccessDenied
+         Retried 3x, fell back to "write without encryption specification"
+         Bucket default encryption (KMS) applied server-side
+         Data IS encrypted, but by accident (bucket default), not design
+         Root cause: kafka-connect-s3-writer IAM role NOT in KMS key policy
+         User added: platform-admin, order-data-export-role, data-analytics-role
+         User missed: kafka-connect-s3-writer
+         Same class of error as what user caught in Priya's PR review
+
+14:56  Investigation complete. Full picture understood.
+15:00  KMS key policy fix:
+       - Enumerated ALL S3 writers from access logs and service accounts
+       - Added kafka-connect-s3-writer to KMS key policy
+       - Restarted S3 connector, verified clean writes (no AccessDenied)
+15:05  KMS permission gap fixed and verified                 ✅
+
+15:08  Wei DM: full transparency about KMS gap.
+       "It was working by accident, not by design. I fixed the key 
+       policy just now. I should have caught this when I made the 
+       encryption change yesterday."
+       Wei: "Appreciate the honesty. Seriously."
+
+15:12  Nightly ETL alert addressed:
+       - Alertmanager silence applied (7-day expiry, clear comment)
+       - Targets: KubeJobFailed for etl-daily-agg-* in data-analytics only
+       - Comment references PLAT-921 and intentional Atlas block
+       - Silence expires Mon Jan 25, forcing resolution
+
+15:15  Self-accountability note written for PCI document + personal notes
+15:18  Sarah DM: "Wei used the word 'refreshing.'"
+       Sarah also: "James wants to present remediation timeline to the 
+       board next week. Rachel's dates and your prevention controls are 
+       going in front of the CEO."
+
+15:25  Derek DM: 0.3% NR flags on payment authorize since ServiceProfile
+       merge last night. "Could be noise, could be the retry change."
+
+15:27  User investigates NR signal immediately (payment under velocity freeze)
+       
+       FINDING 4: NR rate step change at 11:00 PM Wed ← 13 min after 
+         ServiceProfile took effect at 10:47 PM. NOT pre-existing noise.
+       
+       FINDING 5: NR flags on OUTBOUND to payment-gateway-proxy:443.
+         Route matching correctly (not DEFAULT). Connection drops on 
+         outbound, not inbound.
+       
+       FINDING 6: Application error rate bumped 0.09% → 0.41%.
+         The 0.3% NR IS landing as 5xx to callers. Real user impact.
+
+15:31  Derek reveals: added `timeout: 5s` to ALL routes after user's approval.
+       "I thought a 5s default was reasonable and it was a one-line addition.
+       I should have re-requested review."
+       
+       ROOT CAUSE: Per-route 5s timeout killing tail-latency requests.
+         Payment gateway p99 = 3-4s, spikes to 6-7s.
+         0.31% of requests exceed 5s → killed by proxy → NR → 5xx.
+         Same pattern as the payment ServiceProfile timeout user 
+         approved, but this time Derek added it post-approval.
+
+15:36  User tells Derek to remove timeout from ALL routes. Keep isRetryable.
+       "Any commit after an approval gets a re-review ping."
+       Derek: "Fair. Won't happen again."
+
+15:44  Derek pushes fix (removes timeout from all 4 routes)
+15:46  ArgoCD syncs
+15:54  NR rate back to zero. Fix confirmed.                  ✅
+
+15:42  Lisa informed: 17-hour slow burn consumed ~1.1% error budget.
+       Payment-service: 87.1% → 86.0%. Three hits this week.
+       Lisa: "The timeout was an unapproved addition that caused a 
+       secondary issue, detected and resolved within 17 hours."
+
+15:55  Self-note: didn't re-check PR after approval. Approved based 
+       on Slack description, not final merged diff. Process fix: 
+       review the MERGED commit, not the PR description.
+
+15:58  CB PR review begins (platform-infra#347)              [PR REVIEW]
+16:18  Review complete. 3 blocking, 1 should-fix, 1 non-blocking:
+
+       BLOCKING #1: Per-route timeout: 3s on inventory ServiceProfile.
+         Same pattern just removed from payment. "We literally just 
+         removed a per-route timeout 30 minutes ago." Remove it.
+
+       BLOCKING #2: Low-confidence fallback returns available: true
+         with no stock data. Overselling risk. Should return unknown 
+         or false, let frontend handle degraded state.
+
+       BLOCKING #3: stockCache doesn't exist yet. Was flagged in 
+         Monday meeting as "doesn't exist." If null, high-confidence 
+         path never fires, 100% of fallbacks = accept everything.
+
+       SHOULD-FIX: slowCallDurationThreshold 1500ms too close to 
+         inventory p99 (1.08s). slidingWindowSize 50 = 4 seconds 
+         of traffic, too reactive. Recommend 2000ms + window of 100.
+
+       NON-BLOCKING: PrometheusRule looks good. Suggested recording rule.
+
+16:22  Derek responds: agrees on #1 (timeout habit acknowledged) and #3 
+       (stockCache stubbed but not implemented — "writing the code path 
+       I wanted to exist, not the code path that would exist at deploy").
+       
+       Pushback on #2: Nina told him product prefers accepting orders 
+       over showing unavailable. Asks if they can keep available: true.
+
+16:25  Nina DM: pushback on blocking #2 with business math.
+       "Historical oversell rate ~0.4%. During CB event, ~360 orders 
+       worst case, ~10 actual oversells, $200-300 in refunds. Less than 
+       revenue lost from showing out-of-stock to 360 customers."
+       "Product signed off on this."
+
+>>> CURRENT TIME: Thursday 4:25 PM <<<
+>>> Derek + Nina pushing back on CB PR blocking #2 <<<
+>>> User needs to decide: hold block, unblock with conditions, or unblock <<<
+>>> Rachel's dates table not started (due 10 AM Friday) <<<
+>>> Drift detection CronJob not started (committed Monday to VP) <<<
+```
+
+---
+
+## ADD TO: INCIDENT 4 — CONTAINMENT STATUS UPDATES
+
+```
+CONTAINMENT STATUS UPDATES (Thursday afternoon):
+
+ETL ALERT INVESTIGATION (Thu 2:42-3:00 PM):
+  ✅ PLAT-919 PrometheusRule confirmed correctly scoped (Redis only)
+  ✅ Alert was from pre-existing KubeJobFailed rule (12h `for:` delay)
+  ✅ ETL data processing SUCCEEDED (all 4 tables → Kafka → S3)
+  ✅ ETL "failure" is exit code 1 from sink health check (Atlas = FAILED)
+  ✅ This will recur nightly until pipeline restructured with Tom
+  ✅ Alertmanager silence applied (7-day, expires Mon Jan 25)
+
+KMS PERMISSION FIX (Thu 3:00-3:05 PM):
+  ✅ kafka-connect-s3-writer added to KMS key policy
+  ✅ S3 connector writes verified with explicit KMS (no more 403 fallback)
+  ✅ All S3 writers enumerated from access logs before policy update
+  ✅ Wei informed with full transparency
+
+S3 SINK STATUS (confirmed Thu 3:08 PM):
+  ✅ Orders/order_items flowing to S3 continuously
+  ✅ Data encrypted with KMS (now via explicit client-side, not just bucket default)
+  ✅ Wei's analysts confirmed data is current
+```
+
+## ADD TO: INCIDENT 4 — KMS KEY
+
+```
+KMS KEY (UPDATED):
+  Alias: alias/novamart-data-exports
+  Key policy (UPDATED Thu 3:05 PM): 
+    platform-admin (full), 
+    order-data-export-role (encrypt/generate),
+    data-analytics-role (decrypt),
+    kafka-connect-s3-writer (encrypt/generate) ← ADDED Thu, was missing
+  
+  ✅ All writers now have explicit KMS permissions
+  ✅ Verified via connector restart + log inspection (no AccessDenied)
+```
+
+## ADD TO: INCIDENT 4 — GAPS IN HANDLING
+
+```
+ADDITIONAL GAPS (discovered Thu):
+  - KMS key policy scoped to 3 IAM roles, missed kafka-connect-s3-writer.
+    S3 sink continued via bucket default encryption fallback — working 
+    by accident, not design. Fixed Thu 3:05 PM. Should have enumerated 
+    all writers from access logs before scoping key policy.
+    Self-identified through ETL investigation, not proactive verification.
+  
+  - Told seven people in PCI meeting "S3 data flow was uninterrupted" — 
+    true by luck (bucket default encryption), not competence. Hedged 
+    with "let me verify" rather than asserting certainty, which saved 
+    credibility when the gap was discovered.
+```
+
+---
+
+## ADD TO: LIVE SYSTEM CHANGES — CONSEQUENCE TRACKING
+
+```
+CHANGE                              APPLIED         DOWNSTREAM VERIFIED?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+KMS key policy update               Thu 3:05 PM     ✅ VERIFIED
+  (added kafka-connect-s3-writer)                    ✅ S3 connector writes clean
+                                                     ✅ No more AccessDenied warns
+                                                     ✅ All writers enumerated
+
+Alertmanager silence                 Thu 3:12 PM     ✅ Applied
+  (KubeJobFailed for ETL)                            ✅ 7-day expiry (Jan 25)
+                                                     ✅ Clear comment with context
+                                                     ✅ Won't mask other job failures
+
+ServiceProfile timeout removal       Thu 3:46 PM     ✅ VERIFIED
+  (Derek pushed, removed timeout                     ✅ NR rate → 0% by 3:54 PM
+   from all 4 payment routes)                        ✅ ArgoCD synced
+                                                     ✅ Application error rate baseline
+
+PREVIOUSLY UNVERIFIED — NOW RESOLVED:
+  ✅ PLAT-919 scope: CONFIRMED correctly scoped (Redis only)
+  ✅ KMS permissions for Kafka Connect S3 writer: FIXED
+  ✅ S3 sink health post-encryption: CONFIRMED working
+  ✅ ETL job data processing: CONFIRMED successful (exit code 1 
+     is health check, not data failure)
+
+STILL UNVERIFIED:
+  ❓ HALF_EVEN vs HALF_UP historical reconciliation
+  ❓ Jenkins build discard aggressive limit
+  ❓ Redis Terraform PR merged?
+  ❓ RDS egress CIDR fragility (documented, not fixed)
+  ❓ order-data-export CronJob: does its IAM role have KMS perms?
+     (writes to novamart-data-exports, runs at 2 AM — next run 
+     will test this. Should verify proactively before then.)
+  ❓ Analytics dashboard: any external access broken by NetworkPolicy v3?
+```
+
+---
+
+## ADD TO: PCI MEETING OUTCOMES (new section or update existing)
+
+```
+PCI EMERGENCY REVIEW MEETING — COMPLETED (Thu 2:00-2:38 PM)
+
+DECISIONS MADE:
+  1. GDPR Art. 33 supervisory notification: APPROVED (Rachel drafting)
+     Deadline: Saturday ~8:30 PM
+  2. Atlas stays blocked: NON-NEGOTIABLE (Aisha)
+  3. Atlas data: PRESERVED, no purge until Legal clears (Rachel)
+  4. ETL CronJob: keeps running (Aisha confirmed)
+  5. S3 sink for orders/order_items: keeps running (not payment data)
+  6. Drift detection live by Monday: COMMITTED TO VP
+  7. Image admission warn mode by Jan 26: COMMITTED
+  8. Self-service template + default-deny by mid-Feb: COMMITTED
+  9. Egress gateway by end of Q1: COMMITTED
+  10. Tom meeting Monday 10 AM: Sarah scheduling (Tom, Wei, user, Sarah)
+  11. GDPR Art. 34 (customer notification): prepare but hold pending 
+      supervisory authority guidance
+
+COMMITMENTS WITH VP VISIBILITY (board presentation next week):
+  ┌────────────────────────────────┬──────────────┬─────────┐
+  │ Control                        │ Date         │ Owner   │
+  ├────────────────────────────────┼──────────────┼─────────┤
+  │ Drift detection CronJob        │ Mon Jan 22   │ User    │
+  │ Image admission (warn mode)    │ Fri Jan 26   │ User    │
+  │ Self-service pipeline template │ Mid-Feb      │ User    │
+  │ Default-deny NetworkPolicy     │ Mid-Feb      │ User    │
+  │ Egress gateway                 │ End of Q1    │ User    │
+  │ Rachel dates table (specific)  │ Fri 10 AM    │ User    │
+  └────────────────────────────────┴──────────────┴─────────┘
+  
+  Note: Rachel needs SPECIFIC dates (not ranges) + "evidence of 
+  completion" column (deployment date + test/audit result) for each.
+  James presenting to board next week. CEO will see this.
+
+KEY QUOTES:
+  James: "I like 'the wall and the door at the same time.' Do that."
+  Nina: "A template I can clone, fill in source and destination, 
+        submit a PR. Deployed within a day or two."
+  James: "Make Monday productive with Tom. Not an ambush."
+  Wei: "Appreciate the honesty. Seriously." (re: KMS gap disclosure)
+  Sarah: "James wants to present remediation timeline to the board."
+```
+
+---
+
+## ADD TO: SERVICEPROFILE INCIDENT (new sub-incident or note)
+
+```
+SERVICEPROFILE TIMEOUT ISSUE (Thu ~10:47 PM Wed → 3:54 PM Thu)
+
+NOT A NUMBERED INCIDENT — consequence of approved change.
+
+TIMELINE:
+  Wed 10:47 PM — Derek's ServiceProfile merged (isRetryable changes)
+  Wed 10:47 PM — Derek also added timeout: 5s on ALL 4 routes (post-approval)
+  Wed 11:00 PM — NR rate steps from ~0% to 0.3% on payment authorize
+  Thu 3:25 PM  — Derek notices NR flags, reports to user
+  Thu 3:27 PM  — User investigates immediately (payment under velocity freeze)
+  Thu 3:33 PM  — Mechanism confirmed: 0.31% of requests > 5s, killed by timeout
+  Thu 3:36 PM  — User tells Derek to remove all timeouts
+  Thu 3:44 PM  — Derek pushes fix
+  Thu 3:46 PM  — ArgoCD syncs
+  Thu 3:54 PM  — NR rate back to zero
+
+IMPACT:
+  - 17 hours of 0.3% additional NR on payment authorize
+  - Application error rate: 0.09% → 0.41%
+  - Error budget: 87.1% → 86.0% (1.1% consumed)
+  - No customer escalation (below alert threshold)
+
+ROOT CAUSE:
+  Derek added timeout: 5s to all routes after user approved the PR.
+  Payment gateway tail latency 6-7s during slow periods.
+  5s timeout killed legitimate requests that would have completed.
+
+USER ACCOUNTABILITY:
+  - Did not re-check PR after approval before merge
+  - Approved based on Slack description, not final diff
+  - Process fix established: review MERGED commit, not PR description
+  - Told Derek: "Any commit after approval gets a re-review ping"
+  - Derek acknowledged: "Won't happen again"
+
+LESSON: Static per-route timeouts are a recurring anti-pattern.
+  This is the second time in one day (payment authorize + inventory 
+  in CB PR). The circuit breaker is the correct tool for downstream 
+  latency protection, not static proxy timeouts.
+```
+
+---
+
+## ADD TO: CB PR REVIEW (new section)
+
+```
+CB PR REVIEW — platform-infra#347 (Thu 3:58-4:18 PM)
+
+STATUS: CHANGES REQUESTED — 3 blocking, 1 should-fix, 1 non-blocking
+
+BLOCKING #1: Per-route timeout: 3s on inventory ServiceProfile
+  Same anti-pattern just fixed on payment. Remove.
+  Derek: AGREED, removing.
+
+BLOCKING #2: Low-confidence fallback returns available: true
+  User flagged as overselling risk.
+  Derek: Product told him to prefer accepting orders.
+  Nina: Business math — 10 oversells ($200-300) < revenue lost 
+        from 360 "out of stock" displays. Product signed off.
+  STATUS: PUSHBACK FROM DEREK + NINA. User deciding.
+
+BLOCKING #3: stockCache doesn't exist (stubbed, no implementation)
+  Without cache, high-confidence path never fires.
+  100% of CB-open fallbacks = accept everything (available: true).
+  Derek: AGREED, acknowledged gap.
+
+SHOULD-FIX: CB sensitivity tuning
+  slowCallDurationThreshold 1500ms too close to p99 (1.08s)
+  slidingWindowSize 50 (COUNT_BASED) = 4 seconds, too reactive
+  Recommend: 2000ms threshold, window of 100 or TIME_BASED 60s
+
+NON-BLOCKING: PrometheusRule looks good. Suggested recording rule.
+
+ACTIVE DECISION: User needs to respond to Derek + Nina on blocking #2.
+  Business has explicitly chosen to accept overselling risk with math.
+  User's blocking comment was technically correct but may be overriding
+  a business decision that's already been made by the right people.
+```
+
+---
+
+## ADD TO: OPEN ITEMS / PENDING WORK
+
+### Updated Active Tickets
+
+```
+PLAT-915  [Changes Req] Circuit breaker PR — 3 blockers identified.
+                         Derek + Nina pushing back on overselling fallback.
+                         Timeout removed (agreed). stockCache gap (agreed).
+                         Decision pending on available:true for low-confidence.
+
+PLAT-919  [Done ✅]     Redis cache alerting — CONFIRMED correctly scoped.
+                         ETL alert was from pre-existing KubeJobFailed rule,
+                         NOT PLAT-919. False alarm on misconfiguration.
+```
+
+### New Pending Deliverables
+
+```
+- Rachel's remediation dates table → due 10 AM Friday
+  Specific dates, "evidence of completion" column, board-presentation quality.
+  NOT STARTED as of 4:25 PM Thursday.
+  
+- Drift detection CronJob → committed Monday Jan 22 to VP/Legal/Security
+  Have audit script from Wednesday. Need: CronJob wrapper, Slack alerting,
+  ArgoCD deployment, testing.
+  NOT STARTED as of 4:25 PM Thursday.
+  
+- Self-service pipeline template → committed mid-February
+  Nina's input: "clone, fill in, submit PR, deployed within a day"
+  NEW DELIVERABLE from PCI meeting.
+
+- Respond to Derek + Nina on CB PR blocking #2 → NOW
+```
+
+---
+
+## ADD TO: TEAM STATE
+
+```
+UPDATES:
+
+James Morrison (VP Eng):  Meeting concluded. Satisfied with prevention plan.
+                          "The wall and the door at the same time."
+                          Presenting remediation timeline to board next week.
+                          CEO will see Rachel's dates + user's controls.
+
+Sarah Chen (manager):     Set up Monday 10 AM meeting with Tom.
+                          Relayed James's board presentation plan.
+                          "Wei used the word 'refreshing'" (re: KMS honesty).
+
+Rachel Torres (Legal):    Drafting GDPR Art. 33 notification.
+                          Needs specific dates + evidence-of-completion by 10 AM Fri.
+                          "Don't purge Atlas data until I say so."
+
+Wei Liu (Data Eng mgr):   Relieved about S3 data continuity.
+                          "Appreciate the honesty" about KMS gap.
+                          Analysts confirmed data is current.
+                          Flagged: Tom's sink verification pattern is 
+                          good engineering, keep it in restructured pipeline.
+
+Nina Petrov (Order lead): Spoke up in meeting (first time). Validated 
+                          "easy path" framing. Gave concrete UX requirement 
+                          for self-service template.
+                          Now PUSHING BACK on CB PR blocking #2 with 
+                          business math (product signed off on overselling).
+
+Aisha Rahman (Security):  Confirmed containment posture unchanged.
+                          Atlas blocked + preserved. ETL runs. S3 sink runs.
+
+Derek Huang (Order):      Timeout pattern acknowledged ("I clearly have a habit").
+                          CB PR has 3 blockers, agreed on 2, pushing back on 1.
+                          Revealed stockCache is stubbed, not implemented.
+                          Established: post-approval commits get re-review.
+
+Lisa Park (SRE):          Budget: payment-service 86.0% (87.1% - 1.1% from 
+                          ServiceProfile timeout burn). Order-service 64.5%.
+                          Building canary AnalysisTemplate (ETA Fri).
+```
+
+---
+
+## ADD TO: USER PERFORMANCE (v2 observations)
+
+```
+V2 CHAOS ENGINE OBSERVATIONS (Thursday afternoon):
+
+CONSEQUENCES ENCOUNTERED:
+  1. KMS permission gap — self-inflicted, discovered through investigation.
+     Data safe by accident (bucket default), not design. Fixed + disclosed.
+  2. ServiceProfile timeout — approved PR, Derek added post-approval.
+     17-hour slow burn, 1.1% budget cost. Caught via Derek's signal.
+  3. ETL "failure" — containment action (Atlas block) caused expected 
+     but unhandled daily alert. Addressed with targeted silence.
+
+RECOVERY QUALITY:
+  ✅ KMS gap: investigated thoroughly (enumerated all writers before fix),
+     disclosed honestly to Wei, documented in PCI findings. Strong recovery.
+  ✅ ServiceProfile: investigated signal immediately (right priority),
+     confirmed mechanism before acting, established process fix.
+  ⚠️ Neither was caught proactively — both required external signals 
+     (ETL alert, Derek's observation) to surface.
+
+NEW STRENGTHS DEMONSTRATED:
+  ✓ Honest self-accountability under pressure (KMS gap disclosure to Wei)
+  ✓ Meeting presence (answered VP with specifics while phone was buzzing)
+  ✓ Hedging correctly ("let me verify" instead of "it's fine")
+  ✓ Translating technical controls to executive language (board-ready)
+  ✓ Treating internal users as customers (Nina's "what would easy look like?")
+  ✓ Pattern recognition across incidents (timeout anti-pattern, twice in one day)
+  ✓ Post-approval process gap identification
+  ✓ Not blaming Derek, establishing process instead
+
+NEW GAPS:
+  - Didn't enumerate S3 writers before scoping KMS key policy
+  - Didn't re-check merged PR diff after approval
+  - Two consequences (KMS, ServiceProfile) required external signals,
+    not proactive verification
+  - Rachel's dates table and drift detection CronJob both not started 
+    with <18 hours until Friday 10 AM deadline
+
+ACTIVE DECISION PENDING:
+  Derek + Nina pushback on CB PR blocking #2. User must decide whether 
+  to hold a technical block against an explicit business decision 
+  backed by product, finance, and the order team lead.
+```
+
+---
+
+## ADD TO: WHERE TO RESUME
+
+```
+SIMULATION TIME:  Thursday 4:25 PM EST, Week 1
+SIMULATION MODE:  v2 — CHAOS ENGINE ACTIVE
+
+ACTIVE SITUATION:
+  Derek + Nina pushing back on CB PR blocking #2 (low-confidence 
+  available:true). Business math provided. Product signed off.
+  User needs to decide: hold, unblock with conditions, or unblock.
+
+IMMEDIATE QUEUE:
+  1. Respond to Derek + Nina on CB PR (NOW)
+  2. Rachel's remediation dates table (due 10 AM Fri — NOT STARTED)
+  3. Drift detection CronJob skeleton (committed Monday — NOT STARTED)
+  4. EOD notes
+
+RISK ITEMS:
+  ⚠️ Rachel's table: board-presentation quality, specific dates, 
+     evidence-of-completion column. Due in <18 hours. Not started.
+  ⚠️ Drift detection: committed to VP in front of Legal + Security. 
+     Have the script, need CronJob + Slack + ArgoCD + testing. 
+     Must be done by Monday. Not started.
+  ⚠️ order-data-export CronJob runs at 2 AM tonight — does its 
+     IAM role have KMS permissions on novamart-data-exports? 
+     Same gap pattern as kafka-connect-s3-writer. Should verify 
+     BEFORE the 2 AM run, not after.
+
+UNRESOLVED:
+  ❓ CB PR blocking #2 decision (active)
+  ❓ HALF_EVEN reconciliation (not flagged to finance)
+  ❓ order-data-export KMS permissions (not verified)
+  ❓ RDS egress CIDR fragility
+  ❓ Jenkins build discard limit
+  ❓ Redis Terraform PR merge status
+```
+
+---
+
+**END OF ADDENDUM**
+
+**Resume point: Thursday 4:25 PM. Derek and Nina are waiting. Rachel's table and drift detection are both un-started with deadlines approaching.**
