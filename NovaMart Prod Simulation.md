@@ -15118,3 +15118,1452 @@ I'm waiting for the pod list on ip-10-0-42-44. The moment I see what's there, I 
 
 This is the kind of incident where the fix is simple — get the pod running — but the path to the fix has three obstacles stacked on top of each other. Quota was obstacle one (cleared). Scheduling is obstacle two (clearing). If there's a data corruption obstacle three, I'll deal with that when I see it.
 
+---
+
+## FRIDAY 6:16-6:19 AM — RESULTS
+
+---
+
+### PDB Fix
+
+```
+$ kubectl delete pdb es-data-emergency-pdb -n search
+podDisruptionBudget "es-data-emergency-pdb" deleted
+
+$ cat <<EOF | kubectl apply -f -
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: es-data-emergency-pdb
+  namespace: search
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: elasticsearch-master
+EOF
+podDisruptionBudget/es-data-emergency-pdb created
+
+$ kubectl get pdb es-data-emergency-pdb -n search
+NAME                     MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+es-data-emergency-pdb    N/A             0                 0                     3s
+```
+
+Matches 6 pods (3 masters + 3 data nodes). Broader than you wanted but functional. No voluntary disruptions allowed. ✅
+
+---
+
+### What's on ip-10-0-42-44
+
+```
+$ kubectl get pods --field-selector spec.nodeName=ip-10-0-42-44 \
+    --all-namespaces -o json | jq -r '
+    .items[] |
+    "\(.metadata.namespace)/\(.metadata.name)  \(.spec.containers[0].resources.requests.memory // "0")  \(.spec.volumes // [] | map(select(.persistentVolumeClaim)) | length) PVCs"' |
+    sort -k2 -h -r
+
+search/kibana-5d8b9f-abcde              4Gi    0 PVCs
+monitoring/prometheus-server-0           3Gi    1 PVCs
+ci/jenkins-agent-build-7x9kf            2Gi    0 PVCs
+ci/jenkins-agent-build-m4p2n            2Gi    0 PVCs
+production/catalog-service-7f6c-v8xn2   1Gi    0 PVCs
+production/catalog-service-7f6c-d3kl7   1Gi    0 PVCs
+kube-system/aws-node-xq9f2             256Mi   0 PVCs
+kube-system/kube-proxy-4jn7h           128Mi   0 PVCs
+kube-system/ebs-csi-node-d7mk9        128Mi   0 PVCs
+monitoring/node-exporter-fb2x4         128Mi   0 PVCs
+linkerd/linkerd-proxy-injector-abc     128Mi   0 PVCs
+```
+
+**There's your 8Gi.** The candidates:
+
+| Pod | Memory | PVCs | Replicated? | Safe to evict? |
+|-----|--------|------|-------------|----------------|
+| kibana | 4Gi | 0 | Single replica | Yes — already broken anyway |
+| jenkins-agent x2 | 2Gi each | 0 | Ephemeral build agents | Yes — builds will requeue |
+| catalog-service x2 | 1Gi each | 0 | 6 replicas total | Yes — losing 2 of 6 is fine |
+
+Kibana (4Gi) + two Jenkins agents (4Gi) = 8Gi. Or Kibana (4Gi) + two catalog pods (2Gi) + one Jenkins agent (2Gi) = 8Gi.
+
+**prometheus-server-0** has a PVC — same AZ-lock problem. Don't touch it.
+
+**kube-system pods** — never touch those during an incident.
+
+---
+
+### es-data-2 Readiness — THE EDGE
+
+```
+$ kubectl get pod es-data-2 -n search \
+    -o jsonpath='{.spec.containers[0].readinessProbe}'
+
+{
+  "exec": {
+    "command": ["curl", "-sf", "http://localhost:9200/_cluster/health?local=true"]
+  },
+  "initialDelaySeconds": 90,
+  "periodSeconds": 30,
+  "timeoutSeconds": 5,
+  "failureThreshold": 5,
+  "successThreshold": 1
+}
+```
+
+Probe runs every 30 seconds. Threshold is 5.
+
+```
+$ kubectl describe pod es-data-2 -n search | grep -A8 "Conditions"
+
+Conditions:
+  Type              Status
+  Initialized       True
+  Ready             True      ← STILL READY
+  ContainersReady   True
+  PodScheduled      True
+
+Events:
+  4m  Warning  Unhealthy  Readiness probe failed: curl: (28) timeout
+  3m  Warning  Unhealthy  Readiness probe failed: curl: (28) timeout
+  2m  Warning  Unhealthy  Readiness probe failed: curl: (28) timeout
+  1m  Warning  Unhealthy  Readiness probe failed: curl: (28) timeout
+```
+
+**Four consecutive failures. Threshold is 5. Next probe fires in ~25 seconds.**
+
+One more failure and es-data-2 goes NotReady. The Service drops it from endpoints. All query load shifts to es-data-0 and es-data-1. Cascade risk is immediate.
+
+---
+
+### 6:19 AM — YOUR MOVE
+
+es-data-2's next readiness probe fires in roughly 25 seconds. Error rate is 19.8%.
+
+You have two things to do simultaneously and about 20 seconds to act on both:
+
+1. **Scale down search-service** — reduce query pressure on es-data-2, maybe its next probe passes
+2. **Evict pods from ip-10-0-42-44** — make room for es-data-3
+
+Both are independent. Both are urgent.
+
+**Go.**
+
+
+
+Both commands, right now, in parallel. No thinking, just execute.
+
+### Terminal 1 (6:19 AM):
+
+```bash
+# Reduce query load on es-data-2 IMMEDIATELY
+kubectl scale deployment search-service -n search --replicas=2
+```
+
+Dropping to 2, not 3. I need maximum pressure reduction on es-data-2 in the next 20 seconds. Two replicas can still serve the queries that work. The ones that fail are failing regardless of how many search-service pods there are.
+
+### Terminal 2 (6:19 AM):
+
+```bash
+# Evict Kibana and both Jenkins agents — 8Gi total
+# Kibana is already broken, Jenkins builds will requeue
+kubectl delete pod kibana-5d8b9f-abcde -n search --grace-period=5 &
+kubectl delete pod jenkins-agent-build-7x9kf -n ci --grace-period=5 &
+kubectl delete pod jenkins-agent-build-m4p2n -n ci --grace-period=5 &
+wait
+```
+
+Short grace period. I need the memory freed in seconds, not the default 30 seconds of graceful shutdown.
+
+### Terminal 3 — Watch (6:19 AM):
+
+```bash
+# Watch for es-data-3 to schedule
+kubectl get pods -n search es-data-3 -w
+```
+
+### 10 Seconds Later (6:19:30 AM)
+
+```bash
+# Verify the evictions completed and memory freed
+kubectl get pods --field-selector spec.nodeName=ip-10-0-42-44 \
+  --all-namespaces --no-headers | wc -l
+
+# Check es-data-2 — did the readiness probe just fire?
+kubectl get pod es-data-2 -n search -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+```
+
+If the search-service scale-down reduced enough query pressure, es-data-2's health endpoint might respond within the 5-second timeout. One successful probe resets the failure counter to zero.
+
+If es-data-2 goes NotReady anyway — the PDB prevents voluntary eviction but NOT readiness-based endpoint removal. Queries stop going to es-data-2 through the Service, but the pod stays running and can still participate in shard recovery when es-data-3 rejoins. That's bad for error rate but not catastrophic for recovery.
+
+### Watching Both Tracks (6:20 AM)
+
+```bash
+# Track 1: Is es-data-3 scheduling?
+kubectl get pod es-data-3 -n search \
+  -o jsonpath='{.status.phase} {.status.conditions[?(@.type=="PodScheduled")].status}'
+
+# Track 2: Is es-data-2 still Ready?
+kubectl get pod es-data-2 -n search \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+
+# Track 3: Node capacity — did we free enough?
+kubectl describe node ip-10-0-42-44 | grep -A4 "Allocated resources"
+```
+
+The moment I see es-data-3 go to `ContainerCreating`, the clock shifts from "emergency" to "recovery." ES JVM startup takes 1-2 minutes. Then it joins the cluster, shards start recovering, error rate starts dropping.
+
+If es-data-3 is still Pending after the evictions — something else is blocking and I need to look at what immediately.
+
+---
+
+## FRIDAY 6:19 AM — PARALLEL EXECUTION
+
+---
+
+### Terminal 1 — Search Service Scale
+
+```
+$ kubectl scale deployment search-service -n search --replicas=2
+deployment.apps/search-service scaled
+```
+
+Four pods begin terminating. Two remain.
+
+---
+
+### Terminal 2 — Pod Evictions
+
+```
+$ kubectl delete pod kibana-5d8b9f-abcde -n search --grace-period=5 &
+$ kubectl delete pod jenkins-agent-build-7x9kf -n ci --grace-period=5 &
+$ kubectl delete pod jenkins-agent-build-m4p2n -n ci --grace-period=5 &
+$ wait
+
+pod "kibana-5d8b9f-abcde" deleted
+pod "jenkins-agent-build-7x9kf" deleted
+pod "jenkins-agent-build-m4p2n" deleted
+```
+
+All three gone in ~6 seconds.
+
+---
+
+### Node Capacity — Immediate Check
+
+```
+$ kubectl describe node ip-10-0-42-44 | grep -A4 "Allocated resources"
+
+Allocated resources:
+  Resource           Requests     Limits
+  --------           --------     ------
+  cpu                1200m (30%)  2400m (61%)
+  memory             18Gi (60%)   22Gi (74%)
+```
+
+**60% memory.** Down from 88%. You freed 8Gi of requests. es-data-3 needs 8Gi. It fits.
+
+---
+
+### Terminal 3 — es-data-3 Watch
+
+```
+$ kubectl get pods -n search es-data-3 -w
+
+NAME        READY   STATUS    RESTARTS   AGE
+es-data-3   0/1     Pending   0          4m
+es-data-3   0/1     Pending   0          4m
+es-data-3   0/1     ContainerCreating   0   4m12s
+```
+
+**It's scheduling.** ✅
+
+---
+
+### The Readiness Probe — 6:19:28 AM
+
+The fifth probe fires on es-data-2.
+
+```
+$ kubectl get pod es-data-2 -n search \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+
+True
+```
+
+**It passed.** The scale-down reduced query volume enough that es-data-2's `_cluster/health?local=true` endpoint responded within 5 seconds. Failure counter resets to zero.
+
+```
+$ kubectl describe pod es-data-2 -n search | grep -A1 "Unhealthy" | tail -2
+
+30s   Warning  Unhealthy  Readiness probe failed: curl: (28) timeout
+1s    Normal   ProbeSuccess  Readiness probe succeeded
+```
+
+es-data-2 lives. **By one probe cycle.**
+
+---
+
+### 6:20 AM — es-data-3 Starting
+
+```
+$ kubectl get pods -n search es-data-3 -w
+
+es-data-3   0/1     ContainerCreating   0   4m30s
+es-data-3   0/1     Running             0   4m52s
+```
+
+Running. But not Ready — the ES JVM is starting up. `initialDelaySeconds: 90` on the readiness probe means Kubernetes won't even *check* readiness for 90 seconds.
+
+```
+$ kubectl logs -n search es-data-3 --tail=10 -f
+
+[2024-01-19T11:20:14,127][INFO ][o.e.n.Node] [es-data-3] version[7.17.16]
+[2024-01-19T11:20:14,129][INFO ][o.e.n.Node] [es-data-3] JVM: OpenJDK 64-Bit Server VM 18.0.2.1
+[2024-01-19T11:20:18,882][INFO ][o.e.e.NodeEnvironment] [es-data-3] node data paths: [/usr/share/elasticsearch/data]
+[2024-01-19T11:20:18,884][INFO ][o.e.e.NodeEnvironment] [es-data-3] using [1] data paths, mounts [[/usr/share/elasticsearch/data (gp2)]]
+[2024-01-19T11:20:19,012][INFO ][o.e.e.NodeEnvironment] [es-data-3] heap size [4g], compressed oops: true
+[2024-01-19T11:20:22,447][INFO ][o.e.g.GatewayService] [es-data-3] recovering local shards...
+```
+
+It's recovering local shards from the PVC. The data survived the eviction. This is good — local recovery is much faster than replica recovery.
+
+But then:
+
+```
+[2024-01-19T11:20:31,109][WARN ][o.e.g.GatewayService] [es-data-3] 
+  recovered [127] shards, [14] shards failed recovery (corrupt segment files)
+[2024-01-19T11:20:31,112][WARN ][o.e.i.ShardRecoveryHandler] 
+  [products-2024.01][2] local recovery failed, will attempt peer recovery
+[2024-01-19T11:20:31,114][WARN ][o.e.i.ShardRecoveryHandler] 
+  [products-2024.01][4] local recovery failed, will attempt peer recovery
+[2024-01-19T11:20:31,115][WARN ][o.e.i.ShardRecoveryHandler] 
+  [products-2024.01.catalog-refresh][0] local recovery failed, will attempt peer recovery
+[2024-01-19T11:20:31,117][WARN ][o.e.i.ShardRecoveryHandler] 
+  [products-2024.01.catalog-refresh][1] local recovery failed, will attempt peer recovery
+... [10 more similar lines]
+```
+
+**14 shards have corrupt segment files** from the unclean eviction. They're falling back to peer recovery — which means copying shard data from replicas on other nodes. That's network-intensive and puts load on es-data-0, es-data-1, and es-data-2.
+
+127 shards recovered locally. Those will come online fast.
+
+```
+[2024-01-19T11:20:38,201][INFO ][o.e.c.r.a.AllocationService] 
+  [es-data-3] cluster updated: 127 shards started, 14 shards recovering from peer
+[2024-01-19T11:20:38,204][INFO ][o.e.c.s.ClusterApplierService] 
+  cluster health: changed from [red] to [red] (453 unassigned → 312 unassigned)
+```
+
+Shards are coming back. 141 assigned so far (127 local + 14 recovering). 312 still unassigned — those are the replicas that need to be redistributed.
+
+---
+
+### 6:22 AM — Cluster Health Check
+
+```
+$ kubectl exec -n search es-master-0 -- \
+    curl -s http://localhost:9200/_cluster/health | \
+    jq '{status, number_of_nodes, number_of_data_nodes, 
+         unassigned_shards, relocating_shards, 
+         active_shards_percent_as_number}'
+
+{
+  "status": "red",
+  "number_of_nodes": 7,
+  "number_of_data_nodes": 4,
+  "unassigned_shards": 283,
+  "relocating_shards": 29,
+  "active_shards_percent_as_number": 83.3
+}
+```
+
+**4 data nodes.** es-data-3 is back in the cluster. Active shards up from 73% to 83%. Unassigned dropping. 29 shards actively relocating.
+
+The 14 corrupted shards are doing peer recovery — you can see the progress:
+
+```
+$ kubectl exec -n search es-master-0 -- \
+    curl -s http://localhost:9200/_cat/recovery?active_only=true\&h=index,shard,type,stage,bytes_recovered,bytes_total,bytes_percent | head -10
+
+products-2024.01                2  peer  translog  1.2gb  3.8gb  31.5%
+products-2024.01                4  peer  index     0.8gb  4.1gb  19.5%
+products-2024.01.catalog-refresh 0  peer  index     0.3gb  1.2gb  25.0%
+products-2024.01.catalog-refresh 1  peer  translog  0.9gb  1.2gb  75.0%
+search-logs-2024.01.18          1  peer  index     0.1gb  0.6gb  16.6%
+search-logs-2024.01.17          0  peer  index     0.2gb  0.8gb  25.0%
+...
+```
+
+Some of the corrupted shards are the `products-2024.01` index — the main product search index. Those are 3.8-4.1 GB each. At the current recovery rate, they'll take 5-10 minutes.
+
+**The `products-2024.01.catalog-refresh` shard 1 is at 75%.** That'll be back in a minute or two.
+
+---
+
+### Error Rate
+
+```
+$ curl -s 'http://prometheus:9090/api/v1/query' \
+    --data-urlencode 'query=sum(rate(http_requests_total{service="search-service",status=~"5.."}[2m])) / sum(rate(http_requests_total{service="search-service"}[2m]))' | \
+    jq '.data.result[0].value[1]'
+
+"0.142"
+```
+
+**14.2%.** Down from 19.8% peak. Trending the right direction. As each primary shard comes online, the error rate drops in steps.
+
+---
+
+### 6:24 AM — es-data-2 Status
+
+```
+$ kubectl exec -n search es-master-0 -- \
+    curl -s http://localhost:9200/_cat/nodes?v\&h=name,heap.percent,ram.percent,cpu,load_1m
+
+name        heap.percent ram.percent cpu load_1m
+es-master-0          71         89  28    1.9
+es-master-1          65         84  24    1.6
+es-master-2          68         91  30    2.1
+es-data-0            74         88  42    5.1
+es-data-1            71         85  38    4.2
+es-data-2            78         91  52    6.8
+es-data-3            69         72  45    5.5
+```
+
+es-data-2 dropped from 96% to 91% RAM and from 71% CPU to 52%. Still stressed but no longer on the edge. The scale-down plus es-data-3 rejoining is spreading the load.
+
+es-data-3 is at 72% RAM — it's absorbing its shards but has headroom.
+
+---
+
+### 6:26 AM — Slack Activity
+
+```
+Slack — DM from Alex Kim (6:25 AM)
+"Hey — my Jenkins build just got terminated mid-run. It was 
+about 20 minutes in on the integration test suite. 
+Requeued automatically but I'm going to lose about 40 minutes. 
+Is something going on with CI?"
+```
+
+That's from the Jenkins agents you evicted. The builds were killed. Alex's build was one of them.
+
+```
+Slack — DM from Sarah Chen (6:26 AM)
+"Just saw the search incident in #incidents. How bad is it? 
+I have a 7:30 with James and he's going to ask me about 
+operational stability this week. Give me the 30-second version 
+when you can."
+```
+
+```
+Slack — #alerts-production (6:26 AM)
+CatalogServiceReplicasBelowMinimum — catalog-service replicas 
+2/3 (minimum 3) in production namespace.
+Firing for: 5 minutes
+```
+
+That's the two catalog-service pods that were on ip-10-0-42-44. You didn't evict them — but when you freed up memory on the node, the search-service pods you scaled down also freed capacity, and Kubernetes rescheduled... wait, no. The catalog pods should still be there. Let's check:
+
+Actually — you didn't evict catalog pods. But the alert says 2/3. Let me check: the two catalog pods on ip-10-0-42-44 were `catalog-service-7f6c-v8xn2` and `catalog-service-7f6c-d3kl7`. You didn't touch them. 
+
+```
+$ kubectl get pods -n production -l app=catalog-service
+
+NAME                              READY   STATUS    RESTARTS   AGE   NODE
+catalog-service-7f6c-d3kl7        1/1     Running   0          5d    ip-10-0-42-44
+catalog-service-7f6c-v8xn2        1/1     Running   0          5d    ip-10-0-42-44
+catalog-service-7f6c-q9mk4        0/1     Evicted   0          5d    ip-10-0-43-18
+```
+
+The *third* catalog pod got evicted from a different node. **Not your doing** — `ip-10-0-43-18` is es-master-2's node, which is also under memory pressure (91% RAM). The catalog pod lost the priority fight.
+
+So now: catalog-service has 2 of 3 replicas. Both happen to be on the same node (ip-10-0-42-44). If that node has issues, catalog goes to zero. Not critical right now, but it's a fragility.
+
+---
+
+### 6:28 AM — Shard Recovery Progress
+
+```
+$ kubectl exec -n search es-master-0 -- \
+    curl -s http://localhost:9200/_cluster/health | \
+    jq '{status, unassigned_shards, active_shards_percent_as_number}'
+
+{
+  "status": "yellow",
+  "unassigned_shards": 147,
+  "active_shards_percent_as_number": 91.3
+}
+```
+
+**YELLOW.** Up from RED. All primaries are now assigned. 91.3% of all shards active. The remaining 147 unassigned are replicas being redistributed.
+
+Error rate check:
+
+```
+"0.038"
+```
+
+**3.8%.** Down from 19.8% peak. The primary shards for `products-2024.01` are back. Searches are working again. The remaining errors are from the replica rebalancing causing occasional slow queries on es-data-2.
+
+---
+
+### 6:29 AM — Current State
+
+```
+SEARCH SERVICE:
+  Error rate:     3.8% (dropping)
+  Cluster:        YELLOW (147 replicas rebalancing)
+  Data nodes:     4/4 ✅
+  es-data-2:      Stabilizing (78% heap, probes passing)
+  es-data-3:      Recovered (127 local + 14 peer, all primaries up)
+  Search pods:    2/6 (scaled down)
+  Kibana:         Not restarted yet (pod was on ip-10-0-42-44)
+
+COLLATERAL:
+  ⚠️ Alex's Jenkins build killed (40 min requeue)
+  ⚠️ catalog-service 2/3 replicas (unrelated eviction)
+  ⚠️ Kibana still down (haven't restarted it)
+  ⚠️ Search-service at 2 replicas (need to scale back)
+
+TIMELINE:
+  5:47   Alert fires
+  5:53   Acked
+  6:06   Root cause identified
+  6:07   Quota fix
+  6:08   PDB fix (second attempt)
+  6:19   Scale-down + pod evictions
+  6:20   es-data-3 scheduling
+  6:22   es-data-3 in cluster, shards recovering
+  6:28   Cluster YELLOW, error rate 3.8%
+```
+
+The crisis is over. The cluster is recovering. But you have cleanup to do, people waiting for responses, and the day's commitments haven't gone away.
+
+**Three messages unanswered: Alex (Jenkins), Sarah (30-second brief for James), catalog alert.**
+
+**Error rate is 3.8% and falling. Replicas still rebalancing. Search at 2 replicas — need to scale back before East Coast traffic. Kibana still dead.**
+
+**Current time: 6:29 AM.** Rachel's table is due at 10 AM (done, needs to be sent). Drift detection CronJob needs work today.
+
+**What do you do?**
+
+
+
+### Stabilization Actions — In Order (6:29 AM)
+
+The cluster is recovering but I left things in a degraded state to win the race. Time to clean up before East Coast traffic hits.
+
+### Scale Search-Service Back Up (6:29 AM)
+
+```bash
+# Cluster is YELLOW with primaries up. Safe to increase query load.
+# Going to 4, not 6 — intermediate step while replicas rebalance
+kubectl scale deployment search-service -n search --replicas=4
+```
+
+I'll scale to 6 once the cluster hits GREEN and es-data-2's heap is below 75%. Stepping up avoids slamming the recovering cluster with full query volume.
+
+### Fix Catalog (6:30 AM)
+
+```bash
+# Third catalog pod got evicted from es-master-2's node
+# Delete the evicted pod so the deployment controller creates a fresh one
+kubectl delete pod catalog-service-7f6c-q9mk4 -n production
+
+# Verify it reschedules
+kubectl get pods -n production -l app=catalog-service -w
+```
+
+This should schedule on a node with capacity. Two catalog pods on the same node (ip-10-0-42-44) is a fragility, but I'm not going to fix pod spread topology during an incident recovery. I'll note it.
+
+### Comms — Quick Hits (6:31 AM)
+
+**Alex Kim — DM:**
+
+> Sorry Alex — I had to evict Jenkins agents from a node to make room for an Elasticsearch data node that was down. Your build got caught in that. It was the fastest way to restore search for customers. Builds will requeue automatically. I owe you a coffee.
+
+**Sarah Chen — DM:**
+
+> 30-second version: ES data node got evicted at 5:47 AM due to ephemeral storage pressure on its host. StatefulSet couldn't recreate it (ResourceQuota + scheduling constraints). Search error rate hit 19.8%. I freed node capacity, got the data node back at 6:20 AM. Error rate is 3.8% and dropping. Cluster is recovering — expect full recovery by 7 AM.
+>
+> For James context: this is another unowned system. Search cluster was deployed by Carlos Mendez who left in September. No ArgoCD, no ILM, stale runbook, gp2 storage. Same category as the Kafka finding. The drift detection CronJob I committed to Monday would have flagged this. The search cluster goes on the audit list.
+>
+> One-liner for James: "Search had a 40-minute degradation from an infrastructure failure in an unowned system. Resolved. Same governance gap we're already addressing."
+
+**Ryan Mitchell — #platform-engineering:**
+
+> Search is recovering. Error rate down to 3.8% from 19.8% peak. Product catalog searches should be returning results again. Full recovery expected by 7 AM. Scaled search-service down temporarily during the fix — scaling back up now. Let me know if CS reports anything still broken.
+
+**Lisa — DM:**
+
+> Kafka lag is unrelated, confirmed. Search SLO — agree, don't create mid-incident. Let's define it next week as part of the search cluster onboarding. For now just track the timeline for the postmortem.
+
+### Restart Kibana (6:33 AM)
+
+```bash
+# Kibana deployment should recreate the pod automatically
+# since we deleted it, not scaled it down. Check:
+kubectl get pods -n search -l app=kibana
+
+# If no pod exists, the deployment controller should be creating one.
+# If it's Pending, it might have the same node affinity issue — check:
+kubectl get pods -n search -l app=kibana -o wide
+```
+
+Kibana doesn't have a PVC, so it can schedule anywhere. It should come up within a minute on whatever node has capacity. Not urgent — nobody's using Kibana for this incident since the dashboard was broken anyway.
+
+### Monitor Recovery (6:35 AM)
+
+```bash
+# Set up a watch loop for the next 20 minutes
+watch -n 30 'echo "=== CLUSTER ===" && \
+  kubectl exec -n search es-master-0 -- \
+    curl -s http://localhost:9200/_cluster/health 2>/dev/null | \
+    jq "{status, unassigned_shards, active_shards_percent_as_number, relocating_shards}" && \
+  echo "=== ERROR RATE ===" && \
+  curl -s "http://prometheus:9090/api/v1/query" \
+    --data-urlencode "query=sum(rate(http_requests_total{service=\"search-service\",status=~\"5..\"}[2m])) / sum(rate(http_requests_total{service=\"search-service\"}[2m]))" 2>/dev/null | \
+    jq ".data.result[0].value[1]" && \
+  echo "=== ES-DATA-2 ===" && \
+  kubectl exec -n search es-master-0 -- \
+    curl -s "http://localhost:9200/_cat/nodes?v&h=name,heap.percent,ram.percent,cpu" 2>/dev/null | \
+    grep es-data'
+```
+
+I let this run while I handle the next priorities. Expected progression:
+
+```
+6:35  YELLOW — ~100 unassigned — error rate ~2%
+6:40  YELLOW — ~50 unassigned — error rate <1%
+6:50  GREEN — 0 unassigned — error rate baseline
+6:50  Scale search-service to 6 replicas
+```
+
+### #incidents Update (6:36 AM)
+
+```
+🟢 UPDATE — Search Service (6:36 AM)
+
+ES cluster recovering. Cluster status YELLOW (was RED). 
+All primary shards assigned. Error rate 3.8% and falling.
+4/4 data nodes online. Expect full GREEN by ~6:50 AM.
+
+Root cause chain:
+1. No ILM policy → unbounded index growth → ephemeral storage exhaustion
+2. Node evicted es-data-3 → Karpenter preempted pod
+3. ResourceQuota blocked StatefulSet recreation
+4. 27% of shards unavailable → search errors
+
+Actions taken:
+- ResourceQuota increased (64Gi → 80Gi requests)
+- Evicted non-critical pods to free scheduling capacity
+- Scaled search-service temporarily to reduce ES load
+- PDB applied to prevent further ES pod disruption
+- es-data-3 back online with 127 local + 14 peer-recovered shards
+
+Still working: scaling search back up, cluster full recovery.
+Will post resolved when cluster is GREEN and error rate is baseline.
+
+Collateral: 2 Jenkins builds requeued (~40 min delay), 
+1 catalog pod evicted (recovering). Both minor.
+
+Systemic: search cluster is unowned since Carlos Mendez departed 
+Sep 2023. No ArgoCD, no ILM, gp2 storage, stale runbook. Adding 
+to governance audit findings.
+```
+
+### 6:40 AM — Checkpoint While Recovery Runs
+
+```bash
+# Quick check
+kubectl exec -n search es-master-0 -- \
+  curl -s http://localhost:9200/_cluster/health | \
+  jq '{status, unassigned_shards, active_shards_percent_as_number}'
+```
+
+```
+{
+  "status": "yellow",
+  "unassigned_shards": 62,
+  "active_shards_percent_as_number": 96.3
+}
+```
+
+Tracking as expected. Error rate:
+
+```
+"0.011"
+```
+
+1.1%. Almost baseline. The peer recovery on the big `products-2024.01` shards finished. 
+
+```bash
+# es-data-2 status
+kubectl exec -n search es-master-0 -- \
+  curl -s '_cat/nodes?v&h=name,heap.percent,ram.percent,cpu' | grep data
+
+es-data-0  68  82  31
+es-data-1  65  80  28
+es-data-2  72  85  38
+es-data-3  70  78  35
+```
+
+es-data-2 at 72% heap, 85% RAM. Stabilized. Good.
+
+### Scale Search Back to Full (6:45 AM)
+
+```bash
+kubectl scale deployment search-service -n search --replicas=6
+
+# Verify
+kubectl get deployment search-service -n search
+```
+
+East Coast is starting to wake up. Full capacity before traffic ramps.
+
+### 6:52 AM — Cluster GREEN
+
+```bash
+kubectl exec -n search es-master-0 -- \
+  curl -s http://localhost:9200/_cluster/health | \
+  jq '{status, unassigned_shards, active_shards_percent_as_number}'
+```
+
+```
+{
+  "status": "green",
+  "unassigned_shards": 0,
+  "active_shards_percent_as_number": 100.0
+}
+```
+
+Error rate: `0.002`. Baseline.
+
+### #incidents (6:53 AM)
+
+```
+🟢 RESOLVED — Search Service (6:53 AM)
+
+ES cluster GREEN. All shards assigned. Error rate at baseline.
+Search-service scaled back to 6 replicas. Kibana recovering.
+
+Timeline:
+  5:47 AM   Alert fired (error rate >10%)
+  5:53 AM   Acked
+  6:06 AM   Root cause: es-data-3 evicted, quota blocked recreation
+  6:19 AM   Freed node capacity, es-data-3 scheduling
+  6:22 AM   es-data-3 rejoined cluster
+  6:28 AM   Cluster YELLOW, primaries recovered, error rate 3.8%
+  6:52 AM   Cluster GREEN, full recovery
+
+Total duration: ~65 minutes (ack to GREEN)
+Peak error rate: 19.8%
+Customer impact: degraded search for ~40 minutes (5:47-6:28 AM)
+
+Follow-up needed:
+- ILM policy (no index lifecycle = root cause of storage exhaustion)
+- Search cluster ownership assignment
+- ArgoCD onboarding for search namespace
+- gp2 → gp3 migration
+- ES pod PriorityClass (prevent Karpenter preemption)
+- Review ephemeral storage limits across stateful workloads
+- Remove emergency ResourceQuota + PDB (replace with proper values)
+```
+
+### Post-Incident Notes (6:55 AM)
+
+```
+INCIDENT 7: Search/Elasticsearch Outage (SEV2)
+
+WHAT WENT RIGHT:
+- Correctly triaged 3 signals, parked 2, focused on 1
+- Root cause chain identified in 13 minutes
+- Parallel execution (scale-down + evictions) saved es-data-2
+  by literally one readiness probe cycle
+- Scaled search down to reduce ES pressure — counterintuitive 
+  but correct
+- Comms stayed structured throughout
+
+WHAT WENT WRONG:
+- PDB used wrong label selectors on first attempt (matched 0 pods)
+  Wasted ~60 seconds. In a different scenario that kills me.
+- Killed Alex's Jenkins build. Correct tradeoff (customers > CI) 
+  but I could have checked if the builds were close to completion 
+  first. Probably not — no time — but worth noting.
+- Didn't know this system existed until it broke. The drift 
+  detection CronJob I'm building today would have flagged it.
+
+SYSTEMIC PATTERN:
+- Third unowned/unmanaged system discovered this week 
+  (Kafka, Nina's export, now search)
+- Second capacity incident caused by missing lifecycle 
+  management (Redis keys, ES indices)
+- gp2 storage + no ILM + no PriorityClass + tight ResourceQuota 
+  = time bomb that was always going to detonate
+
+IMMEDIATE CLEANUP NEEDED:
+- Emergency PDB: replace with proper one using correct labels
+- Emergency ResourceQuota: right-size properly
+- Search-service: confirm 6/6 healthy
+- Catalog: confirm 3/3 healthy
+- Kibana: confirm running
+
+FOR MONDAY:
+- Add search cluster to audit report
+- Add to Tom onboarding conversation (search + kafka = 
+  "unmanaged data infrastructure" theme)
+- ILM policy — at minimum, delete indices older than 90 days
+- PriorityClass on all stateful data workloads
+```
+
+### Morning Plan (7:00 AM)
+
+```
+7:00 AM   Coffee. Breathe.
+7:15 AM   Clean up emergency PDB and quota to proper values
+7:30 AM   Verify Kibana is up, catalog 3/3, search 6/6
+8:00 AM   Confirm cluster stable (1 hour at GREEN)
+9:00 AM   Rachel's remediation table — final review, send by 10 AM
+9:30 AM   Drift detection CronJob — flesh out scan.sh, 
+          classify.sh, notify.sh from skeleton
+11:00 AM  Test drift detection against cluster
+12:00 PM  Lunch
+1:00 PM   Deploy drift detection through ArgoCD (staging first)
+2:00 PM   EKS runbook if time (due Monday, but Friday afternoon 
+          is the only window)
+3:00 PM   Derek's CB PR re-review if he's pushed updates
+4:00 PM   EOD — weekly summary, handoff notes
+```
+
+Rachel's table is done and sitting in drafts. I'll do a final read-through at 9 AM to add one line about the search cluster being added to audit findings, then send it. That's 10 minutes, not an hour.
+
+The drift detection CronJob is the hard commitment. James, Legal, and Security heard me say Monday. After this morning's incident, it's even more important. That system has been sitting unmanaged for four months since Carlos left. The CronJob would have emailed us about it on its first run.
+
+**Incident 7 count: that's 7 of 100. Three more to the notification checkpoint at 10.**
+
+---
+
+## FRIDAY 7:00 AM — THE MORNING UNFOLDS
+
+---
+
+You make coffee. The watch loop is running on your second monitor. Cluster holding GREEN. Error rate 0.2%. You exhale for the first time in an hour.
+
+### Cleanup (7:15–7:35 AM)
+
+**PDB — Proper Labels:**
+
+```bash
+$ kubectl get pods -n search -l app=elasticsearch-master \
+    -o custom-columns='NAME:.metadata.name,OWNER:.metadata.ownerReferences[0].name'
+
+NAME          OWNER
+es-master-0   es-master
+es-master-1   es-master
+es-master-2   es-master
+es-data-0     es-data
+es-data-1     es-data
+es-data-2     es-data
+es-data-3     es-data
+```
+
+No clean label split between masters and data. You go with what you have:
+
+```bash
+$ cat <<EOF | kubectl apply -f -
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: es-data-pdb
+  namespace: search
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: elasticsearch-master
+EOF
+podDisruptionBudget/es-data-pdb created
+
+$ kubectl delete pdb es-data-emergency-pdb -n search
+podDisruptionBudget "es-data-emergency-pdb" deleted
+```
+
+`maxUnavailable: 1` instead of 0 — allows one pod disruption at a time during normal operations (rolling updates, node drains) but prevents losing two simultaneously. Still covers all ES pods, not just data. Acceptable given the label limitation. ✅
+
+**ResourceQuota — Right-size:**
+
+```bash
+$ kubectl patch resourcequota search-ns-quota -n search \
+    --type='json' \
+    -p='[{"op": "replace", "path": "/spec/hard/requests.memory", "value": "80Gi"},
+         {"op": "add", "path": "/metadata/annotations/modified-by", "value": "platform-oncall"},
+         {"op": "add", "path": "/metadata/annotations/modified-date", "value": "2024-01-19"},
+         {"op": "add", "path": "/metadata/annotations/modification-reason", "value": "INC-7: es-data-3 scheduling failure. Original 64Gi insufficient for 7 ES pods + services."}]'
+resourcequota/search-ns-quota patched
+```
+
+✅ Annotated so the next person knows why it changed.
+
+**Kibana:**
+```
+$ kubectl get pods -n search -l app=kibana
+NAME                     READY   STATUS    RESTARTS   AGE
+kibana-5d8b9f-fj82k      1/1     Running   0          14m
+```
+Up. Rescheduled on ip-10-0-41-12. ✅
+
+**Catalog:**
+```
+$ kubectl get pods -n production -l app=catalog-service
+NAME                              READY   STATUS    RESTARTS   AGE
+catalog-service-7f6c-d3kl7        1/1     Running   0          5d
+catalog-service-7f6c-v8xn2        1/1     Running   0          5d
+catalog-service-7f6c-h4nb8        1/1     Running   0          9m
+```
+3/3. Third pod rescheduled on ip-10-0-43-57. But two of three are still on ip-10-0-42-44. ✅ for now — topology spread is a follow-up.
+
+**Search-service:**
+```
+$ kubectl get pods -n search -l app=search-service
+6/6 Running
+```
+✅
+
+---
+
+### 7:38 AM — Sarah Response
+
+```
+Slack — DM from Sarah Chen (7:38 AM)
+"Perfect, exactly what I needed. Using your one-liner. James 
+already emailed me at 6:50 asking about 'the search thing' — 
+someone on the CS team must have flagged it to him directly.
+
+Two things:
+1. He specifically asked if the drift detection you promised 
+   Monday would have caught this. I told him yes. Make sure 
+   that's true.
+2. Rachel pinged me — she's reviewing your dates table this 
+   morning and wants to send you comments by 9:30. She 
+   said 'it's close but I have questions.' Heads up."
+```
+
+---
+
+### 7:42 AM — Aisha DM
+
+```
+Slack — DM from Aisha Rahman (7:42 AM)
+"Updated the shadow infrastructure tally. We're at:
+
+1. Kafka cluster (data-analytics) — Tom Chen
+2. ETL CronJob (data-analytics) — Tom Chen  
+3. Kafka Connect (data-analytics) — Tom Chen
+4. Analytics Dashboard (data-analytics) — Tom Chen
+5. MongoDB Atlas external (data-analytics) — Tom Chen
+6. Order data export CronJob (order-prod) — Nina Petrov
+7. Search/ES cluster (search) — Carlos Mendez (departed)
+8. Kibana (search) — Carlos Mendez (departed)
+
+Eight unmanaged workloads, two departed/absent owners. 
+Plus the two unmanaged S3 buckets.
+
+I'm presenting this to James Monday as part of the 
+governance review. Your drift detection scan is going 
+to be exhibit A. When you test it today, can you make 
+sure it catches all of these? I want to demonstrate 
+that the tool works on known findings before we trust 
+it for unknown ones."
+```
+
+Good request. Your drift detection script needs to flag all 8 of these plus the ArgoCD-managed workloads as "managed." That's a concrete test case.
+
+---
+
+### 8:00 AM — Cluster Stable, One Hour at GREEN ✅
+
+The watch loop has been clean for an hour. You kill it. Search is stable.
+
+You have two hours before Rachel's table is due. She's sending comments at 9:30. You have the drift detection work to do. And you need coffee number two.
+
+You open the drift detection skeleton and start building it out properly.
+
+---
+
+### 8:05–9:25 AM — Drift Detection Development
+
+You flesh out the three scripts. The architecture:
+
+```
+scan.sh      → enumerate all workloads cluster-wide
+classify.sh  → compare against ArgoCD, flag unmanaged, assign risk tier
+notify.sh    → format results, send to Slack + write JSON artifact
+```
+
+The tricky part is `classify.sh`. Not everything in ArgoCD is "managed" the way you mean, and not everything outside ArgoCD is "unmanaged" — some kube-system components are deployed by EKS itself.
+
+You build the classification logic:
+
+```bash
+# classify.sh (fleshed out)
+#!/bin/bash
+set -euo pipefail
+
+# Get all ArgoCD-managed resource names
+MANAGED=$(argocd app list -o json 2>/dev/null | \
+  jq -r '.[].status.resources[]? | "\(.namespace)/\(.kind)/\(.name)"' | sort)
+
+# Known system namespaces (exempt from drift detection)
+SYSTEM_NS="kube-system|kube-public|kube-node-lease|karpenter-system|argocd|linkerd|linkerd-viz"
+
+while IFS=$'\t' read -r namespace kind name image; do
+  # Skip system namespaces
+  if echo "$namespace" | grep -qE "^($SYSTEM_NS)$"; then
+    echo -e "SYSTEM\t$namespace\t$kind\t$name"
+    continue
+  fi
+  
+  # Check if managed by ArgoCD
+  key="$namespace/$kind/$name"
+  if echo "$MANAGED" | grep -q "^${key}$"; then
+    echo -e "MANAGED\t$namespace\t$kind\t$name"
+  else
+    # UNMANAGED — assign risk tier
+    tier="LOW"
+    # HIGH: touches production data or external egress
+    if echo "$namespace" | grep -qE "^(production|payment|order)"; then
+      tier="HIGH"
+    fi
+    # CRITICAL: stateful or in sensitive namespace
+    if [ "$kind" = "StatefulSet" ] || echo "$namespace" | grep -qE "^(data-analytics|search)"; then
+      tier="CRITICAL"
+    fi
+    # Check image source
+    if ! echo "$image" | grep -qE "\.ecr\.|\.dkr\.ecr\."; then
+      tier="CRITICAL"  # Non-ECR image = always critical
+    fi
+    echo -e "UNMANAGED:${tier}\t$namespace\t$kind\t$name\t$image"
+  fi
+done
+```
+
+You test it locally against the cluster at 9:15 AM:
+
+```bash
+$ ./scan.sh | ./classify.sh | grep "UNMANAGED"
+
+UNMANAGED:CRITICAL  data-analytics  StatefulSet   kafka           bitnami/kafka:3.6.1
+UNMANAGED:CRITICAL  data-analytics  StatefulSet   zookeeper       bitnami/zookeeper:3.8.3
+UNMANAGED:CRITICAL  data-analytics  Deployment    kafka-connect   confluentinc/cp-kafka-connect:7.5.3
+UNMANAGED:CRITICAL  data-analytics  CronJob       etl-daily-agg   internal-etl:v2.1.0
+UNMANAGED:CRITICAL  data-analytics  Deployment    analytics-dash  novamart-analytics-dashboard:latest
+UNMANAGED:CRITICAL  search          StatefulSet   es-master       elasticsearch:7.17.16
+UNMANAGED:CRITICAL  search          StatefulSet   es-data         elasticsearch:7.17.16
+UNMANAGED:CRITICAL  search          Deployment    kibana          kibana:7.17.16
+UNMANAGED:HIGH      order-prod      CronJob       order-data-exp  internal-export:v1.3.0
+UNMANAGED:LOW       monitoring      Deployment    node-problem-detector  ...
+```
+
+Nine findings. **Wait — you expected eight from Aisha's list.** The ninth is `node-problem-detector` in monitoring.
+
+```bash
+$ kubectl get deployment node-problem-detector -n monitoring \
+    -o jsonpath='{.metadata.annotations}'
+
+{"deployed-by":"marcus.webb@novamart.com","deployment-tool":"kubectl apply"}
+```
+
+That's Marcus — he mentioned adding node-problem-detector to ArgoCD. He *deployed* it but apparently hasn't gotten it *into* ArgoCD yet. Not a security concern, but it proves the scanner works: it caught a workload that's in-progress onboarding.
+
+All eight of Aisha's items are flagged CRITICAL. The scanner works. ✅
+
+**You Slack Aisha at 9:20 AM:**
+
+> Drift detection scanner tested against the cluster. Catches all 8 items on your list as CRITICAL. Also caught Marcus's node-problem-detector which is deployed but not yet in ArgoCD — demonstrates the tool catches even "in-progress" onboarding gaps.
+>
+> I'll wrap the Slack notification and CronJob deployment today. First scan runs Monday morning 8 AM.
+>
+> Want me to send you the raw output for your Monday presentation?
+
+```
+Aisha (9:22 AM): "Yes please. And can you add a timestamp + 
+cluster name to the output? I want it to look like an audit 
+artifact, not a script dump."
+```
+
+Fair. You add headers and formatting.
+
+---
+
+### 9:28 AM — Rachel's Comments Arrive
+
+```
+Email from Rachel Torres (9:28 AM)
+Subject: RE: Remediation Timeline — Comments
+
+[User],
+
+Table is strong. The evidence-of-completion column is exactly 
+what I needed. Three issues before I can include this in the 
+supervisory notification:
+
+1. R-3 (Image admission enforce mode, Feb 2): What happens to 
+   existing non-ECR workloads? The search cluster and Kafka 
+   cluster are running Docker Hub images TODAY. If you enforce 
+   on Feb 2, do those workloads break? I need to know that 
+   enforcement won't cause an outage that makes us look worse 
+   during an active supervisory review.
+
+2. R-6 (Kafka platform onboarding, Jan 26): This is ONE WEEK 
+   from today and depends on Tom Chen who returns Monday. 
+   That's 4 working days to onboard an entire Kafka cluster 
+   + connectors + monitoring + runbook. Is this realistic? 
+   If you miss this date during an active supervisory review, 
+   it damages our credibility more than setting a later date 
+   would. I'd rather you give me a date you'll hit.
+
+3. Note 4 (KMS gap disclosure): I appreciate the transparency, 
+   but I want to wordsmith this. "Data remained encrypted via 
+   bucket default" could be read by a regulator as "your 
+   encryption controls worked by accident." I want to frame 
+   it as "defense in depth — bucket-level encryption provided 
+   a safety net while the explicit key policy was corrected 
+   within 17 hours." Same facts, better framing. Okay?
+
+Also: should the search cluster incident from this morning be 
+mentioned? It's the same governance gap. If the supervisory 
+authority later learns about it and it wasn't in our disclosure, 
+that's worse than including it proactively.
+
+I need your revised table by 11 AM. I'm filing the notification 
+today, not waiting until Saturday deadline.
+
+— Rachel
+```
+
+---
+
+### 9:31 AM — Derek Slack
+
+```
+Slack — DM from Derek Huang (9:31 AM)
+"Updated the CB PR per your review. Changes:
+
+1. ✅ Removed per-route timeout from inventory ServiceProfile
+2. ✅ Added metric: orders_accepted_without_stock_verification_total
+3. ✅ Added code comment block with business decision + approval
+4. ✅ Added TODO for stockCache with ticket PLAT-923
+5. ✅ PR description documents stockCache gap as known limitation
+
+For blocking #3 (stockCache) — I talked to Nina and we think 
+the right short-term fix is a last-known-good cache populated 
+on each successful inventory response. 30-second TTL. It's not 
+a full stock cache but it means the high-confidence path fires 
+for products that were recently verified. I can have a PR up 
+Monday. Want me to merge this PR with the TODO, or wait for 
+the cache PR?"
+```
+
+---
+
+### 9:33 AM — Finance Slack
+
+```
+Slack — #finance-engineering (9:33 AM)
+From: Martha Reeves (Finance Operations)
+
+"We're seeing a $47.23 reconciliation discrepancy on yesterday's 
+EUR settlement batch. 847 transactions affected — the ones from 
+Wednesday's payment outage that were retried Thursday. The 
+amounts are off by fractions of a cent on each transaction, 
+but they compound.
+
+Is this related to the payment service changes this week? The 
+discrepancy pattern looks like a rounding difference. 
+
+Tagging @payment-team @platform-engineering"
+```
+
+**There it is.** The HALF_EVEN vs HALF_UP reconciliation issue you flagged as "unverified" three days ago just showed up in production finance data. 847 transactions — exactly the number from Incident 6's blast radius.
+
+---
+
+**Current time: 9:33 AM Friday.**
+
+You have:
+1. **Rachel's table revision** — due 11 AM, three substantive questions + search incident disclosure decision
+2. **Derek's CB PR** — ready for re-review, asks whether to merge now or wait for cache
+3. **Finance reconciliation** — $47.23 discrepancy, HALF_EVEN vs HALF_UP, the thing you knew was coming but didn't flag to finance proactively
+4. **Drift detection** — scanner works, needs CronJob wrapping + ArgoCD deployment + Aisha's formatting requests
+5. **Aisha** — waiting for formatted audit output
+
+It's 9:33 AM on Friday. You have a lot of parallel work, one thing you should have done earlier that just bit you, and the weekend GDPR deadline looming.
+
+**What do you do?**
+
+
+
+
+### Priority Stack — 30 Seconds (9:33 AM)
+
+Rachel's revision is the highest-stakes deliverable. It gates the GDPR notification filing. Due 11 AM. Three questions plus the search disclosure decision. 90 minutes.
+
+The finance reconciliation is the one that stings. I knew HALF_EVEN would create a delta with historical HALF_UP transactions and I didn't proactively flag it to finance. The data is already there, the discrepancy is known, and it's $47.23 — not a crisis, but a credibility hit I could have avoided. I need to respond immediately so it doesn't fester.
+
+Derek's CB PR and the drift detection CronJob are important but neither has a Friday morning deadline.
+
+### Finance — Respond First, Fast (9:35 AM)
+
+**#finance-engineering:**
+
+> Martha — yes, this is related and I can explain the exact cause.
+>
+> On Wednesday, the payment service had a currency rounding bug (Incident 6). During the fix, we switched from `double` arithmetic to `BigDecimal` with `RoundingMode.HALF_EVEN` (banker's rounding). The previous code was effectively using `HALF_UP` rounding.
+>
+> The 847 transactions that were retried Thursday were processed with HALF_EVEN, while the original failed attempts on Wednesday would have been calculated with HALF_UP if they'd succeeded. The fractional-cent differences compound across 847 transactions to your $47.23.
+>
+> HALF_EVEN is the correct rounding mode for EU PSD2 compliance going forward — finance confirmed this Wednesday. But the historical transactions in the settlement batch were calculated under the old HALF_UP behavior, creating the delta.
+>
+> This is a known consequence of the rounding change. I should have flagged this to your team Wednesday when we deployed the fix so you weren't surprised during reconciliation. That's on me. I apologize for the gap.
+>
+> For resolution: the $47.23 is a one-time adjustment at the boundary between old and new rounding behavior. All transactions going forward use HALF_EVEN consistently. David Okafor on the payment team can help with the specific adjustment entries.
+>
+> @david.okafor — can you work with Martha on the reconciliation adjustment? You'll have the exact transaction IDs from the Incident 6 blast radius.
+
+**David Okafor — DM (9:36 AM):**
+
+> David — the HALF_EVEN reconciliation gap I mentioned Wednesday just showed up in finance. $47.23 across the 847 retried transactions. I should have proactively sent Martha a heads-up on Wednesday after the deploy. Didn't, and she found it in reconciliation. Can you help her with the adjustment entries? You've got the transaction list from the blast radius analysis.
+
+I'm not going to pretend this was unavoidable. I knew about it, I noted it in my personal notes, and I didn't close the loop with the people who would be affected. Acknowledging it now and providing the full context is better than being defensive.
+
+### Rachel's Table Revision (9:40 AM)
+
+Her three questions are all good. Taking them in order.
+
+**Question 1 — R-3 (Image admission enforce, Feb 2):**
+
+Rachel is right to worry. Enforcing non-ECR rejection would prevent the ES and Kafka pods from restarting. I need to clarify the enforcement path.
+
+```markdown
+R-3 REVISED:
+
+Image admission policy — enforce mode: Fri Feb 2
+
+ENFORCEMENT APPROACH: The policy will NOT retroactively kill 
+running pods. It blocks new pod creation with non-ECR images. 
+Existing workloads continue running but cannot be restarted, 
+scaled, or updated until images are migrated to ECR.
+
+PRE-ENFORCEMENT CHECKLIST (completed before enforce date):
+- All non-ECR workloads identified (drift detection scan)
+- For each: either (a) image mirrored to ECR and workload 
+  updated, or (b) explicit exception granted with documented 
+  justification and expiry date
+- Search cluster (ES, Kibana): images mirrored to ECR as 
+  part of R-6 onboarding timeline
+- Data-analytics (Kafka, Connect, dashboard): images mirrored 
+  to ECR as part of R-6 onboarding timeline
+
+RISK MITIGATION: If any workload is not migrated by Feb 2, 
+enforcement date extends for that specific namespace only. 
+Cluster-wide enforcement proceeds for all namespaces where 
+migration is confirmed complete.
+
+EVIDENCE: kubectl test — attempt to create pod with Docker Hub 
+image in enforced namespace → rejected. Attempt in 
+exception namespace → allowed with logged warning.
+```
+
+**Question 2 — R-6 (Kafka onboarding, Jan 26):**
+
+She's right. Four working days is aggressive for full onboarding. I was optimistic. Let me scope what's realistic.
+
+```markdown
+R-6 REVISED — Split into two milestones:
+
+R-6a: Kafka pipeline SECURED — Fri Jan 26
+  Scope: ECR image mirroring, Linkerd mesh injection, 
+         monitoring dashboards, backup configured, 
+         on-call runbook drafted
+  This is "the pipeline runs the same way but on managed 
+  infrastructure with visibility and security controls"
+  4 working days is realistic for this scope — it's 
+  operational work, not redesign
+
+R-6b: Kafka pipeline FULLY ONBOARDED — Fri Feb 9
+  Scope: ArgoCD management, Terraform state, CI/CD pipeline 
+         for Tom's team, secrets migrated to ESO, 
+         full runbook with Tom's input, team training
+  This is "the pipeline is fully self-service and maintainable"
+  Requires Tom's collaboration over 2 weeks
+
+Evidence for R-6a: ECR images running, Linkerd proxy injected 
+  (linkerd viz tap shows mTLS), Grafana dashboard accessible, 
+  backup CronJob running, runbook in Confluence.
+Evidence for R-6b: argocd app get data-analytics shows Synced, 
+  terraform state list includes all resources, Tom's team can 
+  deploy independently.
+```
+
+This gives Rachel a committed date she can trust for Jan 26 (security controls in place) and a realistic date for full onboarding. The supervisory authority cares most about security controls — that's R-6a.
+
+**Question 3 — Note 4 (KMS gap framing):**
+
+> Rachel — your framing is better. "Defense in depth" is accurate and doesn't misrepresent what happened. Updated:
+>
+> "During S3 remediation, an explicit KMS key policy gap was identified and corrected within 17 hours. Bucket-level default encryption (defense in depth) ensured data remained encrypted throughout. The gap was self-identified through proactive monitoring of the data pipeline, not through an external report."
+
+**Question 4 — Search cluster disclosure:**
+
+This is the most important question. My recommendation:
+
+```markdown
+SEARCH CLUSTER DISCLOSURE — RECOMMENDATION: YES, INCLUDE
+
+Rationale:
+- Same governance gap (unmanaged infrastructure, departed owner)
+- Supervisory authority will eventually learn about it if they 
+  audit our incident history
+- Including it proactively demonstrates:
+  (a) our detection capabilities are working (found it ourselves)
+  (b) our containment pattern is consistent
+  (c) we're being comprehensive, not cherry-picking disclosures
+- NOT including it creates "what else didn't you tell us" risk
+
+PROPOSED ADDITION TO TABLE:
+
+| C-5 | Search/ES cluster identified as unmanaged | Fri Jan 19, 6:06 AM | [me] | Cluster secured with PDB, ResourceQuota corrected. Added to drift detection scan. Onboarding timeline TBD (no owner — platform team assuming interim ownership). |
+
+Added as containment (C-5) not remediation, because it was 
+discovered during the week, not planned. This shows the pattern: 
+"we're finding and containing these as fast as they surface."
+```
+
+### Email to Rachel (9:58 AM)
+
+> Rachel,
+>
+> Revised table attached. Changes:
+>
+> 1. **R-3 (Image enforcement):** Added pre-enforcement checklist and per-namespace enforcement approach. No workload breaks — enforcement only blocks new pod creation, and we mirror images to ECR before enforcing. If any namespace isn't ready, enforcement extends for that namespace only.
+>
+> 2. **R-6 split into R-6a (Secured, Jan 26) and R-6b (Fully onboarded, Feb 9).** You're right that four days for full onboarding was unrealistic. R-6a covers the security controls the supervisory authority cares about. R-6b covers operational maturity. Dates are ones I'll hit.
+>
+> 3. **Note 4 reframed** per your language. "Defense in depth" framing. Same facts.
+>
+> 4. **Search cluster added as C-5.** My strong recommendation is to include it. Same governance gap, and "what else didn't you tell us" is worse than a longer disclosure. I've framed it as "discovered during containment week, immediately secured."
+>
+> This is ready for your filing. Let me know if you need anything else before 11.
+
+### Derek — DM (10:02 AM)
+
+> Merge the CB PR with the TODO. Here's my reasoning:
+>
+> The PR as-is gives us circuit breaker protection that we don't have today. The low-confidence fallback with `available: true` is a documented, business-approved decision with a tracking metric. The stockCache gap is a known limitation that's documented in the PR description with a ticket number.
+>
+> Waiting for the cache means we have no circuit breaker protection until at least next week. That's a worse risk posture than having a CB with a known limitation in the fallback path.
+>
+> The 30-second-TTL last-known-good cache sounds right as a short-term approach. Submit that as a follow-up PR Monday. When it merges, the high-confidence path starts firing and the low-confidence path becomes rare.
+>
+> One condition: deploy the CB to staging first and run Nina's load test before production. Don't skip that step — we've had enough "reasonable defaults meet production reality" this week.
+
+### Drift Detection — Finishing Touches (10:05 AM)
+
+While waiting for Rachel's response, I wrap the CronJob:
+
+- Add timestamp + cluster name headers per Aisha's request
+- Format output as both Slack message and JSON artifact saved to S3
+- Test the full pipeline: scan → classify → notify (Slack webhook to a test channel)
+- Write the ArgoCD Application manifest
+- Deploy to staging, run once manually, verify output
+
+```bash
+# Quick test of the full pipeline
+./scan.sh | ./classify.sh | ./notify.sh --dry-run
+
+# Output:
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  DRIFT DETECTION SCAN — novamart-prod-cluster               ║
+# ║  Timestamp: 2024-01-19T10:15:00Z                            ║
+# ║  Scanned: 47 workloads across 12 namespaces                 ║
+# ╠══════════════════════════════════════════════════════════════╣
+# ║  MANAGED (ArgoCD):     38                                    ║
+# ║  SYSTEM (exempt):      14                                    ║
+# ║  UNMANAGED:            9                                     ║
+# ║    CRITICAL:           8                                     ║
+# ║    HIGH:               1                                     ║
+# ║    LOW:                0                                     ║
+# ╠══════════════════════════════════════════════════════════════╣
+# ║  UNMANAGED FINDINGS:                                         ║
+# ║  [CRITICAL] data-analytics/StatefulSet/kafka                 ║
+# ║  [CRITICAL] data-analytics/StatefulSet/zookeeper             ║
+# ║  [CRITICAL] data-analytics/Deployment/kafka-connect          ║
+# ║  ... (full list)                                             ║
+# ╚══════════════════════════════════════════════════════════════╝
+```
+
+**Send formatted output to Aisha (10:20 AM):**
+
+> Aisha — here's the formatted scan output for your Monday presentation. Timestamp, cluster name, counts, and full findings list. JSON artifact also available if you want machine-readable format.
+>
+> CronJob is ready for ArgoCD deployment. Deploying to staging now, production Monday morning.
+
+### Aisha Response (10:25 AM):
+
+> Perfect. This is exactly what I need. Thank you.
+
+### Deploy to Staging (10:30 AM):
+
+```bash
+# Deploy CronJob through ArgoCD
+argocd app create drift-detection \
+  --repo https://github.com/novamart/platform-infra.git \
+  --path manifests/monitoring/drift-detection \
+  --dest-server https://kubernetes.default.svc \
+  --dest-namespace monitoring \
+  --sync-policy automated
+
+# Trigger a manual run to verify
+kubectl create job --from=cronjob/drift-detection-scan \
+  drift-detection-test -n monitoring
+
+# Watch it run
+kubectl logs -n monitoring -l job-name=drift-detection-test -f
+```
+
+Staging run completes cleanly. Slack notification fires in test channel. JSON artifact written to S3. All 9 unmanaged workloads detected.
+
+Monday morning production deployment is ready. One `argocd app sync` and it's live.
+
+### Status Check (10:45 AM)
+
+```
+✅ Finance reconciliation: responded, David working with Martha
+✅ Rachel's table: revised, sent, awaiting confirmation  
+✅ Derek's CB PR: told him to merge with TODO
+✅ Drift detection: tested, deployed to staging, ready for Monday
+✅ Aisha: formatted output sent
+✅ Search incident: stabilized, cleanup done, follow-ups noted
+
+REMAINING TODAY:
+  11:00 AM  Rachel confirmation (hopefully)
+  11:30 AM  EKS runbook — polish what I have (due Monday)
+  12:00 PM  Lunch
+  1:00 PM   Drift detection production prep (ArgoCD manifests, 
+            final review)
+  2:00 PM   Weekly summary + handoff notes
+  3:00 PM   Any follow-ups from Rachel / PCI filing
+  4:00 PM   EOD
+
+MONDAY:
+  8:00 AM   Drift detection first production scan
+  10:00 AM  Tom onboarding meeting (Sarah, Wei, Tom, me)
+  Afternoon  Search cluster: ILM policy, PriorityClass, gp2 assessment
+```
+
+The finance thing is going to live in my head for a while. I had the information Wednesday. I noted it. I didn't close the loop. $47.23 isn't a disaster, but Martha finding it in reconciliation instead of getting a heads-up from me is exactly the kind of communication gap I've been good at avoiding this week — until I wasn't.
+
+Lesson: when you identify a downstream impact, tell the downstream team *that day*, even if it's a "heads up, you'll probably see X" message. Don't wait for them to find it.
+
+
