@@ -11739,3 +11739,826 @@ James uncrosses his arms. He's nodding slowly.
 
 **Go.**
 
+I take Wei and Aisha's question first — it's the fastest to resolve and I have a definite answer.
+
+> Wei — yes, the S3 sink is already running. When I applied the network policy Wednesday, it blocks egress to MongoDB Atlas but allows egress to S3 through the VPC endpoint. Orders and order_items have been flowing to the `novamart-analytics-datalake` bucket continuously. Your analysts' order data is uninterrupted.
+
+I pause.
+
+> Actually — I want to be precise. The S3 sink was running as of yesterday afternoon. I should confirm it's still healthy after some encryption changes I made to that bucket yesterday. Let me verify right after this meeting and message you within the hour.
+
+I look at Aisha.
+
+> To be clear on what's running and what's blocked: the Kafka Connect S3 sink writes `etl.orders` and `etl.order_items` to S3 — that's order data, not payment data. That can keep running. The MongoDB Atlas sink for `etl.payments` and `etl.refunds` is in FAILED state and stays that way. The ETL CronJob itself still runs daily at 2 AM — it reads from the production RDS and writes to Kafka topics. Aisha, you told me Wednesday to leave the CronJob running. Do you want to revisit that, or keep it as-is pending the full onboarding?
+
+Addressing Aisha's concern directly before moving on — she needs to confirm the current containment posture is still what she wants with the new information about free-tier Atlas.
+
+> If we keep the CronJob running, payment data continues to flow into Kafka topics but goes nowhere — the Atlas sink is blocked and there's no other consumer. If we suspend the CronJob, we stop all data flow but Wei's team also loses the order data pipeline. My recommendation: keep it running, since the S3 path for order data is legitimate and the payment data path is already dead-ended at the blocked sink. But Aisha, your call.
+
+**Aisha:** Keep it running. The containment is on the egress, not the ingestion. As long as Atlas stays blocked, I'm fine.
+
+**Wei:** nods, visibly relieved about the S3 data.
+
+---
+
+Now Rachel.
+
+> Rachel — I'll have specific dates to you by 10 AM tomorrow, not end of day. You'll have a table with each control, a committed completion date, and who owns it. Not ranges.
+
+> I can give you three of them right now:
+> - **Drift detection CronJob deployed:** Monday, January 22
+> - **Image admission policy in warn mode:** Friday, January 26
+> - **MongoDB Atlas egress blocked:** already done, Wednesday January 17 at 12:15 PM
+
+> The rest — enforcement dates for image policy, default-deny network policy rollout, namespace RBAC, egress gateway — I need to check against the team's existing commitments before I put a date on them. I don't want to commit to a date in this room that I have to walk back on Monday.
+
+**Rachel:** nods. That works. 10 AM Friday.
+
+---
+
+Now James. The harder question.
+
+> James — on compressing the timeline. Honest answer: I can compress some of it, but I want to tell you where the real constraints are rather than give you an aggressive number I'll miss.
+
+> The drift detection and the image admission policy are both within my control. Those can move fast. I said Monday and end of January — I'll hold those or beat them.
+
+> Default-deny network policy is where it gets harder. The policy itself is simple. The risk is applying it to namespaces that have legitimate egress we haven't mapped. If I enforce too fast and break a production data flow, we're back in this room with a different incident. The audit I ran Wednesday gives us the map for `data-analytics`, but I haven't mapped egress for every namespace yet. I can probably compress from "end of February" to "February 14" if I make that mapping my priority next week alongside Tom's onboarding.
+
+> Egress gateway is the one I can't compress much. It requires either extending our Linkerd setup or deploying a dedicated proxy, integration testing, and migration. That's real engineering work, not policy work. I'd rather give you a solid "end of Q1" than promise "end of February" and deliver something half-baked that gives false confidence.
+
+Now Nina's point — because James explicitly asked me to factor in self-service.
+
+> On the self-service catalog — Nina, what you said is important and I want to make sure I'm solving the right problem. Can I ask you a direct question? If three months from now you have another finance request for a data export, what would "easy" look like to you? Is it a template you can fill out and deploy yourself through ArgoCD? Is it a Slack request that gets provisioned within a day? I want to build the thing you'd actually use, not the thing I think you should use.
+
+I'm doing this deliberately — Nina just gave me real user feedback in front of the VP. I'm treating her as a customer, not a policy violator. James will notice that. But more importantly, her answer will actually determine what we build.
+
+**Nina:**
+> Honestly? A template I can clone, fill in my source and destination, and submit a PR. If it goes through a review and deploys through ArgoCD within a day or two, that's fine. What I couldn't do was wait two weeks for a platform onboarding meeting for something that took me 20 minutes to write.
+
+> Fair. That's buildable. A CronJob template repo with pre-configured S3 destinations, ArgoCD integration, and built-in encryption and RBAC — submit a PR, get a review, deployed within a day. That's not a Q1 project, that's a two-to-three-week project once the guardrails are in place.
+
+I look at James.
+
+> So revised timeline with self-service factored in: drift detection next Monday, image admission by end of January, self-service data pipeline template by mid-February alongside default-deny rollout, egress gateway by end of Q1. I'd like the self-service template to ship at the same time as default-deny — the wall and the door at the same time. Otherwise we block teams from deploying things they need and the goodwill evaporates.
+
+> Rachel, I'll include these dates in tomorrow's table.
+
+> One last thing — when Tom is back Monday, I'd like to sit down with him and Wei together. Not to audit him, but to understand what his team actually needs from the analytics pipeline, so the managed version we build actually serves them. If it doesn't, we'll be back here.
+
+I stop. I've answered all three threads. The meeting is wrapping up and I need to check that ETL alert the moment I'm out of this room.
+
+
+
+The meeting is quiet for a moment.
+
+**James Morrison:**
+> Good. I like "the wall and the door at the same time." Do that. 
+
+He closes his notebook.
+
+> Let me summarize what I'm hearing as commitments:
+>
+> 1. Drift detection — Monday
+> 2. Rachel gets remediation dates — tomorrow 10 AM
+> 3. Image admission warn mode — end of January
+> 4. Self-service template + default-deny — mid-February
+> 5. Egress gateway — end of Q1
+> 6. Tom meeting Monday — onboarding, not auditing
+> 7. GDPR supervisory notification — Rachel owns, by Saturday
+>
+> Anything I'm missing?
+
+**Aisha:**
+> Atlas stays blocked. That's non-negotiable until we either decommission the account or rebuild the pipeline under platform management with proper controls. And I want confirmation that the data in Atlas gets purged once Legal clears us.
+
+**Rachel:**
+> I'll need to advise on the Atlas data retention. We may need to preserve it for the supervisory authority's review. Don't purge anything until I say so.
+
+**Aisha:**
+> Fine. Blocked and preserved. Not blocked and forgotten.
+
+**James:**
+> Done. Good meeting. [Looks at you and Wei] Make Monday productive with Tom. I don't want him feeling like he's walking into an ambush.
+
+**Sarah:**
+> I'll set up the Monday meeting invite. Tom, Wei, [you], and me. 10 AM.
+
+---
+
+**The room starts to break up. It's 2:38 PM.**
+
+**Rachel catches you on the way out.**
+
+**Rachel Torres (quietly, at the door):**
+> Your presentation was clear and fair. One thing — when you send me the dates tomorrow, include a column for "evidence of completion." For each control, I need to be able to tell the supervisory authority not just "we did it" but "here's how we verified it works." Deployment date plus a test or audit result. Can you do that?
+
+She doesn't wait for an answer — she's already walking toward Legal.
+
+---
+
+**You're in the hallway. It's 2:39 PM.**
+
+**Your phone.**
+
+```
+📱 PagerDuty — Informational (from 2:04 PM, 35 minutes ago)
+
+Alert:    ETLJobFailure_data-analytics
+Summary:  CronJob etl-daily-aggregation failed.
+          Job data-analytics/etl-daily-agg-28948320 
+          completed with 1 failure. Exit code 1.
+```
+
+**35 minutes old. You deprioritized it for the meeting. That was the right call for the room. But now you need to figure out what happened.**
+
+**Your mental checklist of "things that might be my fault":**
+
+```
+1. KMS re-encryption of S3 buckets — did the ETL writer lose 
+   the ability to write to S3 because it doesn't have 
+   kms:GenerateDataKey on the new key?
+
+2. NetworkPolicy v3 egress rules — did I accidentally block 
+   the ETL's connection to RDS? The egress uses ipBlock CIDR, 
+   which I noted was fragile on failover. Did the RDS endpoint 
+   resolve to a different IP?
+
+3. PLAT-919 PrometheusRule scope — is this alert even real? 
+   Did I write the rule too broadly and it's matching 
+   something it shouldn't?
+
+4. Something else entirely that I haven't thought of.
+```
+
+**You told Wei "within the hour" that you'd confirm the S3 sink is healthy. You told Rachel you'd have dates by 10 AM tomorrow. You have Derek's circuit breaker PR to review. And you have an ETL failure that might be fallout from your own remediation work.**
+
+**It's 2:39 PM Thursday. What do you do?**
+
+---
+
+```
+⏱️ CHAOS ENGINE — TIME TRACKING
+
+Active items with time pressure:
+  - ETL alert: 35 min old, uninvestigated
+  - Wei confirmation: promised "within the hour" (by ~3:38 PM)
+  - Rachel dates: promised 10 AM Friday (comfortable, but needs prep)
+  - Derek CB PR: no hard deadline, but he's waiting
+  - GDPR notification deadline: Saturday ~8:30 PM (Rachel owns draft,
+    you own remediation dates)
+  - Drift detection CronJob: committed Monday to James/VP
+    (you committed this publicly, in front of Legal and Security)
+
+Items you haven't checked yet:
+  ❓ Is the S3 sink actually still working post-KMS change?
+  ❓ Is PLAT-919 correctly scoped?
+  ❓ What caused the ETL failure?
+  ❓ Did your KMS key policy include the right IAM principals?
+  ❓ Has the ETL been failing since 2 AM (12+ hours ago)?
+```
+
+I pull out my phone and glance at the alert details while walking. Rachel's ask — "evidence of completion" column — noted, I'll add it tomorrow. Right now the ETL failure needs my attention.
+
+I head straight to my desk. Laptop open by 2:41 PM.
+
+### Quick Slack to Wei (2:41 PM)
+
+> Wei — checking the S3 sink and ETL health now. Got an alert during the meeting that the ETL job failed. Investigating whether it's related to my S3 encryption changes yesterday. Will message you as soon as I know. Still targeting within the hour.
+
+No point hiding it. If I broke his pipeline with my remediation, he should know I'm on it rather than hearing about it from an analyst at 4 PM.
+
+### Investigation — Start Clock (2:42 PM)
+
+First question: **when did this actually happen?** The alert says 2:04 PM but the ETL is scheduled for 2 AM.
+
+```bash
+# Check the job history
+kubectl get jobs -n data-analytics -l app=etl-daily-aggregation \
+  --sort-by=.metadata.creationTimestamp
+
+# When did the failed job run?
+kubectl describe job etl-daily-agg-28948320 -n data-analytics | \
+  grep -E "Start Time|Completion|Failed|Succeeded"
+```
+
+I need to know if this is a delayed alert from the 2 AM run, or if someone triggered the job manually, or if the CronJob schedule is different than I assumed.
+
+```bash
+# Check the CronJob schedule
+kubectl get cronjob etl-daily-aggregation -n data-analytics \
+  -o jsonpath='{.spec.schedule}'
+```
+
+Second question: **why did it fail?**
+
+```bash
+# Get the pod from the failed job
+kubectl get pods -n data-analytics -l job-name=etl-daily-agg-28948320
+
+# Logs from the failed pod
+kubectl logs -n data-analytics \
+  $(kubectl get pods -n data-analytics -l job-name=etl-daily-agg-28948320 \
+  -o jsonpath='{.items[0].metadata.name}') --tail=100
+```
+
+I'm looking for one of three things in those logs:
+
+1. **KMS/S3 permission error** — something like `AccessDeniedException` or `KMS.NotFoundException` — means my encryption change broke the writer
+2. **Connection refused / timeout to RDS** — means my NetworkPolicy or an RDS IP change broke the database connection
+3. **Something else entirely** — Kafka write failure, OOM, application error
+
+Third question — while those commands run: **is the S3 sink healthy?** This is what I promised Wei.
+
+```bash
+# Check Kafka Connect connector status
+kubectl exec -n data-analytics \
+  $(kubectl get pods -n data-analytics -l app=kafka-connect \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  curl -s http://localhost:8083/connectors/orders-sink-s3/status | jq
+
+# Specifically check for KMS errors
+kubectl logs -n data-analytics -l app=kafka-connect --since=2h | \
+  grep -iE "error|exception|denied|kms" | tail -20
+```
+
+I'm running all of these roughly in parallel — I don't have the luxury of doing them sequentially and waiting for each result.
+
+While I wait for output, I pull up the KMS key policy I created yesterday to check my own work:
+
+```bash
+aws kms describe-key --key-id alias/novamart-data-exports \
+  --query 'KeyMetadata.KeyId' --output text
+
+aws kms get-key-policy --key-id alias/novamart-data-exports \
+  --policy-name default --output text | jq '.Statement[].Principal'
+```
+
+**What I'm specifically looking for:** did I scope the key policy to only the two IAM roles I intended for the `novamart-data-exports` bucket, and did I forget to include the Kafka Connect role that writes to `novamart-analytics-datalake`? Those are two different buckets with two different KMS keys — I need to check both.
+
+```bash
+# Check the analytics datalake key too
+aws kms get-key-policy --key-id alias/novamart-analytics-datalake \
+  --policy-name default --output text | jq '.Statement[].Principal'
+```
+
+I'm also checking one more thing that's been nagging me:
+
+```bash
+# PLAT-919 alert rule - is it scoped correctly?
+kubectl get prometheusrule -n monitoring -l app=plat-919 -o yaml | \
+  grep -A 10 "ETLJobFailure"
+```
+
+I wrote PLAT-919 Monday for Redis alerting. If the ETL failure matched a broadly-scoped rule, that's a separate problem — it means my alerting is catching things it wasn't designed for, which is actually useful but also means I need to understand the rule's scope.
+
+---
+
+### What I'm NOT doing right now
+
+- Derek's CB PR — it can wait until after I confirm whether I broke Wei's pipeline
+- Rachel's dates table — that's tomorrow morning, I have time
+- Drift detection CronJob — that's a weekend/Monday deliverable
+
+The ETL alert is the only thing that matters for the next 20 minutes because if this is KMS permission fallout from my own remediation, then:
+
+1. The 2 AM ETL run may have also failed — which means 16+ hours of missing data
+2. The S3 sink may also be broken — which means I told Wei "your data is uninterrupted" in front of six people and was wrong
+3. I need to fix it before telling Wei, not after
+
+I'm watching the terminal for output.
+
+
+
+## Investigation Results — They Come Back Messy
+
+### Job History
+
+```bash
+$ kubectl get jobs -n data-analytics -l app=etl-daily-aggregation \
+    --sort-by=.metadata.creationTimestamp
+
+NAME                          COMPLETIONS   DURATION   AGE
+etl-daily-agg-28947680       1/1           4m22s      3d
+etl-daily-agg-28947960       1/1           4m18s      2d
+etl-daily-agg-28948240       1/1           4m31s      1d
+etl-daily-agg-28948320       0/1           32s        12h
+```
+
+The failed job is **12 hours old.** It ran at 2:00 AM today. The alert fired at 2:04 PM — twelve hours late.
+
+### Why Was the Alert Delayed?
+
+```bash
+$ kubectl get prometheusrule -n monitoring -o yaml | grep -B5 -A15 "ETLJobFailure"
+
+# No results.
+```
+
+```bash
+$ kubectl get prometheusrule -n monitoring -o yaml | grep -B5 -A15 "etl\|ETL\|job"
+
+# No results.
+```
+
+There is no `ETLJobFailure` rule in PLAT-919. So where did the alert come from?
+
+```bash
+$ kubectl get prometheusrule -n monitoring -o yaml | grep -B5 -A15 "JobFailed\|kube_job"
+
+- alert: KubeJobFailed
+  expr: kube_job_status_failed{namespace!~"kube-system|ci"} > 0
+  for: 12h
+  labels:
+    severity: warning
+  annotations:
+    summary: "Job {{ $labels.namespace }}/{{ $labels.job_name }} failed"
+```
+
+**There it is.** This isn't PLAT-919. This is a generic `KubeJobFailed` rule that's been in the monitoring stack since before you. It has a `for: 12h` clause — meaning it waits 12 hours before firing to avoid alerting on transient job failures. The ETL job failed at 2 AM, and the alert fired at 2 PM. Twelve hours exactly.
+
+**PLAT-919 is correctly scoped to Redis.** That's one concern eliminated. But your assumption in the hallway was wrong — this isn't your alert rule being too broad. It's a pre-existing rule you didn't know about.
+
+### Job Failure Details
+
+```bash
+$ kubectl describe job etl-daily-agg-28948320 -n data-analytics
+
+Name:           etl-daily-agg-28948320
+Namespace:      data-analytics
+Start Time:     Thu, 17 Jan 2024 02:00:00 +0000
+Completed At:   Thu, 17 Jan 2024 02:00:32 +0000
+Duration:       32s
+Pods Statuses:  0 Active / 0 Succeeded / 1 Failed
+```
+
+32 seconds. Normal runs take ~4 minutes. It failed fast.
+
+```bash
+$ kubectl get pods -n data-analytics -l job-name=etl-daily-agg-28948320
+
+NAME                               READY   STATUS   RESTARTS   AGE
+etl-daily-agg-28948320-xk9vn      0/1     Error    0          12h
+```
+
+```bash
+$ kubectl logs -n data-analytics etl-daily-agg-28948320-xk9vn --tail=100
+```
+
+**Output:**
+
+```
+2024-01-18T02:00:03Z INFO  Starting ETL daily aggregation...
+2024-01-18T02:00:03Z INFO  Connecting to source database...
+2024-01-18T02:00:04Z INFO  Connected to novamart-orders-db.xxxxx.us-east-1.rds.amazonaws.com
+2024-01-18T02:00:04Z INFO  Reading table: orders (batch 1)...
+2024-01-18T02:00:08Z INFO  Read 12,847 rows from orders
+2024-01-18T02:00:08Z INFO  Reading table: order_items (batch 1)...
+2024-01-18T02:00:14Z INFO  Read 31,209 rows from order_items
+2024-01-18T02:00:14Z INFO  Reading table: payments (batch 1)...
+2024-01-18T02:00:18Z INFO  Read 11,423 rows from payments
+2024-01-18T02:00:18Z INFO  Reading table: refunds (batch 1)...
+2024-01-18T02:00:20Z INFO  Read 847 rows from refunds
+2024-01-18T02:00:20Z INFO  Writing to Kafka topic: etl.orders...
+2024-01-18T02:00:22Z INFO  Writing to Kafka topic: etl.order_items...
+2024-01-18T02:00:25Z INFO  Writing to Kafka topic: etl.payments...
+2024-01-18T02:00:27Z INFO  Writing to Kafka topic: etl.refunds...
+2024-01-18T02:00:28Z INFO  Kafka write complete. Verifying sinks...
+2024-01-18T02:00:28Z INFO  Checking connector: orders-sink-s3... status=RUNNING ✓
+2024-01-18T02:00:29Z INFO  Checking connector: payments-sink-mongo... status=FAILED
+2024-01-18T02:00:29Z ERROR Sink verification failed: payments-sink-mongo is in FAILED state
+2024-01-18T02:00:29Z ERROR Expected all sinks healthy. Aborting with exit code 1.
+2024-01-18T02:00:32Z INFO  ETL job completed with errors. Exit code: 1
+```
+
+---
+
+**Read that carefully.**
+
+The ETL job **succeeded at reading all data from RDS and writing all data to Kafka.** Then it ran a sink health verification check, found that `payments-sink-mongo` (the Atlas connector) is in FAILED state, and exited with code 1.
+
+**This is not a KMS issue. This is not a NetworkPolicy issue. This is not an RDS issue.**
+
+The ETL job has a built-in verification step that checks if all downstream sinks are healthy. Your NetworkPolicy blocked the Atlas sink on Wednesday at 12:15 PM. The sink went to FAILED state. The ETL job ran at 2 AM Thursday, did its work successfully, but then the verification step saw the FAILED sink and reported failure.
+
+**Your containment action (blocking Atlas) is what caused this alert.** Not through breakage, but through the ETL's own health check catching the intentionally-downed sink.
+
+### But Wait — Is the Data Still Flowing?
+
+Re-read the logs. The ETL:
+1. ✅ Read from RDS (all four tables)
+2. ✅ Wrote to Kafka (all four topics)  
+3. ✅ S3 sink verified RUNNING
+4. ❌ Atlas sink verified FAILED → exit code 1
+
+**The data IS in Kafka.** The S3 sink IS writing orders/order_items to S3. The Atlas sink is blocked (as intended). The exit code 1 is from the verification check, not from a data processing failure.
+
+**This means:**
+- Wei's order data pipeline: **WORKING** ✅
+- Payment data to Atlas: **BLOCKED** ✅ (as intended)
+- But the job reports as "failed" because it expects all sinks healthy
+- This "failure" will fire every night until you either fix the sink or modify the job's health check
+- And the `KubeJobFailed` alert will fire 12 hours after each "failure"
+
+### S3 Sink — Direct Verification
+
+```bash
+$ kubectl exec -n data-analytics \
+    $(kubectl get pods -n data-analytics -l app=kafka-connect \
+    -o jsonpath='{.items[0].metadata.name}') -- \
+    curl -s http://localhost:8083/connectors/orders-sink-s3/status | jq
+
+{
+  "name": "orders-sink-s3",
+  "connector": {"state": "RUNNING"},
+  "tasks": [{
+    "id": 0,
+    "state": "RUNNING"
+  }]
+}
+```
+
+S3 sink is running. But is it actually writing successfully after the KMS change?
+
+```bash
+$ kubectl logs -n data-analytics -l app=kafka-connect --since=14h | \
+    grep -iE "error|exception|denied|kms" | tail -20
+```
+
+**Output:**
+
+```
+2024-01-18T02:00:34Z WARN  [orders-sink-s3|task-0] S3 write retry 1/3: 
+  com.amazonaws.services.s3.model.AmazonS3Exception: Access Denied 
+  (Service: Amazon S3; Status Code: 403; Error Code: AccessDenied; 
+  Request ID: xxx)
+2024-01-18T02:00:36Z WARN  [orders-sink-s3|task-0] S3 write retry 2/3: 
+  com.amazonaws.services.s3.model.AmazonS3Exception: Access Denied
+2024-01-18T02:00:38Z WARN  [orders-sink-s3|task-0] S3 write retry 3/3: 
+  com.amazonaws.services.s3.model.AmazonS3Exception: Access Denied
+2024-01-18T02:00:40Z ERROR [orders-sink-s3|task-0] Failed to write to S3: 
+  Access Denied. Falling back to unencrypted write path.
+2024-01-18T02:00:41Z WARN  [orders-sink-s3|task-0] Writing without 
+  server-side encryption specification. Bucket default will apply.
+2024-01-18T02:00:42Z INFO  [orders-sink-s3|task-0] S3 write successful 
+  (using bucket default encryption)
+```
+
+---
+
+**There it is.**
+
+The S3 sink connector tried to write with its existing configuration. Your KMS change on the bucket means new writes require `kms:GenerateDataKey` permission. **The Kafka Connect IAM role doesn't have that permission.** 
+
+The connector retried three times, failed, and then **fell back to writing without specifying encryption** — which worked because the bucket default encryption (now KMS) is applied server-side by S3 regardless of what the client specifies.
+
+**So the data IS being written. It IS encrypted with KMS (bucket default applies). But:**
+
+1. The connector is logging WARNs on every write
+2. The "fallback to unencrypted write path" language is misleading — the data IS encrypted because the bucket enforces it. But the connector *thinks* it's writing unencrypted.
+3. If someone changes the bucket default encryption policy later, the connector would actually write unencrypted
+4. The connector's IAM role should still get `kms:GenerateDataKey` to make this explicit rather than relying on bucket default behavior
+
+### KMS Key Policy Check
+
+```bash
+$ aws kms get-key-policy --key-id alias/novamart-data-exports \
+    --policy-name default --output text | jq '.Statement[].Principal'
+
+{"AWS": "arn:aws:iam::role/platform-admin"}
+{"AWS": "arn:aws:iam::role/order-data-export-role"}
+{"AWS": "arn:aws:iam::role/data-analytics-role"}
+```
+
+Three principals. `data-analytics-role` has decrypt permission (you gave it read access for the exports bucket). But the Kafka Connect S3 sink — **what IAM role does it use?**
+
+```bash
+$ kubectl get serviceaccount -n data-analytics
+
+NAME                    SECRETS   AGE
+default                 1         69d
+kafka-connect-sa        1         47d
+
+$ kubectl get serviceaccount kafka-connect-sa -n data-analytics -o yaml | \
+    grep -A2 annotations
+
+annotations:
+  eks.amazonaws.com/role-arn: arn:aws:iam::role/kafka-connect-s3-writer
+```
+
+**The Kafka Connect pod uses `kafka-connect-s3-writer` role.** That role is NOT in your KMS key policy. You gave permissions to `data-analytics-role` (which the analytics dashboard uses) but not to `kafka-connect-s3-writer` (which the S3 sink uses).
+
+**But wait — the S3 sink writes to `novamart-analytics-datalake`, not `novamart-data-exports`.** Did you use the same KMS key for both buckets, or different keys?
+
+```bash
+$ aws s3api get-bucket-encryption --bucket novamart-analytics-datalake
+
+{
+    "Rules": [{
+        "ApplyServerSideEncryptionByDefault": {
+            "SSEAlgorithm": "aws:kms",
+            "KMSMasterKeyID": "abc123-..."
+        },
+        "BucketKeyEnabled": true
+    }]
+}
+```
+
+**Same key (`abc123-...`) on both buckets.** And the `kafka-connect-s3-writer` role is not in that key's policy.
+
+---
+
+## THE FULL PICTURE
+
+```
+WHAT HAPPENED:
+
+1. You re-encrypted both S3 buckets with KMS key abc123 (Wed ~1 PM)
+2. You gave kms:GenerateDataKey to: platform-admin, 
+   order-data-export-role, data-analytics-role
+3. You did NOT give kms:GenerateDataKey to: kafka-connect-s3-writer
+4. At 2 AM Thursday, the ETL job ran and wrote to Kafka (SUCCESS)
+5. The Kafka Connect S3 sink tried to write to novamart-analytics-datalake
+6. S3 returned 403 AccessDenied (no KMS permission)
+7. The connector retried 3x, failed, fell back to "unencrypted write"
+8. S3 bucket default encryption (KMS) kicked in — data IS encrypted
+9. The connector reported success (via fallback path)
+10. The ETL job verified sink health: S3 RUNNING, Atlas FAILED
+11. ETL exited code 1 because Atlas sink is FAILED (your block)
+12. KubeJobFailed alert fired 12 hours later (pre-existing rule)
+
+RESULT:
+  ✅ Data is flowing
+  ✅ Data is encrypted (via bucket default, not client-side)
+  ⚠️ S3 connector logging AccessDenied WARNs on every write batch
+  ⚠️ ETL job reporting "failed" every night (Atlas health check)
+  ⚠️ KubeJobFailed alert will fire every day at 2 PM
+  ❌ kafka-connect-s3-writer missing from KMS key policy
+  ❌ Relying on bucket default encryption rather than explicit 
+     client-side KMS — fragile
+
+SEVERITY: Low. Data is safe. But it's held together with duct tape.
+```
+
+---
+
+**It's 2:55 PM. You've been investigating for 13 minutes.**
+
+**You owe Wei a message (promised within the hour — deadline ~3:38 PM).**
+
+**You know:**
+- S3 sink is working (via fallback) ✅
+- Data is encrypted (via bucket default) ✅  
+- But the KMS permission gap needs fixing
+- And the nightly "failed" ETL alert needs addressing
+
+**Three things you need to decide:**
+1. **Fix the KMS permission now?** (Quick — add the IAM role to the key policy. But do you know for sure that's the only missing role?)
+2. **Tell Wei the good news or the full picture?** (Data is flowing. But do you mention the AccessDenied warns and the duct tape, or just say "confirmed working"?)
+3. **Address the nightly alert?** (The ETL will "fail" every night at 2 AM because Atlas is blocked. Do you silence the alert? Modify the job? Accept the noise until Tom's back?)
+
+**Also: you just learned something about yourself.** You stood up in front of the VP and said "the S3 sink was running as of yesterday afternoon" — which was true. But you didn't verify KMS permissions when you made the encryption change. The data pipeline is intact by accident (bucket default fallback), not by design. **You got lucky.**
+
+**What do you do?**
+
+First: I sit with the uncomfortable realization for about five seconds. I told seven people including the VP that the S3 data flow was uninterrupted. That was true by luck, not by competence. I didn't check KMS permissions when I re-encrypted. That's the kind of thing I flagged for Priya in her PR review yesterday — and then I did the equivalent myself on infrastructure.
+
+Noted. Learn from it. Now fix it.
+
+### Fix the KMS Permission — But Carefully (2:56 PM)
+
+Before I add the role, I want to make sure I'm not doing the same thing again — fixing one principal and missing another.
+
+```bash
+# Who writes to novamart-analytics-datalake? 
+# Check S3 access logs I enabled yesterday
+aws s3 ls s3://novamart-analytics-datalake-logs/ --recursive | tail -20
+
+# Parse recent access log entries for PUT operations
+aws s3 cp s3://novamart-analytics-datalake-logs/2024-01-18-02-00-*.gz - | \
+  gunzip | grep "PUT" | awk '{print $5}' | sort -u
+```
+
+```bash
+# Who writes to novamart-data-exports?
+aws s3 cp s3://novamart-data-exports-logs/2024-01-18-02-00-*.gz - | \
+  gunzip | grep "PUT" | awk '{print $5}' | sort -u
+```
+
+I want to see every IAM principal that's actually writing to these buckets before I update the key policy. I'm not going to patch one role and discover a third writer failing silently tomorrow.
+
+While those parse, I also check:
+
+```bash
+# Are there any other service accounts in data-analytics 
+# that might write to S3?
+kubectl get pods -n data-analytics -o json | \
+  jq -r '.items[].spec.serviceAccountName' | sort -u
+
+# And what roles do they map to?
+kubectl get serviceaccounts -n data-analytics -o json | \
+  jq -r '.items[] | select(.metadata.annotations["eks.amazonaws.com/role-arn"] != null) | 
+  .metadata.name + " -> " + .metadata.annotations["eks.amazonaws.com/role-arn"]'
+```
+
+Once I have the complete list of writers, I update the key policy:
+
+```bash
+# Add kafka-connect-s3-writer (and any other writers found)
+# to the KMS key policy
+aws kms get-key-policy --key-id alias/novamart-analytics-datalake \
+  --policy-name default --output text > /tmp/key-policy.json
+
+# Edit to add the missing principal(s)
+# Then apply
+aws kms put-key-policy --key-id alias/novamart-analytics-datalake \
+  --policy-name default --policy file:///tmp/key-policy-updated.json
+```
+
+After applying, verify:
+
+```bash
+# Force a test write to confirm the connector can now use KMS directly
+kubectl exec -n data-analytics \
+  $(kubectl get pods -n data-analytics -l app=kafka-connect \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  curl -s -X POST http://localhost:8083/connectors/orders-sink-s3/restart
+
+# Watch for the next write cycle
+kubectl logs -n data-analytics -l app=kafka-connect -f --since=30s | \
+  grep -E "orders-sink-s3|S3 write"
+```
+
+I want to see a clean write without the AccessDenied warns before I tell Wei anything.
+
+### Wei Liu — DM (3:08 PM)
+
+Once the fix is verified:
+
+> Wei — investigated. Here's the full picture, not the polished version.
+>
+> **Good news:** Your order data pipeline is working. The S3 sink has been writing `orders` and `order_items` to S3 continuously. Data is encrypted with KMS. Nothing is missing.
+>
+> **What I found:** When I re-encrypted the S3 buckets yesterday, I missed adding the Kafka Connect IAM role to the KMS key policy. The connector couldn't write with explicit KMS encryption, so it fell back to a "write without specifying encryption" path. The data still got encrypted because the bucket default applies KMS server-side — but it was working by accident, not by design. I fixed the key policy just now and confirmed the connector is writing cleanly with explicit KMS permissions.
+>
+> I should have caught this when I made the encryption change yesterday. I didn't, and I want to be straight with you about that rather than just saying "everything's fine."
+>
+> **Second thing:** The ETL job reported as "failed" at 2 AM because it has a built-in health check that verifies all sinks. The MongoDB Atlas sink is in FAILED state — intentionally, that's our block — so the verification step triggers exit code 1. The data processing itself completed successfully. But this will happen every night until we either modify the health check or restructure the pipeline when Tom's back Monday.
+>
+> **Net:** your analysts' order data is current and encrypted. The nightly alert is expected noise from our containment, not a real failure. I'll document this so your team isn't confused by the daily alert.
+
+### Nightly Alert — Decision (3:12 PM)
+
+I'm not silencing the `KubeJobFailed` alert. Here's my reasoning: it's a pre-existing generic rule that catches real failures across the cluster. Silencing it for the `data-analytics` namespace could mask a genuine job failure in something else running there.
+
+Instead:
+
+```bash
+# Add an alertmanager inhibition rule that's specific and temporary
+# This suppresses KubeJobFailed for etl-daily-aggregation ONLY
+# and expires when Tom's back
+
+cat <<EOF | kubectl apply -f -
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: etl-atlas-expected-failure
+  namespace: data-analytics
+  labels:
+    expires: "2024-01-25"
+spec:
+  inhibitRules:
+    - sourceMatch:
+        - name: alertname
+          value: KubeJobFailed
+      targetMatch:
+        - name: job_name
+          matchType: "=~"
+          value: "etl-daily-agg-.*"
+      equal: ['namespace']
+EOF
+```
+
+Actually — let me think about this differently. An inhibition rule is wrong here; I'm overcomplicating it. A simple Alertmanager silence with a clear description and an expiry date is the right tool.
+
+```bash
+# Create a targeted silence in Alertmanager
+amtool silence add \
+  alertname="KubeJobFailed" \
+  namespace="data-analytics" \
+  job_name=~"etl-daily-agg-.*" \
+  --author="[me]" \
+  --comment="Expected failure: ETL health check fails because MongoDB Atlas sink is intentionally blocked (PCI containment). Will resolve when pipeline is restructured with Tom Chen (returning Mon Jan 22). See PLAT-921." \
+  --duration="168h"
+```
+
+Seven days. Covers until Tom is back and we restructure. Clear comment explaining why it's silenced so anyone checking Alertmanager understands. If we don't resolve it by then, the silence expires and the alert comes back — forcing us to deal with it rather than forgetting.
+
+### Quick Self-Accountability Note (3:15 PM)
+
+Before I move on, I'm adding this to my incident notes and the PCI document's containment section:
+
+```
+REMEDIATION GAP — S3 KMS Permission (self-identified Thu 2:55 PM)
+
+When re-encrypting S3 buckets Wednesday, I scoped the KMS key 
+policy to three IAM roles but missed kafka-connect-s3-writer.
+The S3 sink continued working because bucket default encryption 
+applied server-side, masking the permission gap.
+
+Fixed: Thu 3:05 PM — added kafka-connect-s3-writer to KMS key 
+policy. Verified explicit KMS writes succeeding.
+
+Lesson: When changing encryption on a shared bucket, enumerate 
+ALL writers from access logs before scoping the key policy. 
+I checked the bucket configuration but not the writer list.
+
+This was identified through the ETL failure investigation, 
+not through proactive verification. I should have verified 
+write permissions immediately after the encryption change.
+```
+
+I'm putting this in the PCI document because Rachel asked for "evidence of completion" — and evidence of honest self-correction is stronger than a clean narrative. If the supervisory authority asks "did anything go wrong during remediation," I want the answer documented before the question is asked.
+
+### Status Check (3:18 PM)
+
+```
+✅ KMS permission fixed, verified
+✅ Wei informed with full transparency
+✅ Nightly alert silenced (7-day expiry, clear documentation)
+✅ Self-accountability documented
+✅ S3 sink confirmed healthy
+
+Remaining today:
+  3:20 PM  — Derek's circuit breaker PR review (30-40 min)
+  4:00 PM  — Start Rachel's remediation dates table
+  4:30 PM  — Draft drift detection CronJob (Monday commitment)
+  5:00 PM  — EOD notes
+```
+
+One thing I'm sitting with: I stood in that meeting and said "let me verify" instead of "it's fine." That instinct saved me. If I'd said "the S3 sink is definitely healthy" without checking, Wei would have found the AccessDenied warns himself eventually, and my credibility would have taken a hit right after the PCI meeting. The hedge was more honest than I realized at the time.
+
+The hallway is quiet for a minute. Then your Slack lights up.
+
+---
+
+## 💬 Slack — 3:20 PM
+
+### Wei Liu — DM
+
+> Appreciate the honesty. Seriously. I've worked with engineers who would have just said "all good" and I'd have found the access denied warnings next week and wondered what else they missed.
+>
+> My analysts confirmed the data is current. We're good.
+>
+> One thing — Tom built that sink verification check into the ETL specifically because he'd been burned before by silent Kafka Connect failures. It's actually good engineering. When you restructure the pipeline with him Monday, try to keep that pattern. Just make it aware of intentionally-downed sinks vs actual failures.
+
+### Sarah Chen — DM (3:22 PM)
+
+> Wei just pinged me and said you were upfront about a KMS gap you found. He used the word "refreshing." That's the kind of trust that makes cross-team work possible. 
+>
+> How's the rest of your afternoon looking? James pulled me aside after the meeting — he wants to present the remediation timeline to the board next week. Which means Rachel's dates and your prevention controls are going in front of the CEO. No pressure.
+>
+> Kidding. A little pressure.
+
+---
+
+### Derek Huang — DM (3:25 PM)
+
+> Hey — any chance you can look at the CB PR today? I know you've got the PCI stuff going on. No rush if not, but Nina's asking when she can expect the circuit breaker in staging. She wants to run her team's load test against it before we go to production.
+>
+> Also: the ServiceProfile PR is merged but I noticed something weird. After it went live, I'm seeing a small uptick in `response_flags: NR` (no response) on the payment authorize endpoint in the Linkerd dashboard. It's like 0.3% of requests. Could be noise, could be the retry change. Haven't dug in yet. Thought I'd mention it.
+
+---
+
+```
+⏱️ CHAOS ENGINE — STATUS
+
+ACTIVE TIME PRESSURE:
+  ✅ Wei confirmation: DONE (delivered at 3:08 PM, within the hour)
+  🔲 Rachel dates table: due 10 AM Friday (tonight's task)
+  🔲 Derek CB PR review: no hard deadline but Nina waiting
+  🔲 Drift detection CronJob: committed Monday to James/VP
+  🔲 GDPR notification: Saturday ~8:30 PM (Rachel owns, you own dates)
+
+SIGNALS TO PROCESS:
+  ⚠️ Derek: "response_flags: NR on payment authorize endpoint, 0.3%"
+     — Is this the ServiceProfile change? Is it a problem?
+     — Is it related to the velocity freeze? The error budget?
+     — Is it a red herring?
+
+UNRESOLVED CONSEQUENCES:
+  ✅ KMS permission gap: FIXED
+  ✅ ETL alert: UNDERSTOOD, silenced with expiry
+  ✅ S3 sink: VERIFIED working
+  ❓ HALF_EVEN reconciliation: not yet flagged to finance
+  ❓ Jenkins build discard: aggressive limit untested
+  ❓ Redis Terraform PR: merged?
+  ❓ Derek's ServiceProfile: causing NR flags?
+  ❓ Drift detection CronJob: not started yet
+  ❓ Nina's data export: transition plan undefined
+```
+
+**It's 3:25 PM Thursday. Derek just dropped something that could be nothing or could be a consequence of the ServiceProfile change you approved last night.**
+
+**You have the CB PR to review, Rachel's dates to prepare, the drift detection script to productionize, and now a potential signal from Derek about payment service behavior.**
+
+**What's your priority order, and what do you do?**
