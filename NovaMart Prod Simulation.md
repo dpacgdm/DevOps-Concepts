@@ -13691,4 +13691,1228 @@ THURSDAY SCORECARD:
   table is the first deliverable. EKS runbook if time allows.
 ```
 
+---
+
+## [SIMULATION CONTINUES — THURSDAY 4:33 PM → FRIDAY]
+
+---
+
+### Thursday 4:33 PM — KMS Verification Results
+
+```
+$ aws iam get-role --role-name order-data-export-role --query 'Role.Arn'
+"arn:aws:iam::123456789012:role/order-data-export-role"
+
+$ aws kms get-key-policy --key-id alias/novamart-data-exports \
+    --policy-name default | jq '...'
+
+Statement match found:
+{
+  "Sid": "AllowDataExportEncrypt",
+  "Effect": "Allow",
+  "Principal": {
+    "AWS": "arn:aws:iam::123456789012:role/order-data-export-role"
+  },
+  "Action": [
+    "kms:Encrypt",
+    "kms:GenerateDataKey"
+  ],
+  "Resource": "*"
+}
+```
+
+It's there. You added it in the original key policy — one of the three original roles. The 2 AM export tonight will be fine.
+
+Good instinct to check, but this one was already covered. ✅
+
+---
+
+### Thursday Night — Quiet
+
+No pages. The order-data-export CronJob runs at 2:02 AM, completes at 2:14 AM. Exit code 0. S3 objects written with KMS encryption. You sleep.
+
+---
+
+### Friday 5:52 AM
+
+Your phone screams.
+
+```
+🔴 PagerDuty — TRIGGERED
+   Alert: SearchServiceHighErrorRate
+   Service: search-service (production)
+   Details: Error rate >10% for 5 minutes
+   Current: 15.3% 5xx rate
+   Firing since: 5:47 AM
+   On-call: You (primary)
+```
+
+You grab your phone, ack the page. **5:53 AM.** Eyes half-open.
+
+Before you can open your laptop, two more notifications stack:
+
+```
+🟡 Slack — #alerts-production (5:48 AM)
+   KafkaConsumerLagHigh — consumer group 'analytics-s3-sink' 
+   lag exceeding 50,000 on topic etl.orders
+   Namespace: data-analytics
+
+🟡 Slack — #alerts-production (5:51 AM)  
+   RedisCacheHitRateLow — catalog-cache hit rate 91.2% 
+   (threshold: 92%)
+   Namespace: production
+```
+
+Three signals. Friday before dawn. Rachel's table is due at 10 AM.
+
+You open your laptop.
+
+---
+
+**What you can see immediately:**
+
+**Grafana — search-service dashboard:**
+```
+Error rate:    15.3% and slowly climbing (was 0.2% at 5:30 AM)
+Request rate:  ~800 rpm (early morning, low traffic)
+p50 latency:  120ms (normal)
+p99 latency:  4,200ms (normally ~350ms)
+Successful responses: returning stale results (users searching 
+  for new products from catalog refresh getting zero hits)
+Pods:          6/6 Running, no restarts
+CPU:           22% avg (normal)
+Memory:        61% avg (normal)
+```
+
+The pods are healthy. The service is *up* but returning errors.
+
+**Grafana — search-service dependency panel:**
+```
+Elasticsearch cluster: ⚠️ YELLOW status
+  └─ Data panel shows: "Query timed out" on 3 of 5 widgets
+  └─ One widget loaded: cluster.health shows YELLOW
+  └─ No other ES metrics visible
+```
+
+Most of the Elasticsearch panel is broken — either timing out or showing "No data." The one widget that loaded says the cluster is YELLOW, not GREEN.
+
+**You try to open Kibana** (bookmarked from onboarding):
+```
+https://kibana.internal.novamart.com
+
+Loading... Loading... 
+
+[30 seconds later]
+
+Kibana server is not ready yet.
+Retrying...
+```
+
+Kibana isn't responding. **RULE 5: Degraded tooling.**
+
+---
+
+**What you know about the search service:** Almost nothing. You've never touched it. There's no entry in your runbook folder. You search Confluence:
+
+```
+Search results for "search service runbook":
+
+1. "Search Service Operations Runbook" 
+   Last updated: June 14, 2023
+   Author: Carlos Mendez
+   
+2. "Elasticsearch Cluster Setup — Production"
+   Last updated: May 2, 2023  
+   Author: Carlos Mendez
+```
+
+You click the runbook. It opens. The first line:
+
+```
+## Search Service Runbook
+**Primary contact:** Carlos Mendez (carlos.mendez@novamart.com)
+**Secondary contact:** Wei Liu
+
+Last verified: June 2023
+```
+
+You're pretty sure Carlos left the company. **RULE 10: Haunted Forest.**
+
+The runbook lists these ES cluster details:
+```
+Cluster: novamart-search-prod
+Nodes: 3 master-eligible, 4 data nodes
+Deployment: Helm (elasticsearch-7.17.x) in 'search' namespace
+Managed by: Data Platform team
+Monitoring: Dedicated Grafana dashboard "ES-Prod-Cluster"
+Index lifecycle: "TODO — Carlos to configure ILM before Q3"
+```
+
+That TODO is from June 2023. Seven months ago. There is no ILM.
+
+---
+
+**Current time: 5:57 AM.** Five minutes since ack. You're in the cheap zone but it won't last.
+
+**RULE 6 reminder:** Minutes 0-5 cheap, 5-10 moderate, 10-15 expensive.
+
+**Three alerts are firing. You have one laptop open. You have no Kibana. You've never touched Elasticsearch in this cluster. The search runbook is stale. Rachel's table is due in four hours. The Kafka consumer lag alert might be real or might be the Atlas block consequence.**
+
+**What do you do?**
+
+### Triage — 30 Seconds of Thinking Before Touching Anything (5:57 AM)
+
+Three alerts. I need to figure out which are related and which are independent before I start chasing.
+
+**Signal 1 — Search service 15.3% errors:** Primary page. Active, climbing. This is the real incident.
+
+**Signal 2 — Kafka consumer lag on analytics-s3-sink:** This is the S3 sink in `data-analytics`. Consumer group name matches the Kafka Connect orders-sink-s3 connector. Probably unrelated to search. Might be a consequence of my KMS changes — or the connector restarted after I restarted it yesterday to verify the KMS fix. Check quickly, don't chase.
+
+**Signal 3 — Redis cache hit rate 91.2%:** Threshold is 92%. This is barely below. Could be noise from early morning traffic patterns, could be a secondary effect of search failures (if catalog queries bypass search and hit cache differently). Don't chase this yet.
+
+**Decision: Search is the incident. The other two get a 60-second check each to confirm they're not the same root cause, then I park them.**
+
+### PagerDuty Ack + Incident Comms (5:58 AM)
+
+```
+#incidents (5:58 AM)
+
+🔴 ACK — SearchServiceHighErrorRate
+Paged at 5:47, acked 5:53 (waking up). Investigating now.
+Error rate 15.3% and climbing. Elasticsearch cluster YELLOW. 
+Kibana unresponsive. Search service pods are healthy — this 
+looks like a dependency issue, not application code.
+
+Two other alerts firing (Kafka consumer lag, Redis hit rate). 
+Assessing whether related. Will update in 10 minutes.
+```
+
+### Quick Checks on Signals 2 and 3 (5:59 AM)
+
+```bash
+# Signal 2: Kafka consumer lag — is this my S3 sink?
+kubectl get pods -n data-analytics -l app=kafka-connect \
+  -o jsonpath='{.items[0].status.phase}'
+
+# When did the lag start?
+# Check if it correlates with search errors (5:47 AM) 
+# or with my connector restart yesterday (3:05 PM Thu)
+curl -s 'http://prometheus:9090/api/v1/query' \
+  --data-urlencode 'query=kafka_consumergroup_lag{consumergroup="analytics-s3-sink",topic="etl.orders"}' | jq
+```
+
+```bash
+# Signal 3: Redis — is this noise or a step change?
+curl -s 'http://prometheus:9090/api/v1/query_range' \
+  --data-urlencode 'query=redis_keyspace_hits_total / (redis_keyspace_hits_total + redis_keyspace_misses_total)' \
+  --data-urlencode 'start=2024-01-19T04:00:00Z' \
+  --data-urlencode 'end=2024-01-19T06:00:00Z' \
+  --data-urlencode 'step=300' | jq
+```
+
+If the Kafka lag started around the time of my connector restart and is slowly catching up, it's a known recovery pattern — not related to search. If Redis has been hovering around 91-92% since 4 AM, it's early-morning traffic noise.
+
+**I'm spending 60 seconds on these, not 10 minutes.** Search is the incident.
+
+### Search Service Investigation (6:00 AM)
+
+I've never touched this system. Kibana is down. The runbook is 7 months stale and the author is probably gone. I need to orient fast.
+
+**Step 1: What do I actually have access to?**
+
+```bash
+# What's in the search namespace?
+kubectl get all -n search
+
+# ES cluster status — the one widget that loaded said YELLOW
+# Can I talk to ES directly?
+kubectl get svc -n search | grep elastic
+
+# Try hitting the ES cluster health API directly
+kubectl exec -n search \
+  $(kubectl get pods -n search -l app=elasticsearch-master \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  curl -s http://localhost:9200/_cluster/health | jq
+```
+
+```bash
+# If that works, get more detail
+kubectl exec -n search \
+  $(kubectl get pods -n search -l app=elasticsearch-master \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  curl -s http://localhost:9200/_cluster/health?level=indices | jq
+```
+
+YELLOW means all primaries are assigned but some replicas are unassigned. That shouldn't cause 15% errors by itself — YELLOW is degraded but functional. Something else is going on.
+
+```bash
+# Node status — are all 7 nodes present?
+kubectl exec -n search \
+  $(kubectl get pods -n search -l app=elasticsearch-master \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  curl -s http://localhost:9200/_cat/nodes?v
+```
+
+```bash
+# Pod status in search namespace
+kubectl get pods -n search -o wide
+
+# Any recent restarts?
+kubectl get pods -n search -o custom-columns=\
+'NAME:.metadata.name,STATUS:.status.phase,RESTARTS:.status.containerStatuses[0].restartCount,AGE:.metadata.creationTimestamp,NODE:.spec.nodeName'
+```
+
+```bash
+# What does the search-service actually see?
+# Check its logs for the errors it's throwing
+kubectl logs -n search -l app=search-service --since=15m --tail=200 | \
+  grep -iE "error|exception|timeout|refused" | head -30
+```
+
+**Step 2: What's the error shape?**
+
+```bash
+# Are the errors timeouts (504/408) or server errors (500)?
+# This tells me if ES is slow or broken
+curl -s 'http://prometheus:9090/api/v1/query' \
+  --data-urlencode 'query=sum by (status) (rate(http_requests_total{service="search-service",status=~"[45].."}[5m]))' | jq
+```
+
+```bash
+# Search service p99 latency over last 30 min
+curl -s 'http://prometheus:9090/api/v1/query_range' \
+  --data-urlencode 'query=histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{service="search-service"}[2m]))' \
+  --data-urlencode 'start=2024-01-19T05:30:00Z' \
+  --data-urlencode 'end=2024-01-19T06:00:00Z' \
+  --data-urlencode 'step=120' | jq
+```
+
+**Step 3: What changed?**
+
+This is early Friday morning. Nobody should be deploying. But I need to check.
+
+```bash
+# Any deploys to search namespace in last 24h?
+kubectl rollout history deployment/search-service -n search
+
+# ArgoCD sync history
+argocd app history search-service 2>/dev/null || echo "Not in ArgoCD?"
+```
+
+```bash
+# Node events — did a node go down?
+kubectl get events -n search --sort-by=.lastTimestamp | tail -20
+
+# Broader cluster events
+kubectl get events --all-namespaces --sort-by=.lastTimestamp \
+  --field-selector reason!=Pulled,reason!=Scheduled,reason!=Started | tail -20
+```
+
+I'm also pulling up the stale runbook's ES dashboard reference:
+
+```bash
+# The runbook says there's a dedicated dashboard "ES-Prod-Cluster"
+# Let me check if it actually exists in Grafana
+curl -s 'http://grafana:3000/api/search?query=ES-Prod' \
+  -H "Authorization: Bearer $GRAFANA_TOKEN" | jq '.[].title'
+```
+
+I need data before I can form a hypothesis. I'm in an unfamiliar system with degraded tooling and a stale runbook. The worst thing I can do right now is guess. The best thing I can do is get eyes on the Elasticsearch cluster state and the search service error logs — those two things will tell me if this is an ES infrastructure problem or a search application problem.
+
+### Marcus Webb — DM (6:02 AM)
+
+> Marcus — heads up, I'm on a SEV2 for search-service. Elasticsearch cluster is YELLOW, Kibana is down, 15% error rate and climbing. I've never touched this system and the runbook is from June 2023. Carlos Mendez is listed as primary — is he still here? If not, who knows this system?
+>
+> Don't need you to jump on yet, just want you aware as secondary in case this escalates.
+
+I need to find someone who knows Elasticsearch. That might be Wei (listed as secondary contact), it might be someone else. But first I need data — the commands I've kicked off should start painting a picture in the next 60 seconds.
+
+### Time Check (6:03 AM)
+
+```
+5:47 AM   Alert fires
+5:53 AM   Acked (waking up)
+5:58 AM   #incidents post, quick triage of three signals
+6:00 AM   Investigation started on search
+6:03 AM   Waiting for command output, Marcus pinged
+
+Status: 6 minutes into investigation. Error rate climbing.
+        No hypothesis yet — need data from ES cluster 
+        and search service logs first.
+        Kafka lag and Redis: parked, likely unrelated.
+        Rachel's table: done, just needs to be sent at 10 AM.
+        Drift detection: at risk if this takes all morning.
+```
+
+---
+
+## FRIDAY 6:03 AM — DATA RETURNS
+
+---
+
+### Signal 2 & 3 — Quick Checks
+
+**Kafka consumer lag:**
+```
+$ kubectl get pods -n data-analytics -l app=kafka-connect \
+    -o jsonpath='{.items[0].status.phase}'
+Running
+
+$ curl -s 'http://prometheus:9090/api/v1/query' \
+    --data-urlencode 'query=kafka_consumergroup_lag{consumergroup="analytics-s3-sink",topic="etl.orders"}'
+
+{
+  "status": "success",
+  "data": {
+    "result": [
+      {
+        "metric": {"consumergroup": "analytics-s3-sink", "partition": "0", "topic": "etl.orders"},
+        "value": [1705647780, "52341"]
+      },
+      {
+        "metric": {"consumergroup": "analytics-s3-sink", "partition": "1", "topic": "etl.orders"},
+        "value": [1705647780, "48102"]
+      }
+    ]
+  }
+}
+```
+
+Lag is ~50K per partition. You check the offset history — lag *spiked* at 3:05 PM yesterday (when you restarted the connector to verify KMS) and has been *slowly decreasing* since. It's processing, just behind. Recovery from your restart. **Not related to search. Park it.**
+
+**Redis hit rate:**
+```
+5:00 AM — 93.1%
+5:15 AM — 92.4%
+5:30 AM — 91.8%
+5:45 AM — 91.2%  ← alert fired
+6:00 AM — 91.5%
+```
+
+Gradual decline starting around 5 AM, now hovering. Low-traffic volatility — at 800 RPM, a small shift in request mix moves the percentage. **Not a step change. Noise. Park it.**
+
+✅ Both signals parked. Search is the incident.
+
+---
+
+### Elasticsearch Cluster Health
+
+```
+$ kubectl exec -n search \
+    $(kubectl get pods -n search -l app=elasticsearch-master \
+    -o jsonpath='{.items[0].metadata.name}') -- \
+    curl -s http://localhost:9200/_cluster/health | jq
+
+{
+  "cluster_name": "novamart-search-prod",
+  "status": "yellow",
+  "timed_out": false,
+  "number_of_nodes": 6,
+  "number_of_data_nodes": 3,
+  "active_primary_shards": 847,
+  "active_shards": 1241,
+  "relocating_shards": 12,
+  "initializing_shards": 0,
+  "unassigned_shards": 453,
+  "delayed_unassigned_shards": 0,
+  "number_of_pending_tasks": 87,
+  "number_of_in_flight_fetch": 3,
+  "task_max_waiting_in_queue_millis": 41230,
+  "active_shards_percent_as_number": 73.2
+}
+```
+
+**Stop.** Read that again.
+
+- `number_of_nodes: 6` — runbook says 7 (3 master + 4 data). **One node is missing.**
+- `number_of_data_nodes: 3` — should be 4. **A data node is gone.**
+- `unassigned_shards: 453` — massive. Those are the shards that lived on the missing node.
+- `relocating_shards: 12` — ES is trying to rebalance, but slowly.
+- `pending_tasks: 87` — cluster is backlogged.
+- `active_shards_percent: 73.2%` — 27% of shards are unavailable.
+
+This isn't a slow degradation. A data node disappeared.
+
+---
+
+### Cluster Health — Index Level (partial)
+
+```
+$ kubectl exec -n search ... -- \
+    curl -s 'http://localhost:9200/_cluster/health?level=indices' | jq
+
+# Response is 4,200 lines. The first 30 indices are GREEN.
+# Then you hit:
+
+  "products-2024.01": {
+    "status": "red",
+    "number_of_shards": 5,
+    "number_of_replicas": 1,
+    "active_primary_shards": 3,
+    "active_shards": 6,
+    "relocating_shards": 2,
+    "initializing_shards": 0,
+    "unassigned_shards": 4
+  },
+  "products-2024.01.catalog-refresh": {
+    "status": "red",
+    "number_of_shards": 3,
+    "number_of_replicas": 1,
+    "active_primary_shards": 1,
+    "active_shards": 2,
+    "relocating_shards": 0,
+    "initializing_shards": 0,
+    "unassigned_shards": 4
+  },
+  "search-logs-2024.01.19": {
+    "status": "yellow",
+    ...
+  }
+
+# ... pattern continues. 14 RED indices, 31 YELLOW, rest GREEN.
+```
+
+Wait — the cluster is actually **RED** when you look at the index level. The `_cluster/health` endpoint rolled it up to YELLOW — but that's because the cluster *was* yellow 10 minutes ago and is still transitioning. The Grafana widget that loaded earlier caught it mid-transition.
+
+**14 RED indices.** Some primary shards are unassigned — those are the indices that had primaries on the missing data node with no surviving replicas.
+
+The `products-2024.01.catalog-refresh` index catches your eye. That's the catalog refresh from Incident 3. If the search service depends on that index for new product results...
+
+---
+
+### Node Status
+
+```
+$ kubectl exec -n search ... -- \
+    curl -s http://localhost:9200/_cat/nodes?v
+
+ip           heap.percent ram.percent cpu load_1m node.role   master name
+10.0.41.12          71        89      32    2.1  dim          *     es-master-0
+10.0.42.15          65        84      28    1.8  dim          -     es-master-1
+10.0.43.18          68        91      35    2.4  dim          -     es-master-2
+10.0.41.33          82        94      67    8.2  d            -     es-data-0
+10.0.42.37          79        91      54    6.1  d            -     es-data-1
+10.0.43.40          84        96      71    9.7  d            -     es-data-2
+```
+
+Six nodes visible. **es-data-3 is missing.** And the surviving data nodes are *stressed* — RAM at 91-96%, CPU 54-71%, load averages 6-10. They're absorbing the missing node's work.
+
+`es-data-2` at 96% RAM and 71% CPU is particularly concerning.
+
+---
+
+### Pod Status
+
+```
+$ kubectl get pods -n search -o wide
+
+NAME                         READY   STATUS      RESTARTS   AGE    NODE
+es-master-0                  1/1     Running     0          67d    ip-10-0-41-12
+es-master-1                  1/1     Running     0          67d    ip-10-0-42-15
+es-master-2                  1/1     Running     0          67d    ip-10-0-43-18
+es-data-0                    1/1     Running     0          67d    ip-10-0-41-33
+es-data-1                    1/1     Running     0          67d    ip-10-0-42-37
+es-data-2                    1/1     Running     3          67d    ip-10-0-43-40
+search-service-7b4f9c-xxxxx  1/1     Running     0          12d    ip-10-0-41-55
+search-service-7b4f9c-yyyyy  1/1     Running     0          12d    ip-10-0-42-56
+search-service-7b4f9c-zzzzz  1/1     Running     0          12d    ip-10-0-43-57
+search-service-7b4f9c-wwwww  1/1     Running     0          12d    ip-10-0-41-58
+search-service-7b4f9c-vvvvv  1/1     Running     0          12d    ip-10-0-42-59
+search-service-7b4f9c-uuuuu  1/1     Running     0          12d    ip-10-0-43-60
+kibana-5d8b9f-abcde          1/1     Running     0          67d    ip-10-0-41-61
+```
+
+**There is no es-data-3 pod.** It's not in CrashLoopBackOff, not in Pending, not in Terminating. It's just *gone.* And everything else has been running for 67 days — since initial deployment. These pods have never been touched.
+
+Note: `es-data-2` has 3 restarts. The others have 0.
+
+---
+
+### Kubernetes Events
+
+```
+$ kubectl get events -n search --sort-by=.lastTimestamp | tail -20
+
+LAST SEEN   TYPE      REASON              OBJECT              MESSAGE
+5m          Warning   Unhealthy           pod/es-data-2       Readiness probe failed: curl: (28) Connection timed out after 5000ms
+5m          Warning   Unhealthy           pod/es-data-2       Readiness probe failed: curl: (28) Connection timed out after 5000ms  
+8m          Normal    Killing             pod/es-data-3       Stopping container elasticsearch
+8m          Normal    Preempted           pod/es-data-3       Preempted by pod karpenter-system/karpenter-xxxxx
+12m         Warning   Evicted             pod/es-data-3       The node was low on resource: ephemeral-storage
+12m         Normal    NodeNotReady        node/ip-10-0-42-44  Node ip-10-0-42-44 status is now: NodeNotReady
+```
+
+**There it is.**
+
+```
+12m — Node ip-10-0-42-44 went NotReady (ephemeral-storage pressure)
+12m — es-data-3 EVICTED (ephemeral-storage)
+ 8m — es-data-3 PREEMPTED by Karpenter pod
+ 8m — es-data-3 container stopped
+```
+
+**es-data-3 was evicted because its node ran out of ephemeral storage, and then Karpenter preempted the pod to reclaim the node for its own workload.**
+
+The pod isn't coming back because — you check:
+
+```
+$ kubectl get statefulset es-data -n search -o yaml | \
+    grep -A5 'volumeClaimTemplates'
+
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: gp2
+      resources:
+        requests:
+          storage: 100Gi
+```
+
+`gp2`. Not `gp3`. This cluster wasn't part of Jake's GP3 migration because it's in the `search` namespace, which Jake was told to skip (you told him to skip `data-analytics`; he apparently also skipped `search`). **And the PVC is 100Gi on gp2.**
+
+```
+$ kubectl get pvc -n search
+
+NAME           STATUS   VOLUME       CAPACITY   ACCESS    STORAGECLASS   AGE
+data-es-data-0 Bound    pvc-xxxx     100Gi      RWO       gp2            67d
+data-es-data-1 Bound    pvc-yyyy     100Gi      RWO       gp2            67d
+data-es-data-2 Bound    pvc-zzzz     100Gi      RWO       gp2            67d
+data-es-data-3 Bound    pvc-wwww     100Gi      RWO       gp2            67d
+```
+
+The PVC for es-data-3 still exists and is still Bound. The data is there. But the pod isn't.
+
+```
+$ kubectl get pod es-data-3 -n search
+Error from server (NotFound): pods "es-data-3" not found
+```
+
+The StatefulSet should be recreating it. Why isn't it?
+
+```
+$ kubectl get statefulset es-data -n search
+
+NAME      READY   AGE
+es-data   3/4     67d
+```
+
+3/4. It knows it should have 4. Let's see why it's stuck:
+
+```
+$ kubectl describe statefulset es-data -n search | tail -20
+
+Events:
+  Type     Reason            Age    From                    Message
+  ----     ------            ----   ----                    -------
+  Warning  FailedCreate      6m     statefulset-controller  create Pod es-data-3 in 
+    StatefulSet es-data failed error: pods "es-data-3" is forbidden: 
+    exceeded quota: search-ns-quota, requested: memory=8Gi, 
+    used: memory=56Gi, limited: memory=64Gi
+```
+
+**There it is.** The `search` namespace has a ResourceQuota limiting memory to 64Gi. With 3 masters (8Gi each = 24Gi) + 3 surviving data nodes (8Gi each = 24Gi) + 6 search-service pods + Kibana, the namespace is at the memory limit. The StatefulSet *wants* to recreate es-data-3 but the ResourceQuota won't let it allocate another 8Gi pod.
+
+---
+
+### Search Service Logs
+
+```
+$ kubectl logs -n search -l app=search-service --since=15m --tail=200 | \
+    grep -iE "error|exception|timeout|refused" | head -30
+
+06:01:12.447 ERROR SearchQueryHandler - ElasticsearchStatusException: 
+  [search_phase_execution_exception] all shards failed for index [products-2024.01]
+06:01:12.891 ERROR SearchQueryHandler - ElasticsearchStatusException:
+  [search_phase_execution_exception] all shards failed for index [products-2024.01.catalog-refresh]
+06:01:13.102 ERROR SearchQueryHandler - java.net.SocketTimeoutException: 
+  30000 milliseconds timeout on connection to [es-data-2:9200]
+06:01:14.330 ERROR IndexRefreshJob - UnavailableShardsException: 
+  [products-2024.01.catalog-refresh][2] primary shard is not active
+06:01:14.887 WARN  SearchQueryHandler - Falling back to stale index 
+  [products-2023.12] for 3 queries — primary index unavailable
+06:01:15.201 ERROR SearchQueryHandler - ElasticsearchStatusException:
+  [search_phase_execution_exception] all shards failed for index [products-2024.01]
+... [pattern repeats]
+```
+
+There's a **fallback** to a stale December index — some queries succeed with old data, some fail entirely. That explains the 15% error rate rather than 100%: queries that can hit available shards succeed, queries routed to the missing node's primary shards fail.
+
+---
+
+### Error Shape
+
+```
+$ curl -s 'http://prometheus:9090/api/v1/query' \
+    --data-urlencode 'query=sum by (status) (rate(http_requests_total{service="search-service",status=~"[45].."}[5m]))'
+
+{
+  "data": {
+    "result": [
+      {"metric": {"status": "500"}, "value": [1705648200, "0.89"]},
+      {"metric": {"status": "504"}, "value": [1705648200, "0.34"]},
+      {"metric": {"status": "503"}, "value": [1705648200, "0.12"]}
+    ]
+  }
+}
+```
+
+Mix of 500s (shard failures), 504s (timeouts to overloaded es-data-2), and 503s (unavailable shards).
+
+---
+
+### Deploy History
+
+```
+$ kubectl rollout history deployment/search-service -n search
+REVISION  CHANGE-CAUSE
+1         Initial deploy
+2         image update: search-service:v2.3.1 (Jan 7)
+
+$ argocd app history search-service
+Error: application 'search-service' not found
+```
+
+**Not in ArgoCD.** Another unmanaged deployment. No recent deploys — this is purely infrastructure.
+
+---
+
+### Marcus Response (6:04 AM)
+
+> Marcus: "Carlos left in September. Nobody was formally assigned search ownership. Wei's team 'keeps an eye on it' but they mostly just restart Kibana when it crashes. I've never touched the ES cluster. Sorry."
+>
+> Marcus: "I can look up if there's a Karpenter provisioner config that would explain the preemption if that helps?"
+
+---
+
+### Broader Cluster Events
+
+```
+$ kubectl get events --all-namespaces --sort-by=.lastTimestamp \
+    --field-selector reason!=Pulled,reason!=Scheduled,reason!=Started | tail -20
+
+... 
+12m  Warning  Evicted     search/es-data-3       ephemeral-storage
+12m  Normal   NodeNotReady                        ip-10-0-42-44
+11m  Normal   NodeReady                           ip-10-0-42-44 (recovered)
+ 9m  Normal   Preempted   search/es-data-3       by karpenter-system
+ 6m  Warning  Unhealthy   search/es-data-2       readiness probe timeout
+ 5m  Warning  Unhealthy   search/es-data-2       readiness probe timeout
+ 4m  Warning  FailedCreate search/es-data         quota exceeded
+ 3m  Warning  FailedCreate search/es-data         quota exceeded
+ 2m  Warning  FailedCreate search/es-data         quota exceeded
+```
+
+FailedCreate is firing every minute. The StatefulSet controller is retrying and failing on quota.
+
+---
+
+**Current error rate: 17.8% and still climbing.** The surviving nodes are getting hotter. es-data-2 is failing readiness probes. If es-data-2 goes down, you lose a second data node and the error rate will probably jump to 40-60%.
+
+**Current time: 6:06 AM.** Nine minutes since you started investigating. You're entering the moderate cost zone.
+
+**You have:**
+- A clear root cause chain: ephemeral-storage eviction → pod preempted → StatefulSet can't recreate (ResourceQuota) → 27% shards unavailable → 17.8% errors
+- A system with no owner, no ArgoCD, stale runbook, `gp2` storage
+- A surviving cluster under heavy load (es-data-2 failing readiness probes)
+- Kibana down (probably because it also can't handle the cluster state)
+- No ILM policy (7 months of index growth)
+- Rachel's table due in 4 hours
+- A drift detection CronJob you promised the VP by Monday
+
+**What do you do?**
+
+### Situation Assessment — 10 Seconds (6:06 AM)
+
+Root cause chain is clear. The fix is getting es-data-3 back. The blocker is ResourceQuota. The risk is es-data-2 dying before I fix it, which turns a 17.8% error rate into a catastrophic one.
+
+This is a race: fix the quota before es-data-2 collapses.
+
+### Step 1: Increase ResourceQuota — NOW (6:07 AM)
+
+```bash
+# What's the current quota?
+kubectl get resourcequota -n search -o yaml
+
+# Increase memory limit from 64Gi to 80Gi (headroom, not just +8)
+kubectl patch resourcequota search-ns-quota -n search \
+  --type='json' \
+  -p='[{"op": "replace", "path": "/spec/hard/memory", "value": "80Gi"}]'
+```
+
+I'm adding 16Gi headroom, not just 8Gi. If es-data-2 restarts during recovery, I don't want to hit quota again during the transition.
+
+**Immediately check if the StatefulSet picks it up:**
+
+```bash
+# Watch for pod creation
+kubectl get pods -n search -w
+```
+
+Within seconds I should see `es-data-3` go to `Pending` or `ContainerCreating`. But there's a potential blocker I need to check.
+
+### Step 2: PVC Availability Zone Check (6:07 AM)
+
+gp2 EBS volumes are AZ-locked. The PVC is ReadWriteOnce. The pod can only schedule in the same AZ as the volume.
+
+```bash
+# Which AZ is es-data-3's PVC in?
+kubectl get pv $(kubectl get pvc data-es-data-3 -n search \
+  -o jsonpath='{.spec.volumeName}') \
+  -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}'
+```
+
+```bash
+# Is there a node with capacity in that AZ?
+kubectl get nodes -l topology.kubernetes.io/zone=$(kubectl get pv \
+  $(kubectl get pvc data-es-data-3 -n search \
+  -o jsonpath='{.spec.volumeName}') \
+  -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}') \
+  -o custom-columns='NAME:.metadata.name,ALLOCATABLE_MEM:.status.allocatable.memory,AZ:.metadata.labels.topology\.kubernetes\.io/zone'
+```
+
+If there's no node with 8Gi available in that AZ, the pod will sit in Pending and I'll need Karpenter to provision one. That adds 2-3 minutes.
+
+### Step 3: Protect es-data-2 (6:08 AM)
+
+es-data-2 is at 96% RAM and failing readiness probes. If Kubernetes marks it NotReady and kills it, I lose a second data node. I need to buy time.
+
+```bash
+# Check: does es-data have a PDB?
+kubectl get pdb -n search
+
+# If no PDB exists, the eviction controller could kill es-data-2
+# Apply an emergency PDB
+cat <<EOF | kubectl apply -f -
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: es-data-emergency-pdb
+  namespace: search
+spec:
+  minAvailable: 3
+  selector:
+    matchLabels:
+      app: elasticsearch
+      role: data
+EOF
+```
+
+This won't prevent an OOM kill, but it prevents voluntary disruption while the cluster is degraded.
+
+Also — the readiness probe failures worry me. If the readiness probe keeps failing, Kubernetes removes es-data-2 from the Service endpoints. ES queries stop being routed to it, which means all query load shifts to es-data-0 and es-data-1, which could overload them. A cascading failure.
+
+```bash
+# How many readiness probe failures before Kubernetes acts?
+kubectl get pod es-data-2 -n search \
+  -o jsonpath='{.spec.containers[0].readinessProbe}'
+```
+
+```bash
+# Current endpoint status - is es-data-2 still serving?
+kubectl get endpoints elasticsearch -n search
+```
+
+### Step 4: Watch for es-data-3 Recovery (6:09 AM)
+
+```bash
+# Is the pod being created?
+kubectl get pods -n search -l app=elasticsearch,role=data
+
+# If it's Pending:
+kubectl describe pod es-data-3 -n search | tail -15
+```
+
+If I see `ContainerCreating` — good, it's starting. ES data nodes take 1-3 minutes to start and join the cluster. Then shard recovery begins, which could take 5-20 minutes depending on data volume.
+
+If I see `Pending` with scheduling failure — I need to check if it's AZ-bound and there's no node available.
+
+### #incidents Update (6:09 AM)
+
+```
+🟡 UPDATE — Search Service (6:09 AM)
+
+Root cause identified: ES data node (es-data-3) was evicted due to 
+ephemeral-storage pressure on its host node. Karpenter preempted 
+the pod. StatefulSet can't recreate because namespace ResourceQuota 
+(64Gi memory) is exhausted.
+
+Result: 27% of shards unavailable. 14 RED indices including product 
+catalog indices. Error rate 17.8% and climbing. Remaining data nodes 
+are under heavy load absorbing the work.
+
+Fix in progress: ResourceQuota increased. Waiting for StatefulSet to 
+recreate es-data-3. PDB applied to protect remaining nodes. ES shard 
+recovery will take several minutes once the node rejoins.
+
+Risk: es-data-2 is at 96% RAM and failing readiness probes. If it 
+goes down before es-data-3 recovers, error rate could jump to 40-60%.
+
+ETA to stabilization: 10-20 minutes if es-data-3 schedules cleanly.
+Monitoring actively.
+```
+
+### Marcus — DM (6:09 AM)
+
+> Marcus — yes, Karpenter config would be helpful. The preemption is part of the chain:
+>
+> 1. Node ran out of ephemeral storage → es-data-3 evicted
+> 2. Node recovered → Karpenter preempted es-data-3 for its own workload
+> 3. StatefulSet tries to recreate → ResourceQuota blocks it
+>
+> Can you check if there's a Karpenter provisioner that covers the search namespace? Specifically: does it have pod priority awareness? ES data nodes should not be preemptible by system pods. If there's no PriorityClass on the ES pods, Karpenter might treat them as low-priority.
+
+```bash
+# While waiting — check what I suspect
+kubectl get pods -n search es-data-0 \
+  -o jsonpath='{.spec.priorityClassName}'
+```
+
+If that returns empty — these ES pods have no PriorityClass. They're running at default priority, which means Karpenter can preempt them for anything with higher priority. That's a contributing cause that needs fixing after we stabilize.
+
+### Ephemeral Storage — Why Did the Node Run Out? (6:10 AM)
+
+This is the trigger for the whole chain. I need to understand it even as I'm fixing the immediate problem.
+
+```bash
+# What's using ephemeral storage on ES data nodes?
+# ES writes to /tmp for merge operations, segment files, etc.
+# If there's no ILM and indices are never cleaned up...
+kubectl exec -n search es-data-0 -- du -sh /usr/share/elasticsearch/data/
+kubectl exec -n search es-data-0 -- df -h
+```
+
+The runbook said "TODO — Carlos to configure ILM before Q3." Seven months ago. If there's no index lifecycle management, old indices are never deleted. The data directory grows monotonically. Eventually it fills ephemeral storage, the node gets evicted, and here we are.
+
+**This is the same pattern as the Redis incident (Incident 3) — unbounded growth hitting a capacity limit because nobody set up lifecycle management.** Except this time it took down a node instead of degrading hit rate.
+
+### Monitoring Recovery (6:12 AM)
+
+```bash
+# Check: is es-data-3 coming back?
+kubectl get pods -n search -l statefulset.kubernetes.io/pod-name=es-data-3
+
+# If it's running, check ES cluster health
+kubectl exec -n search es-master-0 -- \
+  curl -s http://localhost:9200/_cluster/health | \
+  jq '{status, number_of_nodes, number_of_data_nodes, unassigned_shards, relocating_shards, active_shards_percent_as_number}'
+```
+
+```bash
+# Watch shard recovery progress
+watch -n 10 "kubectl exec -n search es-master-0 -- \
+  curl -s http://localhost:9200/_cat/recovery?active_only=true | head -10"
+```
+
+```bash
+# Error rate trend
+watch -n 30 "curl -s 'http://prometheus:9090/api/v1/query' \
+  --data-urlencode 'query=rate(http_requests_total{service=\"search-service\",status=~\"5..\"}[2m]) / rate(http_requests_total{service=\"search-service\"}[2m])' | jq '.data.result[0].value[1]'"
+```
+
+I'm going to watch these three things in parallel: pod status, shard recovery, and error rate. The sequence I expect:
+
+```
+6:07  Quota increased
+6:08  es-data-3 pod scheduled (if AZ has capacity)
+6:10  es-data-3 container starting (ES JVM startup)
+6:12  es-data-3 joins cluster (number_of_data_nodes: 4)
+6:13  Shard recovery begins (unassigned_shards starts dropping)
+6:15  Primary shards on es-data-3 become available (error rate drops)
+6:20  Replica rebalancing continues
+6:25  Cluster GREEN (all shards assigned)
+```
+
+If es-data-3 doesn't schedule within 2 minutes of the quota fix, I need to look at AZ constraints and potentially have Karpenter provision a new node.
+
+### What I'm NOT Doing Yet
+
+- **Kibana** — it'll recover once the cluster stabilizes. Not chasing it.
+- **ILM policy** — root cause prevention, not root cause fix. After stabilization.
+- **gp2 → gp3 migration** — important but not during an incident.
+- **ArgoCD onboarding of search** — goes on the audit remediation list.
+- **Rachel's table** — done, sitting in my drafts, gets sent at 10 AM regardless of this incident.
+- **Drift detection CronJob** — still targeting today. This incident actually demonstrates exactly why it matters.
+
+### Time Check (6:12 AM)
+
+```
+5:47   Alert fired
+5:53   Acked
+6:06   Root cause identified
+6:07   Quota fix applied
+6:08   PDB applied
+6:12   Waiting for es-data-3 recovery
+
+15 minutes in. Error rate ~18%. Root cause understood,
+fix applied, waiting for recovery. Secondary risk (es-data-2) 
+mitigated with PDB. Comms posted.
+
+This is either a 20-minute incident (if es-data-3 schedules 
+cleanly) or a 60-minute incident (if there's an AZ scheduling 
+problem or the data is corrupted from unclean eviction).
+```
+
+The one thing that could make this much worse: if es-data-3's data is corrupted from the unclean eviction and ES can't recover from the existing PVC. In that case, shard recovery has to come from replicas on other nodes — which is slower and puts even more pressure on the already-stressed survivors. I'll know within a few minutes of the pod starting.
+
+---
+
+## FRIDAY 6:07 AM — COMMAND RESULTS STREAM IN
+
+---
+
+### ResourceQuota Patch
+
+```
+$ kubectl get resourcequota -n search -o yaml
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: search-ns-quota
+  namespace: search
+  annotations:
+    created-by: "carlos.mendez@novamart.com"
+    created-date: "2023-06-14"
+spec:
+  hard:
+    requests.cpu: "32"
+    requests.memory: 64Gi
+    limits.cpu: "48"
+    limits.memory: 80Gi
+    persistentvolumeclaims: "10"
+status:
+  used:
+    requests.cpu: "28"
+    requests.memory: 59Gi
+    limits.cpu: "41"
+    limits.memory: 72Gi
+    persistentvolumeclaims: "7"
+
+$ kubectl patch resourcequota search-ns-quota -n search \
+    --type='json' \
+    -p='[{"op": "replace", "path": "/spec/hard/requests.memory", "value": "80Gi"},
+         {"op": "replace", "path": "/spec/hard/limits.memory", "value": "96Gi"}]'
+
+resourcequota/search-ns-quota patched
+```
+
+Note: the quota had separate `requests.memory` (64Gi) and `limits.memory` (80Gi). The *requests* were the binding constraint at 59Gi used — the pod requests 8Gi, putting it at 67Gi, over the 64Gi limit. Your patch needed to hit `requests.memory`, not just `memory`. The system accepted it because `kubectl patch` targets the exact path. ✅
+
+---
+
+### PDB Apply
+
+```
+$ kubectl apply -f - <<EOF
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: es-data-emergency-pdb
+  namespace: search
+spec:
+  minAvailable: 3
+  selector:
+    matchLabels:
+      app: elasticsearch
+      role: data
+EOF
+
+podDisruptionBudget/es-data-emergency-pdb created
+```
+
+```
+$ kubectl get pods -n search -l app=elasticsearch,role=data
+No resources found in search namespace.
+```
+
+**The PDB matched zero pods.** The label selector is wrong.
+
+```
+$ kubectl get pods -n search es-data-0 -o jsonpath='{.metadata.labels}' | jq
+
+{
+  "app": "elasticsearch-master",
+  "chart": "elasticsearch-7.17.16",
+  "controller-revision-hash": "es-data-6b8d9f7c4",
+  "release": "elasticsearch",
+  "statefulset.kubernetes.io/pod-name": "es-data-0"
+}
+```
+
+The Bitnami/Elastic Helm chart uses `app: elasticsearch-master` for *all* ES pods (it's a known labeling quirk in older chart versions) and doesn't have a `role: data` label at all. The StatefulSet name `es-data` is what distinguishes data nodes, not labels.
+
+**Your PDB is protecting nothing.** es-data-2 is still exposed to voluntary disruption.
+
+---
+
+### AZ Check
+
+```
+$ kubectl get pv $(kubectl get pvc data-es-data-3 -n search \
+    -o jsonpath='{.spec.volumeName}') \
+    -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}'
+
+us-east-1b
+```
+
+```
+$ kubectl get nodes -l topology.kubernetes.io/zone=us-east-1b \
+    -o custom-columns='NAME:.metadata.name,ALLOCATABLE_MEM:.status.allocatable.memory'
+
+NAME              ALLOCATABLE_MEM
+ip-10-0-42-15     30428Mi
+ip-10-0-42-37     30428Mi
+ip-10-0-42-44     30428Mi
+```
+
+Three nodes in us-east-1b. But:
+- `ip-10-0-42-15` — that's es-master-1 (already running, eating ~8Gi)
+- `ip-10-0-42-37` — that's es-data-1 (already running, eating ~8Gi)
+- `ip-10-0-42-44` — that's the node that *just recovered* from ephemeral-storage pressure
+
+```
+$ kubectl describe node ip-10-0-42-44 | grep -A4 "Allocated resources"
+
+Allocated resources:
+  Resource           Requests     Limits
+  --------           --------     ------
+  cpu                3200m (82%)  4800m (123%)
+  memory             26Gi (88%)   31Gi (104%)
+```
+
+Node ip-10-0-42-44 is already packed. 88% memory allocated. An 8Gi ES data pod won't fit.
+
+```
+$ kubectl get pods -n search es-data-3 2>/dev/null || echo "Not found"
+Not found
+
+$ kubectl get events -n search --field-selector reason=FailedScheduling \
+    --sort-by=.lastTimestamp | tail -3
+
+1m   Warning  FailedScheduling  pod/es-data-3  0/3 nodes in zone us-east-1b 
+     are available: 1 Insufficient memory, 1 Insufficient memory, 
+     1 node had untolerated taint {node.kubernetes.io/disk-pressure}
+```
+
+**es-data-3 is Pending.** No node in us-east-1b can fit it. The quota is no longer the blocker — **scheduling** is.
+
+The quota fix unblocked the StatefulSet controller. It created the pod. But the pod can't be placed.
+
+Karpenter *should* provision a new node, but:
+
+```
+$ kubectl get provisioner -o yaml | grep -A10 "search\|us-east-1b"
+```
+
+```yaml
+# No output. The Karpenter provisioner is:
+apiVersion: karpenter.sh/v1alpha5
+kind: Provisioner
+metadata:
+  name: default
+spec:
+  requirements:
+    - key: karpenter.sh/capacity-type
+      operator: In
+      values: ["on-demand"]
+    - key: topology.kubernetes.io/zone
+      operator: In
+      values: ["us-east-1a", "us-east-1b", "us-east-1c"]
+  limits:
+    resources:
+      cpu: "200"
+      memory: 400Gi
+  ttlSecondsAfterEmpty: 30
+  providerRef:
+    name: default
+```
+
+```
+$ kubectl get provisioner default -o jsonpath='{.status}'
+
+{
+  "resources": {
+    "cpu": "142",
+    "memory": "361Gi"
+  }
+}
+```
+
+Karpenter has used 361Gi of its 400Gi memory limit. **39Gi remaining.** An ES data node needs ~32Gi for the underlying instance (m5.2xlarge or similar). It *should* fit, barely.
+
+But the pod has been Pending for 4 minutes and Karpenter hasn't acted.
+
+```
+$ kubectl logs -n karpenter-system -l app.kubernetes.io/name=karpenter \
+    --since=10m | grep -i "es-data-3\|search\|provision" | tail -10
+
+06:08:14.332 DEBUG controller.provisioner  Pod is not provisionable, 
+  reason: "pod has a persistentVolumeClaim bound to a volume with 
+  node affinity that doesn't match any available instance type", 
+  pod=search/es-data-3
+```
+
+**Karpenter won't provision for it.** The PVC's node affinity is locked to a *specific node* (`ip-10-0-42-44`) because of how the original gp2 PV was provisioned — the EBS volume is attached to that node. Karpenter can't create a *new* node and move a gp2 EBS volume to it.
+
+---
+
+### Current State at 6:12 AM
+
+```
+ERROR RATE:    19.2% (still climbing)
+es-data-3:     Pending — cannot schedule (PVC node affinity)
+es-data-2:     Running but STRUGGLING:
+                - 96% RAM
+                - Readiness probe: 4 failures in 10 minutes
+                - failureThreshold is 5 (one more failure = NotReady)
+es-data-0:     Under load but stable (82% RAM)
+es-data-1:     Under load but stable (79% RAM)
+PDB:           Exists but matches ZERO pods (wrong labels)
+Karpenter:     Won't provision (PVC locked to specific node)
+```
+
+You're stuck. The obvious next step — "just bring es-data-3 back" — doesn't have a clean path. The volume is locked to a node that's too full to host it.
+
+**RULE 12: Genuine stuck point.**
+
+---
+
+### 6:13 AM — Slack Pings
+
+```
+Slack — #platform-engineering (6:13 AM)
+Ryan Mitchell: "Search is broken for customers — product pages 
+showing 'no results' for anything from the January catalog refresh. 
+CS is going to start getting calls when the East Coast wakes up. 
+Who's on this?"
+```
+
+```
+Slack — DM from Lisa Park (6:14 AM)
+"Saw the search page. What's the error budget situation? Search 
+doesn't have an SLO defined — should I create one or is this 
+covered under the order-service SLO? Also, I noticed the Kafka 
+consumer lag alert — is that related?"
+```
+
+```
+Slack — DM from Aisha Rahman (6:15 AM)
+"I see you're in the search namespace. Just FYI — that cluster 
+isn't in our asset inventory either. Same situation as the Kafka 
+cluster. Don't let that distract you from fixing the outage, but 
+I'm adding it to the audit findings."
+```
+
+---
+
+**Current time: 6:15 AM.** 18 minutes since ack. Error rate 19.2%. es-data-2 is one readiness probe failure from being removed from endpoints.
+
+You have a stuck scheduling problem, a PDB that's not protecting anything, a cluster you don't own with no ILM, and the East Coast waking up in 45 minutes with search broken.
+
+**Three people just messaged you. The clock is ticking. es-data-2 has one life left.**
+
+**What do you do?**
+
 
