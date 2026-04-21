@@ -12562,3 +12562,1133 @@ UNRESOLVED CONSEQUENCES:
 **You have the CB PR to review, Rachel's dates to prepare, the drift detection script to productionize, and now a potential signal from Derek about payment service behavior.**
 
 **What's your priority order, and what do you do?**
+
+Derek's NR flags go first. 0.3% on payment authorize — a service that's already blown its error budget and is under velocity freeze — needs to be evaluated before I do anything else. If the ServiceProfile change I approved is causing connection resets on the payment path, that's an active production issue I introduced.
+
+### Derek Huang — DM (3:27 PM)
+
+> Don't dig yet — let me look at this. When did the ServiceProfile go live? I need to correlate the NR uptick with the merge time.
+
+While I wait for his answer, I check myself:
+
+```bash
+# When did the ServiceProfile actually take effect?
+kubectl get serviceprofile payment-service.payment-prod.svc.cluster.local \
+  -n payment-prod -o jsonpath='{.metadata.creationTimestamp}'
+
+# Or if updated (not created):
+kubectl get serviceprofile payment-service.payment-prod.svc.cluster.local \
+  -n payment-prod -o jsonpath='{.metadata.managedFields[0].time}'
+```
+
+```bash
+# NR flags on payment authorize - is this actually new?
+# Check the rate over the last 24 hours, look for a step change
+
+# Last 24h in 30-minute buckets
+curl -s 'http://prometheus:9090/api/v1/query_range' \
+  --data-urlencode 'query=sum(rate(response_total{direction="outbound",dst_service="payment-service.payment-prod.svc.cluster.local",classification="failure",grpc_status_code="",tls="true"}[5m])) / sum(rate(response_total{direction="outbound",dst_service="payment-service.payment-prod.svc.cluster.local",tls="true"}[5m]))' \
+  --data-urlencode 'start=2024-01-17T15:00:00Z' \
+  --data-urlencode 'end=2024-01-18T15:30:00Z' \
+  --data-urlencode 'step=1800' | jq
+```
+
+The question I need to answer is whether the NR rate was **already at 0.3% before** the ServiceProfile change and we just didn't notice, or whether it appeared precisely when the ServiceProfile took effect. That's the difference between "pre-existing noise" and "thing I broke."
+
+```bash
+# More specific - NR flags only, on the authorize route specifically
+# Linkerd proxies emit tcp_close_total with various classifications
+kubectl exec -n payment-prod \
+  $(kubectl get pods -n payment-prod -l app=payment-service \
+  -o jsonpath='{.items[0].metadata.name}') \
+  -c linkerd-proxy -- \
+  curl -s localhost:4191/metrics | grep -E "response_total.*authorize" | head -20
+```
+
+I'm also thinking about the mechanism. The ServiceProfile sets `isRetryable: false` on POST /authorize. What this means:
+
+- **Before:** if a payment authorize request got a transient failure (connection reset, 503), Linkerd would retry it automatically
+- **After:** Linkerd does NOT retry — it surfaces the failure directly to the caller
+
+If there's an underlying flaky connection at 0.3% that Linkerd was previously masking with retries, removing retries would surface it as visible NR failures. That would mean:
+
+1. The 0.3% failure rate was **always there** but hidden by retry success
+2. The ServiceProfile didn't cause failures — it revealed them
+3. The retries being removed is **correct** for POST /authorize (not idempotent, can't safely retry)
+4. But the underlying 0.3% connection flakiness needs to be investigated separately
+
+That would actually be the best-case scenario — the ServiceProfile is working as intended and exposed a real issue we need to fix.
+
+**Worst case:** the ServiceProfile regex is malformed and matching requests it shouldn't, causing Linkerd to misroute or drop them. Less likely but I need to rule it out.
+
+```bash
+# Check if the pathRegex is matching correctly
+# Look at route-level metrics to see if requests are being classified
+kubectl exec -n payment-prod \
+  $(kubectl get pods -n payment-prod -l app=payment-service \
+  -o jsonpath='{.items[0].metadata.name}') \
+  -c linkerd-proxy -- \
+  curl -s localhost:4191/metrics | grep "route_" | grep -E "authorize|DEFAULT" | head -10
+```
+
+If I see a lot of requests hitting `DEFAULT` route instead of the named authorize route, the regex isn't matching and something else is going on.
+
+### Derek Responds (3:30 PM)
+
+While I'm waiting for command output, I check results and form a preliminary assessment. Then:
+
+### Derek Huang — DM (3:33 PM)
+
+> Derek — here's what I'm seeing so far. [Share whatever the data shows]
+>
+> Quick question: before the ServiceProfile, were you monitoring NR flags on payment at all? Is it possible 0.3% was the baseline and Linkerd was retrying those transparently? Setting isRetryable: false would surface pre-existing connection flakiness that retries were masking.
+>
+> Don't restart anything or revert the ServiceProfile yet. If this IS retry masking, the ServiceProfile is working correctly — we just need to find the source of the underlying 0.3% connection drops.
+>
+> Also — I want to check this against Lisa's error budget tracking. If 0.3% NR is landing as 5xx to callers, that's additional budget burn on a service that's already blown. Let me check.
+
+```bash
+# Is the 0.3% NR landing as errors in the application metrics?
+# Or is it only visible in Linkerd proxy metrics?
+rate(http_requests_total{service="payment-service", 
+  path="/api/v1/payments/authorize", status=~"5.."}[30m])
+```
+
+This is the key question. If the application-level error rate hasn't changed, the NR flags might be proxy-level noise that doesn't affect end users. If the application error rate has a 0.3% uptick matching the ServiceProfile timing, then users are seeing failures.
+
+### Sarah Chen — DM (3:35 PM)
+
+> Afternoon's busy but productive. KMS gap from yesterday is fixed, Wei's pipeline is confirmed healthy, and I'm working through Derek's CB PR review now.
+>
+> On James and the board — understood. I'll make Rachel's dates table clean enough for board presentation. Specific dates, evidence of completion column, and owner for each control. She'll have it by 10 AM.
+>
+> One thing I should flag: Derek noticed a small anomaly on the payment authorize endpoint after the ServiceProfile merge last night — 0.3% NR flags. I'm investigating now. It's likely pre-existing connection noise that was masked by Linkerd retries and is now visible because we set isRetryable: false. If that's the case, it's actually the ServiceProfile working correctly. But I want to confirm before I move on since payment is under velocity freeze.
+
+I'm being transparent with Sarah because if this turns out to be real, she needs to know I caught it early, and if it turns out to be nothing, she needs to know I checked rather than dismissed it.
+
+### Priority Queue (3:36 PM)
+
+```
+NOW:        Confirm NR signal is benign vs. real (10 more min)
+3:45 PM:    Derek's CB PR review (30-40 min, can finally do this)
+4:30 PM:    Rachel's remediation dates table (draft)
+5:15 PM:    Drift detection CronJob skeleton (get the hard part done)
+5:45 PM:    EOD notes
+Evening:    Polish Rachel's table if needed
+```
+
+The drift detection CronJob is my biggest risk. I committed to Monday in front of the VP, Legal, and Security. I have the audit script from Wednesday, but wrapping it in a CronJob with Slack alerting, testing it, and deploying it through ArgoCD is real work. I'm going to get the skeleton built today and test it Friday morning. I'm not leaving that for Sunday night.
+
+
+
+## Investigation Results — The NR Signal
+
+### ServiceProfile Timing
+
+```bash
+$ kubectl get serviceprofile payment-service.payment-prod.svc.cluster.local \
+    -n payment-prod -o jsonpath='{.metadata.managedFields[0].time}'
+
+2024-01-17T22:47:00Z
+```
+
+**Wednesday 10:47 PM.** That's when Derek's merge took effect.
+
+### NR Rate — 24 Hour View
+
+```bash
+# Response failure rate over 24h in 30-min buckets
+
+Time                  NR Rate
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Wed 3:00 PM           0.00%
+Wed 3:30 PM           0.00%
+Wed 4:00 PM           0.02%
+Wed 4:30 PM           0.01%
+... (all < 0.05%)
+Wed 10:30 PM          0.03%
+Wed 11:00 PM          0.28%    ← step change
+Wed 11:30 PM          0.31%
+Thu 12:00 AM          0.29%
+Thu 12:30 AM          0.27%
+... (all 0.25-0.33%)
+Thu 2:00 PM           0.30%
+Thu 2:30 PM           0.31%
+Thu 3:00 PM           0.29%
+```
+
+**Clear step change at 11:00 PM Wednesday — about 13 minutes after the ServiceProfile took effect at 10:47 PM.** Before the change: near-zero NR. After: consistent 0.3%.
+
+This is NOT pre-existing noise. Something changed.
+
+But wait — is it the ServiceProfile *causing* failures, or *revealing* them?
+
+### Route Classification
+
+```bash
+$ kubectl exec -n payment-prod \
+    $(kubectl get pods -n payment-prod -l app=payment-service \
+    -o jsonpath='{.items[0].metadata.name}') \
+    -c linkerd-proxy -- \
+    curl -s localhost:4191/metrics | grep "route_" | grep -E "authorize|DEFAULT" | head -10
+
+route_response_total{direction="outbound",dst="payment-gateway-proxy.payment-prod.svc.cluster.local:443",route="POST /api/v1/payments/authorize",classification="success",tls="true"} 48293
+route_response_total{direction="outbound",dst="payment-gateway-proxy.payment-prod.svc.cluster.local:443",route="POST /api/v1/payments/authorize",classification="failure",tls="true"} 147
+route_response_total{direction="outbound",dst="payment-gateway-proxy.payment-prod.svc.cluster.local:443",route="DEFAULT",classification="success",tls="true"} 2
+```
+
+**Interesting.** The route IS matching correctly — requests are classified under the named route, not DEFAULT. The 2 DEFAULT requests are noise (probably health checks or a slightly different path).
+
+**But look at the destination:** `payment-gateway-proxy.payment-prod.svc.cluster.local:443`
+
+The NR failures are on the **outbound** connection from payment-service to the payment gateway proxy. Not on inbound requests to payment-service.
+
+### Application-Level Error Rate
+
+```bash
+# Application metrics - does the 0.3% show up?
+$ curl -s 'http://prometheus:9090/api/v1/query' \
+    --data-urlencode 'query=rate(http_requests_total{service="payment-service",path="/api/v1/payments/authorize",status=~"5.."}[30m])' | jq
+
+{
+  "data": {
+    "result": [{
+      "value": [1705589400, "0.0041"]
+    }]
+  }
+}
+```
+
+0.41% error rate on authorize. Baseline before ServiceProfile was ~0.09%. **The NR flags ARE landing as 5xx at the application level.** Not all 0.3% becomes user-visible errors (some NR responses are caught by application retry logic), but enough to bump the rate.
+
+### Lisa's Budget Impact
+
+```bash
+# Current payment-service error budget
+# Was at 87.1% after Incident 6
+```
+
+0.41% error rate vs 0.09% baseline = roughly 0.32% additional error rate. Over 17 hours since the ServiceProfile went live, that's a slow but real burn. Not catastrophic — but this is a service under velocity freeze because the budget is already damaged.
+
+---
+
+### Derek Responds (3:31 PM)
+
+**Derek Huang — DM:**
+> ServiceProfile went live at 10:47 PM last night. To answer your question — no, I wasn't monitoring NR flags before. The Linkerd dashboard was the first time I looked at proxy-level metrics for payment. So I genuinely don't know if 0.3% was always there.
+>
+> But here's the thing that's bugging me — the `isRetryable: false` setting should only affect Linkerd's retry behavior. It shouldn't cause NEW failures. It should only make existing failures visible instead of retried. If the NR rate was truly near-zero before (as your data suggests), then either:
+>
+> a) Linkerd was retrying ~0.3% of requests and those retries were succeeding (masking), OR
+> b) The ServiceProfile change is somehow causing the connection drops
+>
+> I looked at the ServiceProfile YAML again and I think there might be an issue. I set `timeout` on the authorize route:
+>
+> ```yaml
+> - name: POST /api/v1/payments/authorize
+>   condition:
+>     method: POST
+>     pathRegex: /api/v1/payments/authorize
+>   isRetryable: false
+>   timeout: 5s
+> ```
+>
+> I added the 5s timeout because it felt like a reasonable default. But I'm now wondering — did the route previously inherit the service-level timeout (which might be higher), and now it's hitting a per-route 5s timeout that it wasn't hitting before?
+>
+> The payment gateway can be slow sometimes. 99th percentile is usually around 3-4s but I've seen spikes to 6-7s during Stripe's maintenance windows.
+
+---
+
+**Derek just gave you a new hypothesis. The 5s per-route timeout wasn't in his PR description when you approved it. Did you miss it in review, or did he add it after your approval?**
+
+```bash
+# Check: what's the service-level timeout for payment-service?
+kubectl get serviceprofile payment-service.payment-prod.svc.cluster.local \
+  -n payment-prod -o yaml | grep -A2 "timeout"
+```
+
+---
+
+**It's 3:33 PM. The NR signal is real, not noise. The ServiceProfile change is confirmed correlated. Derek just revealed a per-route timeout that might be the actual cause.**
+
+**You're now dealing with:**
+1. A potential slow-burn production issue on a service under velocity freeze
+2. A timeout value you may have missed in code review
+3. Derek giving you a plausible root cause that also implicates your review quality
+4. The CB PR still unreviewed
+5. Rachel's dates table
+6. The drift detection CronJob commitment
+
+**And the error budget is still at 87.1% — but slowly burning.**
+
+**What do you do?**
+
+First thing: the timeout is the most likely cause and it's actively burning budget. I need to confirm and fix before anything else.
+
+### Investigation — Confirm the Mechanism (3:34 PM)
+
+```bash
+# What's the service-level timeout?
+kubectl get serviceprofile payment-service.payment-prod.svc.cluster.local \
+  -n payment-prod -o yaml | grep -B5 -A5 "timeout"
+```
+
+```bash
+# Payment gateway p99 latency - what % of requests exceed 5s?
+# This tells me exactly how many requests the timeout is killing
+curl -s 'http://prometheus:9090/api/v1/query' \
+  --data-urlencode 'query=histogram_quantile(0.997, rate(response_latency_ms_bucket{direction="outbound",dst_service="payment-gateway-proxy.payment-prod.svc.cluster.local",route="POST /api/v1/payments/authorize"}[1h]))' | jq
+```
+
+```bash
+# More directly - what fraction of authorize requests take >5s?
+curl -s 'http://prometheus:9090/api/v1/query' \
+  --data-urlencode 'query=1 - (sum(rate(response_latency_ms_bucket{direction="outbound",dst_service="payment-gateway-proxy.payment-prod.svc.cluster.local",route="POST /api/v1/payments/authorize",le="5000"}[1h])) / sum(rate(response_latency_ms_bucket{direction="outbound",dst_service="payment-gateway-proxy.payment-prod.svc.cluster.local",route="POST /api/v1/payments/authorize",le="+Inf"}[1h])))' | jq
+```
+
+If approximately 0.3% of requests have latency > 5000ms, that confirms the timeout is the cause — Linkerd is killing the tail requests that the payment gateway would have eventually completed.
+
+### The Review Question (3:35 PM — honest self-assessment while commands run)
+
+Did I miss the timeout in my review? Let me check what Derek actually sent me. When he shared the ServiceProfile YAML in our thread, the version I saw had four routes with `isRetryable` settings and a `pathRegex` note. I approved it with a non-blocking comment about UUID regex.
+
+Either the timeout wasn't in the version I reviewed and Derek added it after, or it was there and I focused on the retry semantics and didn't scrutinize an innocuous-looking `timeout: 5s`. Both are plausible. I need to check.
+
+```bash
+# Git log for the ServiceProfile PR
+git log --oneline --all -- \
+  'manifests/payment-prod/serviceprofile.yaml' | head -5
+
+# Check if there were commits after my approval
+git log --format="%h %ai %s" --all -- \
+  'manifests/payment-prod/serviceprofile.yaml' | head -5
+```
+
+This tells me whether Derek pushed additional commits after my approval.
+
+### Derek Huang — DM (3:36 PM)
+
+> Derek — the 5s per-route timeout is almost certainly the cause. Here's why:
+>
+> The NR flags are on outbound to payment-gateway-proxy, not inbound to payment-service. They started exactly when the ServiceProfile took effect. If the payment gateway's tail latency hits 6-7s during slow periods, a 5s route timeout kills those requests — they get NR'd by the proxy before the gateway responds.
+>
+> Before the ServiceProfile, either there was no per-route timeout (Linkerd's default is no route timeout, inherits from service-level or TCP-level), or it was higher. Your 5s is cutting into the tail.
+>
+> Two things I need from you:
+> 1. Was the `timeout: 5s` in the version of the PR I reviewed, or did you add it in a later commit? I want to check my own work honestly.
+> 2. Don't change it yourself yet — I want to verify the mechanism first and then make a clean fix.
+
+While waiting for Derek, I'm not going to sit on this if the data confirms it.
+
+### Fix Decision (3:38 PM)
+
+If the latency histogram confirms ~0.3% of requests exceed 5s, the fix is straightforward: remove the per-route timeout entirely for now. The `isRetryable: false` settings are correct and should stay. The timeout was an independent addition that wasn't part of the original ask.
+
+But I need to think about this carefully:
+
+- **Option A:** Remove the timeout entirely. Payment authorize goes back to no route-level timeout. Simple. Clean. But then there's no timeout protection at all on this route — a hung payment gateway connection could hold resources indefinitely.
+
+- **Option B:** Increase the timeout to something safe. The payment gateway p99 is 3-4s, spikes to 6-7s. A 10s timeout would catch true hangs without killing legitimate slow requests. But I'm pulling a number out of the air without knowing the full latency distribution.
+
+- **Option C:** Remove the per-route timeout and let the circuit breaker (Derek's pending PR) handle the protection. The CB is the right long-term answer for downstream latency protection, not a static timeout.
+
+Option A is the right immediate fix. Option C is the right architecture. Option B is a compromise that might need changing again.
+
+```bash
+# Prepare the fix - remove timeout, keep isRetryable settings
+kubectl get serviceprofile payment-service.payment-prod.svc.cluster.local \
+  -n payment-prod -o yaml > /tmp/sp-backup.yaml
+
+# Edit: remove the timeout: 5s line from the authorize route
+kubectl edit serviceprofile payment-service.payment-prod.svc.cluster.local \
+  -n payment-prod
+```
+
+Wait — this is GitOps. I shouldn't `kubectl edit` a resource that's managed through ArgoCD. That'll create drift.
+
+```bash
+# Check if the ServiceProfile is in ArgoCD
+argocd app get payment-prod --resource serviceprofile \
+  payment-service.payment-prod.svc.cluster.local 2>&1 | head -5
+```
+
+If it's in ArgoCD, I need to push a git commit. If Derek applied it directly, a `kubectl edit` might be appropriate as a hotfix with a follow-up PR.
+
+### Derek Responds (3:39 PM)
+
+I'm going to act on whatever he says, but regardless of whether I missed it or he added it post-review, the fix is the same.
+
+### Derek Huang — DM (3:39 PM)
+
+> I added the timeout after your approval. I thought a 5s default was reasonable and it was a one-line addition. I should have re-requested review. That's on me, sorry.
+
+### Derek Huang — DM (3:40 PM)
+
+> Understood. Appreciate you owning that. For now — I need you to push a commit removing the `timeout: 5s` from the authorize route. Keep the `isRetryable` settings, those are correct. Remove the timeout from all four routes if you added them to the others too.
+>
+> Here's my reasoning: a static per-route timeout isn't the right protection for downstream latency variance. Your circuit breaker PR is. The CB can track p99 trends and trip dynamically. A hard 5s kills legitimate requests during normal gateway slowness.
+>
+> Once the CB is in place, we can revisit whether a per-route timeout adds value on top of it. But right now it's actively cutting into error budget on a frozen service.
+>
+> Push the fix through git so ArgoCD picks it up. I'll watch the NR rate — should drop back to near-zero within a few minutes of the new ServiceProfile syncing.
+>
+> And going forward — any commit after an approval gets a re-review ping. Not because I don't trust your judgment, but because this is exactly what happens when a "one-line reasonable addition" meets production tail latency.
+
+### Monitoring the Fix (3:45 PM)
+
+Once Derek pushes:
+
+```bash
+# Watch for ArgoCD sync
+argocd app get payment-prod --refresh
+
+# Then watch NR rate in real-time
+watch -n 10 "curl -s 'http://prometheus:9090/api/v1/query' \
+  --data-urlencode 'query=sum(rate(response_total{direction=\"outbound\",dst_service=\"payment-gateway-proxy.payment-prod.svc.cluster.local\",route=\"POST /api/v1/payments/authorize\",classification=\"failure\"}[2m])) / sum(rate(response_total{direction=\"outbound\",dst_service=\"payment-gateway-proxy.payment-prod.svc.cluster.local\",route=\"POST /api/v1/payments/authorize\"}[2m]))' | jq '.data.result[0].value[1]'"
+```
+
+### Lisa Park — DM (3:42 PM)
+
+> Lisa — heads up. The ServiceProfile change from last night introduced a per-route 5s timeout on payment authorize that's been cutting off tail-latency requests. 0.3% NR rate for the last 17 hours. Application error rate bumped from 0.09% to 0.41%.
+>
+> Fix is being pushed now — removing the timeout. Should resolve within minutes.
+>
+> For budget tracking: this is a slow burn, roughly 0.32% additional error rate over 17 hours. Can you calculate the impact? I need it for Rachel's remediation table — this is technically a consequence of a remediation action (ServiceProfile for payment safety), which makes it relevant for the GDPR notification's "remediation didn't cause additional harm" narrative.
+
+I'm flagging this to Lisa because she's tracking the budget, and because Rachel's supervisory notification should reflect that our remediation work was imperfect. Hiding it would be worse than disclosing it.
+
+### Updated Priority Queue (3:46 PM)
+
+```
+NOW:        Watch NR rate drop after Derek's fix (5 min)
+3:50 PM:    Derek's CB PR review (now more important — I need to 
+            verify HIS timeout/fallback logic isn't making the 
+            same mistake)
+4:30 PM:    Rachel's remediation dates table
+5:15 PM:    Drift detection CronJob skeleton
+5:45 PM:    EOD notes
+
+Notes for CB PR review:
+  - Check for hard-coded timeouts
+  - Check fallback behavior when CB is open
+  - Check what happens during CB half-open state
+  - Make sure CB trip thresholds account for the 3-7s 
+    latency variance Derek just told me about
+```
+
+The CB review just got more important, not less. Derek has good instincts but he also just showed me that he'll add "reasonable defaults" without fully testing them against production latency distributions. I need to review that PR carefully, not rubber-stamp it.
+
+## Investigation Results + Fix
+
+### Latency Confirmation
+
+```bash
+# Fraction of authorize requests > 5000ms
+→ 0.0031
+```
+
+**0.31%.** Almost exactly matches the NR rate. The 5s timeout is killing tail requests. Confirmed.
+
+### ServiceProfile Current State
+
+```bash
+$ kubectl get serviceprofile payment-service.payment-prod.svc.cluster.local \
+    -n payment-prod -o yaml | grep -B5 -A5 "timeout"
+
+  routes:
+  - name: POST /api/v1/payments/authorize
+    condition:
+      method: POST
+      pathRegex: /api/v1/payments/authorize
+    isRetryable: false
+    timeout: 5s
+  - name: POST /api/v1/payments/refund
+    condition:
+      method: POST
+      pathRegex: /api/v1/payments/refund
+    isRetryable: false
+    timeout: 5s
+  - name: POST /api/v1/payments/capture
+    condition:
+      method: POST
+      pathRegex: /api/v1/payments/capture
+    isRetryable: false
+    timeout: 5s
+  - name: GET /api/v1/payments/status/{id}
+    condition:
+      method: GET
+      pathRegex: /api/v1/payments/status/[^/]+
+    isRetryable: true
+```
+
+**Timeout on three routes, not just authorize.** All three mutating endpoints have 5s timeouts added post-approval.
+
+### ArgoCD Status
+
+```bash
+$ argocd app get payment-prod --resource serviceprofile \
+    payment-service.payment-prod.svc.cluster.local
+
+GROUP        KIND              NAME                                                    STATUS  HEALTH
+linkerd.io   ServiceProfile    payment-service.payment-prod.svc.cluster.local          Synced  Healthy
+```
+
+**It's in ArgoCD.** Good — means Derek's fix goes through git, not kubectl.
+
+### Derek's Fix (3:44 PM)
+
+**Derek Huang — DM:**
+> Pushed. Removed `timeout` from all four routes (including the GET, which I'd set to 3s — didn't mention that one, sorry).
+>
+> ```yaml
+> # Before (my addition)
+> timeout: 5s
+> 
+> # After (removed)
+> # no per-route timeout, inherits service/TCP level
+> ```
+> 
+> Commit: `Remove per-route timeouts from payment ServiceProfile — causing NR on tail latency requests. isRetryable settings unchanged.`
+>
+> ArgoCD should sync in ~2 minutes.
+
+```bash
+$ argocd app get payment-prod --refresh
+# Sync status: Synced
+# Last sync: 3:46 PM
+```
+
+### NR Rate — Watching
+
+```
+3:44 PM    0.31%
+3:46 PM    0.29%    (ArgoCD synced, proxy picking up new config)
+3:48 PM    0.14%    (dropping)
+3:50 PM    0.04%    (existing connections draining)
+3:52 PM    0.01%    (near baseline)
+3:54 PM    0.00%    (clean)
+```
+
+**NR rate back to zero by 3:54 PM.** Fix confirmed.
+
+### Lisa Park — DM (3:48 PM)
+
+> Calculated. The 17-hour slow burn at ~0.32% additional error rate consumed approximately 1.1% of error budget. Payment-service budget: 87.1% → 86.0%.
+>
+> Not catastrophic but it's another nick. This service has taken three hits this week (Incident 6: 4.2%, the slow burn: 1.1%, and normal baseline consumption). Budget is viable but thin.
+>
+> On the "remediation didn't cause additional harm" narrative — I'd frame it carefully. The ServiceProfile change was a safety improvement (preventing duplicate payment retries). The timeout was an unapproved addition that caused a secondary issue, which was detected and resolved within 17 hours. That's an honest story.
+
+---
+
+### Quick Self-Note (3:55 PM)
+
+```
+What happened:
+  - I approved Derek's ServiceProfile PR with a non-blocking 
+    comment about regex. Good review on what was there.
+  - Derek added timeout: 5s (on ALL routes, not just authorize) 
+    after my approval without re-requesting review.
+  - I didn't catch it because I didn't re-check after approval.
+  - The timeout killed 0.3% of tail-latency requests for 17 hours.
+  - Budget cost: 1.1%
+
+What I did right:
+  - Investigated Derek's signal immediately instead of deferring
+  - Correctly identified the mechanism (timeout vs reveal)
+  - Didn't jump to conclusions (checked data first)
+  - Asked Derek directly if it was post-approval
+  - Set clear expectation: re-review after any post-approval commit
+  - Looped in Lisa for budget impact
+  - Flagged to Sarah transparently
+
+What I got wrong:
+  - Didn't re-check the PR after Derek said it was merged.
+    My review process assumes nothing changes post-approval.
+    That assumption was wrong.
+  - When Derek described the ServiceProfile in Slack, he showed 
+    four routes with isRetryable settings. The YAML he actually 
+    merged included timeouts. I approved based on Slack, not 
+    the final diff.
+
+Process fix:
+  - Going forward: review the MERGED commit, not the PR description.
+  - Especially for anyone's first ServiceProfile/NetworkPolicy —
+    these are proxy-level configs that affect traffic in ways 
+    that are hard to observe after the fact.
+```
+
+---
+
+## 3:55 PM — CB PR Review
+
+Now I can review Derek's circuit breaker PR with fresh context. I know Derek adds "reasonable defaults" without testing them against production distributions. I know the payment gateway has 3-7s latency variance. I need to read this PR with those facts in mind.
+
+```bash
+# Pull up the PR
+cd ~/repos/novamart-infrastructure
+git fetch origin
+git diff origin/main...origin/feature/circuit-breaker-order-inventory
+```
+
+### Derek Huang — DM (3:55 PM)
+
+> Reviewing the CB PR now. NR rate is back to zero — fix confirmed. Good catch raising it.
+>
+> One process note going forward: any commit pushed after an approval needs a re-review ping. I know it feels like overhead for a one-liner, but this is exactly the scenario where "reasonable addition" meets production reality. Not a blame thing — just a gate we need.
+
+**Derek:**
+> Fair. Won't happen again. Thanks for not making it a bigger deal than it needed to be.
+
+---
+
+**The CB PR is open in your editor. Here's what you see:**
+
+### PR: `platform-infra#347` — Circuit Breaker for order→inventory
+
+```yaml
+# resilience4j-config.yaml (mounted as ConfigMap)
+resilience4j:
+  circuitbreaker:
+    instances:
+      inventoryService:
+        registerHealthIndicator: true
+        failureRateThreshold: 25
+        slowCallRateThreshold: 50
+        slowCallDurationThreshold: 1500
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 50
+        minimumNumberOfCalls: 20
+        waitDurationInOpenState: 30000
+        permittedNumberOfCallsInHalfOpenState: 5
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        recordExceptions:
+          - java.util.concurrent.TimeoutException
+          - java.io.IOException
+          - org.springframework.web.client.HttpServerErrorException
+```
+
+```yaml
+# deployment patch
+spec:
+  template:
+    spec:
+      containers:
+        - name: order-service
+          env:
+            - name: INVENTORY_CB_ENABLED
+              value: "true"
+            - name: INVENTORY_FALLBACK_MODE
+              value: "two-tier"
+          volumeMounts:
+            - name: resilience4j-config
+              mountPath: /config/resilience4j.yaml
+              subPath: resilience4j.yaml
+```
+
+```java
+// InventoryClient.java — fallback logic (abbreviated)
+
+@CircuitBreaker(name = "inventoryService", fallbackMethod = "inventoryFallback")
+public InventoryResponse checkStock(String productId, int quantity) {
+    return restTemplate.getForObject(
+        inventoryServiceUrl + "/api/v1/stock/" + productId + "?qty=" + quantity,
+        InventoryResponse.class);
+}
+
+public InventoryResponse inventoryFallback(String productId, int quantity, Exception ex) {
+    log.warn("Circuit breaker fallback for product {}: {}", productId, ex.getMessage());
+    
+    // Two-tier fallback
+    CachedStock cached = stockCache.get(productId);
+    if (cached != null && cached.getAge().toMinutes() < 5) {
+        // High confidence: recent cache
+        return InventoryResponse.builder()
+            .available(true)
+            .source("cache")
+            .confidence("high")
+            .build();
+    } else {
+        // Low confidence: no cache or stale
+        return InventoryResponse.builder()
+            .available(true)  
+            .source("degraded")
+            .confidence("low")
+            .build();
+    }
+}
+```
+
+```yaml
+# Linkerd ServiceProfile update for order-service
+apiVersion: linkerd.io/v1alpha2
+kind: ServiceProfile
+metadata:
+  name: inventory-service.catalog-prod.svc.cluster.local
+  namespace: catalog-prod
+spec:
+  routes:
+    - name: GET /api/v1/stock/{productId}
+      condition:
+        method: GET
+        pathRegex: /api/v1/stock/[^/]+
+      isRetryable: true
+      timeout: 3s
+```
+
+```yaml
+# PrometheusRule for CB monitoring
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: circuit-breaker-alerts
+spec:
+  groups:
+    - name: circuit-breaker
+      rules:
+        - alert: CircuitBreakerOpen
+          expr: resilience4j_circuitbreaker_state{state="open"} == 1
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Circuit breaker {{ $labels.name }} is OPEN"
+        - alert: CircuitBreakerHighFallbackRate
+          expr: >
+            rate(resilience4j_circuitbreaker_calls_total{kind="fallback"}[5m]) 
+            / rate(resilience4j_circuitbreaker_calls_total[5m]) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+```
+
+---
+
+**The PR has ~6 files across config, code, ServiceProfile, and monitoring.**
+
+**Given what you just learned about Derek's "reasonable defaults" pattern, and given what you know about the system from Monday's circuit breaker design meeting, what's your review?**
+
+**It's 3:58 PM. You want this done by 4:30 so you can start Rachel's table.**
+
+### PR Review — platform-infra#347 (3:58 PM)
+
+I read through all six files. The design matches what we discussed Monday — Resilience4j, two-tier fallback, per-replica state, monitoring. The structure is good. But I have three blocking issues, two of which are the kind of thing I need to catch especially carefully given the last hour.
+
+---
+
+### PR Comment — BLOCKING #1
+
+**File:** `ServiceProfile` — inventory-service
+
+```yaml
+  routes:
+    - name: GET /api/v1/stock/{productId}
+      isRetryable: true
+      timeout: 3s
+```
+
+> **🔴 Blocking.** Derek. We literally just removed a per-route timeout from the payment ServiceProfile 30 minutes ago because it was killing tail-latency requests. This is the same pattern.
+>
+> Inventory service p99 is 1.08s at production traffic (that's what caused Incident 1). During load spikes, it goes higher. A 3s route-level timeout will kill requests that the inventory service would have completed at 3.1s, 3.5s, 4s. And unlike the payment gateway, we KNOW inventory has latency variance under load — that's the whole reason we're adding a circuit breaker.
+>
+> The circuit breaker itself is the right protection for slow downstream calls. It tracks failure/slow-call rates dynamically and trips when the pattern warrants it. A static per-route timeout undermines that — it creates failures for the CB to observe, making it more likely to trip during normal tail variance.
+>
+> Remove the timeout. Let `isRetryable: true` stand (correct for GET), and let the CB handle latency protection.
+
+### PR Comment — BLOCKING #2
+
+**File:** `InventoryClient.java` — fallback low-confidence path
+
+```java
+} else {
+    // Low confidence: no cache or stale
+    return InventoryResponse.builder()
+        .available(true)  
+        .source("degraded")
+        .confidence("low")
+        .build();
+}
+```
+
+> **🔴 Blocking.** The low-confidence path returns `available: true` with no actual stock data. This means when the CB is open AND cache is stale or missing, we tell the customer "yes you can buy this" when we genuinely don't know if it's in stock.
+>
+> This is an overselling risk. If inventory is down because there's a stockout event and the service is overwhelmed, we're accepting orders for items we might not have. That's a customer promise we can't keep — which turns into refunds, complaints, and CS load.
+>
+> Monday's meeting discussed two tiers:
+> - High confidence → accept with "Processing" (we have recent data)
+> - Low confidence → degraded UX (we DON'T pretend we know)
+>
+> The low-confidence tier should return `available: false` with `source: "degraded"`, or better yet, return a distinct state that the frontend can handle — something like `available: unknown`, `confidence: none` — so the UI can show "temporarily unable to confirm availability" instead of a green "Add to Cart" button.
+>
+> What does the frontend do with `confidence: "low"` today? Does it render differently than `confidence: "high"`? If the frontend doesn't check the confidence field, then this effectively always returns "in stock" when the CB is open.
+
+### PR Comment — BLOCKING #3
+
+**File:** `InventoryClient.java` — stockCache dependency
+
+> **🔴 Blocking — question.** The high-confidence fallback path reads from `stockCache`:
+>
+> ```java
+> CachedStock cached = stockCache.get(productId);
+> if (cached != null && cached.getAge().toMinutes() < 5) {
+> ```
+>
+> In Monday's meeting, we explicitly noted that the inventory stock level cache "doesn't exist yet." Has this been implemented? If `stockCache` is a new component in this PR, I need to see that code. If it's referencing something that doesn't exist, then `cached` is always null, the high-confidence path never triggers, and 100% of fallbacks go through the low-confidence `available: true` path.
+>
+> That would mean: every time the CB opens, every order is accepted with no stock validation at all. That's not a two-tier fallback — it's a blanket "accept everything" switch.
+
+---
+
+### PR Comment — SHOULD FIX
+
+**File:** `resilience4j-config.yaml`
+
+```yaml
+slowCallDurationThreshold: 1500
+slidingWindowType: COUNT_BASED
+slidingWindowSize: 50
+```
+
+> **🟡 Should fix.** Two concerns about the CB sensitivity:
+>
+> **a) slowCallDurationThreshold at 1500ms.** Inventory p99 at production scale is 1.08s. The p99.5 and p99.9 are likely above 1500ms during normal peak traffic. This means a meaningful fraction of normal requests will be classified as "slow." Combined with `slowCallRateThreshold: 50%`, the CB might not trip on slow calls alone during steady state — but during any moderate traffic spike, you'll cross the threshold and the CB opens. Is that intended?
+>
+> I'd recommend either:
+> - Raising this to 2000ms (headroom above p99, same logic we used for the timeout in Incident 1)
+> - Or changing to TIME_BASED sliding window so traffic spikes don't disproportionately affect the ratio
+>
+> **b) slidingWindowSize: 50 with COUNT_BASED.** At ~750 rpm per replica, a window of 50 calls covers about 4 seconds of traffic. That's very reactive — a brief 2-second network hiccup could push the failure rate past 25% within that window and open the CB. Then it stays open for 30 seconds (`waitDurationInOpenState`), which is a long time to be in fallback mode because of a 2-second blip.
+>
+> Consider `slidingWindowSize: 100` or switching to `TIME_BASED` with a 60-second window. The CB should trip on sustained degradation, not transient noise.
+
+### PR Comment — NON-BLOCKING
+
+**File:** `PrometheusRule`
+
+> **🟢 Looks good.** The CB state alert and fallback rate alert are the right things to monitor. One suggestion: add a recording rule for `resilience4j_circuitbreaker_calls_total` by `kind` so you can graph fallback rate over time in Grafana without writing the PromQL each time.
+
+---
+
+### Summary Comment (4:18 PM)
+
+> **Requesting changes.** The architecture is right — Resilience4j CB, two-tier fallback, monitoring. This matches what we designed Monday. Three blockers:
+>
+> 1. **Remove the per-route timeout.** Same issue we just fixed on payment 30 minutes ago. The CB is the right tool for downstream latency protection, not a static timeout.
+> 2. **Fix the low-confidence fallback.** Returning `available: true` with no data is an overselling risk. Return an explicit "unknown" state and confirm the frontend handles it.
+> 3. **Confirm stockCache exists.** If it doesn't, the two-tier design collapses to "accept everything." That's a meaningful behavior change we need to be deliberate about.
+>
+> The sensitivity tuning (slow call threshold, window size) is a should-fix — we can iterate after the first deployment with real metrics. But the three blockers need to be resolved before this goes to staging.
+>
+> I'd suggest looping in Lisa on the frontend confidence handling, and Ryan or whoever owns the product page to confirm how `confidence: "low"` renders.
+>
+> Good foundation, Derek. The monitoring setup in particular is solid. Let me know when you push updates and I'll re-review same day.
+
+### Priority Queue Update (4:20 PM)
+
+```
+✅ DONE:     NR signal investigated, fixed, confirmed
+✅ DONE:     CB PR reviewed (3 blocking, 1 should-fix, 1 non-blocking)
+4:25 PM:    Rachel's remediation dates table (the board is seeing 
+            this — needs to be tight)
+5:15 PM:    Drift detection CronJob skeleton
+5:45 PM:    EOD notes
+```
+
+The CB PR review took 25 minutes. Normally I'd want more time, but I knew exactly what to look for — the timeout pattern, the fallback behavior from Monday's meeting, and the cache dependency we flagged as not-yet-built. The review was faster because the last three days gave me the context.
+
+
+
+## Derek Responds (4:22 PM)
+
+**Derek Huang — DM:**
+
+> Oof. Three for three on the blockers. You're right on all of them.
+>
+> On the timeout — yeah. I clearly have a habit. Removed.
+>
+> On the stockCache — you caught me. It doesn't exist yet. I stubbed the interface but there's no implementation. I was planning to add a Redis-backed cache as a follow-up PR, but you're right that without it, the high-confidence path never fires and every fallback returns `available: true`. I didn't think about that behavior holistically. I was writing the code path I *wanted* to exist, not the code path that *would* exist at deploy time.
+>
+> On the low-confidence `available: true` — I had a conversation with Nina about this on Monday after the meeting and she said the product team preferred accepting orders over showing "unavailable" when they're not sure. Her argument was that overselling is operationally fixable (refund + apology) but turning away real customers is lost revenue you never see. I should have put that context in the PR description.
+>
+> I'll make the changes, but I want to flag: if we change low-confidence to `available: unknown`, the frontend *doesn't* handle that today. Ryan's team would need to build a "temporarily unable to confirm" UI state. That's probably a 2-3 day frontend task.
+>
+> So the question is: do we block the CB deployment until the frontend can handle `unknown`, or do we ship with `available: false` as the low-confidence response (which the frontend already handles as "out of stock") and accept that we might turn away some real customers during CB-open periods?
+
+---
+
+### Nina Petrov — DM (4:25 PM)
+
+> Hey — Derek mentioned you had concerns about the low-confidence fallback in the CB. I want to give you context: we talked to product and finance about this specifically. During a circuit breaker event, we'd rather accept orders we might have to cancel than show "out of stock" and lose the customer entirely. 
+>
+> The math: our historical oversell rate even without CB is ~0.4%. During a CB event (which we expect to be rare and short), the incremental oversell risk is bounded by the CB open duration × order rate. At 30 seconds open and ~12 orders/sec, that's ~360 orders worst case, of which maybe 2-3% would actually be oversold. That's ~10 orders we'd have to refund. The cost of 10 refunds ($200-300) is much less than the revenue lost from showing "out of stock" to 360 potential customers.
+>
+> Product signed off on this. Can we keep `available: true` for the low-confidence path?
+
+---
+
+**It's 4:25 PM. Two people are pushing back on your blocking comment #2.**
+
+**Derek's pushback is practical** — the frontend doesn't handle `unknown` today, and adding it is 2-3 days of work that would delay the CB deployment.
+
+**Nina's pushback is business-informed** — product and finance analyzed the trade-off and prefer accepting orders over turning customers away. She has actual numbers.
+
+**Your blocking comment was technically correct — returning `available: true` without data IS an overselling risk. But Nina just told you the business has explicitly chosen to accept that risk, with math to back it up.**
+
+**Do you:**
+- **Hold the block** — your job is platform safety, and returning `available: true` with no data is a lie the system tells itself
+- **Unblock with conditions** — accept the business decision but add guardrails
+- **Unblock entirely** — you were wrong to block on a business trade-off that's already been made by the business
+
+**Meanwhile: Rachel's table. Drift detection. EOD approaching.**
+
+**Go.**
+
+
+
+Nina's numbers are reasonable and she's done the work. This is a business trade-off, not a technical safety issue. I was wrong to block on it without asking for context first.
+
+But I'm not unblocking entirely, because there's a gap between "product signed off on accepting oversell risk" and "the system makes that decision transparently."
+
+### Derek Huang — DM (4:28 PM)
+
+> Nina's math makes sense. I'm unblocking this — the business has made an explicit, quantified decision to accept oversell risk during CB events, and that's their call to make, not mine.
+>
+> But I want two things before this ships, and I think both are quick:
+>
+> **1. Make the decision visible in the code and in the data.** Change the low-confidence response to:
+>
+> ```java
+> return InventoryResponse.builder()
+>     .available(true)
+>     .source("degraded")
+>     .confidence("low")
+>     .assumedAvailable(true)  // explicit: we're guessing
+>     .build();
+> ```
+>
+> And log it at WARN level. I want a metric we can track — `orders_accepted_without_stock_verification_total` or similar. When the CB opens in production and we accept 360 orders without verification, I want to be able to tell finance exactly how many and for which products. That turns "we think it's ~10 oversells" into "it was exactly 7 oversells on these SKUs." Nina's math is right today, but if the oversell rate is higher than expected during a real CB event, we need data to recalibrate.
+>
+> **2. Add a comment block in the fallback method documenting the business decision:**
+>
+> ```java
+> // LOW-CONFIDENCE FALLBACK: Returns available=true without stock verification.
+> // Business decision: product/finance prefer accepting potential oversells 
+> // (~10 orders per 30s CB event) over lost revenue from showing "out of stock."
+> // Approved by: Nina Petrov (Product), Finance review 2024-01-15.
+> // Revisit if: oversell rate during CB events exceeds 5% of fallback orders.
+> // Tracking: orders_accepted_without_stock_verification_total metric
+> ```
+>
+> Six months from now when someone reads this code and says "why are we returning true when we don't know?" — the answer is right there, not buried in a Slack thread.
+>
+> These aren't big changes. I'm converting blocker #2 to a should-fix with these two conditions. Blockers #1 (timeout) and #3 (stockCache) still stand.
+
+### Nina Petrov — DM (4:30 PM)
+
+> Nina — your analysis is solid and I should have asked for context before blocking. That's on me. I've unblocked with two conditions: a tracking metric so we have real data during CB events, and a code comment documenting the business decision so future engineers understand why. Derek has the details.
+>
+> One question: when the stockCache is eventually implemented (Derek's follow-up PR), do you want to revisit the low-confidence tier? With a working cache, the high-confidence path handles most cases and low-confidence becomes rarer. At that point, `available: unknown` with a frontend treatment might be worth the investment since it would only affect edge cases.
+
+### Derek Huang — DM (4:32 PM)
+
+> Revised blockers:
+>
+> 1. ~~Per-route timeout~~ — you're removing. ✅
+> 2. ~~Low-confidence available:true~~ — unblocked with metric + code comment. Converted to should-fix.
+> 3. **stockCache** — still blocking. Without the cache, there's no high-confidence path, which means every CB-open fallback is low-confidence. That's the scenario Nina's math covers, so it's acceptable short-term, but I want this explicitly documented as a known limitation in the PR description. Add a TODO and a ticket number for the cache implementation. When does the cache PR land?
+>
+> If you can confirm the cache timeline and add the documentation, I'll re-review and approve.
+
+### Status (4:33 PM)
+
+CB review is effectively done pending Derek's updates. Moving to Rachel's table — that's the deliverable that's going in front of the board.
+
+---
+
+### Rachel's Remediation Dates Table (4:35 PM - 5:15 PM)
+
+This needs to be precise. Specific dates, owners, and — per Rachel's hallway ask — evidence of completion for each control.
+
+```markdown
+# NovaMart PCI Scope Assessment — Remediation Timeline
+# Prepared for: GDPR Supervisory Notification
+# Author: [me]
+# Date: January 18, 2024
+# Status: COMMITTED (presented to VP Engineering, Security, Legal)
+
+## Containment Actions (COMPLETED)
+
+| # | Action | Date Completed | Owner | Evidence of Completion |
+|---|--------|---------------|-------|----------------------|
+| C-1 | MongoDB Atlas egress blocked | Wed Jan 17, 12:15 PM | [me] | NetworkPolicy v3 applied. `kubectl get networkpolicy -n data-analytics` shows default-deny egress. Kafka Connect payments-sink-mongo in FAILED state. Verified no outbound connections to MongoDB Atlas endpoints via `kubectl logs`. |
+| C-2 | S3 novamart-data-exports encrypted + hardened | Wed Jan 17, 1:30 PM | [me] | `aws s3api get-bucket-encryption` shows KMS/CMK. Server access logging enabled. Versioning enabled. Bucket policy scoped to two IAM roles. 108 objects re-encrypted. |
+| C-3 | S3 novamart-analytics-datalake encrypted + hardened | Wed Jan 17, 1:30 PM | [me] | Same as C-2. 1,847 objects re-encrypted. KMS key policy updated Thu Jan 18 to include all writer roles. |
+| C-4 | Atlas egress preserved (not purged) | Wed Jan 17 — ongoing | Aisha/Rachel | Data in Atlas preserved for supervisory review per Legal guidance. Account access secured by Wei Liu. |
+
+## Remediation Controls (COMMITTED)
+
+| # | Control | Committed Date | Owner | Evidence of Completion |
+|---|---------|---------------|-------|----------------------|
+| R-1 | Drift detection — automated weekly scan for unmanaged workloads | Mon Jan 22 | [me] | CronJob deployed in monitoring namespace via ArgoCD. First scan results delivered to #platform-engineering Slack channel. Test run against current cluster shows expected findings. |
+| R-2 | Image admission policy — warn mode (non-ECR images flagged) | Fri Jan 26 | [me] | OPA/Kyverno policy deployed. `kubectl get constrainttemplate` confirms policy exists. Audit log shows warnings for known non-ECR workloads in data-analytics namespace. No enforcement yet. |
+| R-3 | Image admission policy — enforce mode (non-ECR images rejected) | Fri Feb 2 | [me] | Policy switched to enforce. Test: attempt to deploy Docker Hub image in test namespace → rejected. All existing non-ECR workloads either migrated to ECR or granted explicit exception with documented justification. |
+| R-4 | Default-deny NetworkPolicy — all production namespaces | Fri Feb 14 | [me] | Per-namespace egress audit completed. Default-deny applied to all namespaces. Allowlists documented per namespace. Test: deploy a pod with undeclared egress → blocked. |
+| R-5 | Self-service data pipeline template | Fri Feb 14 | [me] + Sarah | Template repo exists with ArgoCD integration, pre-configured S3 destinations, KMS encryption, RBAC. Test: team submits PR using template → reviewed and deployed within 1 business day. |
+| R-6 | Kafka pipeline platform onboarding | Fri Jan 26 | [me] + Tom/Wei | Kafka cluster in ArgoCD. ECR images. Linkerd mesh injected. Monitoring dashboards. Backup configured. On-call runbook. Verified: `argocd app get data-analytics` shows Synced + Healthy. |
+| R-7 | analytics_reader DB permissions audit + restriction | Wed Jan 24 | [me] + DBA | `SHOW GRANTS FOR analytics_reader` confirms minimum necessary permissions. Excess grants revoked. |
+| R-8 | Egress gateway — centralized external traffic control | Fri Mar 29 | [me] | Egress proxy deployed. All external traffic routes through gateway with logging. Test: deploy workload with direct external egress → blocked. Audit log shows all external connections. |
+
+## Atlas Account Remediation (Legal-dependent)
+
+| # | Action | Earliest Date | Owner | Dependency |
+|---|--------|--------------|-------|------------|
+| A-1 | Atlas data inventory + preservation | Done (Thu Jan 18) | Wei Liu | — |
+| A-2 | Atlas account decommission | TBD | Wei/Aisha | Rachel confirms no preservation hold |
+| A-3 | Kafka Connect MongoDB connector removed | Same day as A-2 | [me] | A-2 |
+
+## Notes
+
+1. Dates are committed, not estimated. If a date slips, 
+   this document will be updated with revised date and reason.
+2. "Evidence of Completion" column designed for supervisory 
+   authority verification — each control has a testable 
+   proof that it works, not just that it was deployed.
+3. R-5 (self-service template) ships simultaneously with 
+   R-4 (default-deny) by design — "the wall and the door 
+   at the same time."
+4. During S3 remediation (C-3), a KMS key policy gap was 
+   identified and resolved within 17 hours. The Kafka Connect 
+   S3 writer IAM role was not included in the initial key 
+   policy. Data remained encrypted via bucket default, but 
+   explicit permissions were missing. Fixed Thu Jan 18, 3:05 PM.
+   Documented for transparency.
+```
+
+I'm including note 4 because Rachel specifically asked for evidence of completion, and honest evidence includes honest mistakes. If the supervisory authority asks "did anything go wrong during remediation," the answer is documented before the question is asked.
+
+### Drift Detection CronJob Skeleton (5:15 PM - 5:40 PM)
+
+I committed to Monday in front of the VP. The audit script from Wednesday is the foundation. I need to wrap it properly.
+
+```yaml
+# drift-detection-cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: drift-detection-scan
+  namespace: monitoring
+  labels:
+    app: drift-detection
+    managed-by: argocd
+spec:
+  schedule: "0 8 * * 1"  # Every Monday 8 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: drift-detection-sa
+          containers:
+            - name: scanner
+              image: <ECR_REPO>/drift-detection:v1
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  # Get all workloads (Deployments, StatefulSets, 
+                  # DaemonSets, CronJobs) across all namespaces
+                  # Compare against ArgoCD application inventory
+                  # Flag anything not managed by ArgoCD
+                  # Classify by namespace risk tier
+                  # Send results to Slack webhook
+                  
+                  /scripts/scan.sh | /scripts/classify.sh | \
+                    /scripts/notify.sh
+              env:
+                - name: SLACK_WEBHOOK_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: drift-detection-secrets
+                      key: slack-webhook
+                - name: ARGOCD_SERVER
+                  value: "argocd-server.argocd.svc.cluster.local"
+          restartPolicy: OnFailure
+```
+
+```bash
+# scan.sh (skeleton — flesh out Friday)
+
+#!/bin/bash
+set -euo pipefail
+
+# All workloads in cluster
+WORKLOADS=$(kubectl get deploy,sts,ds,cronjob \
+  --all-namespaces -o json)
+
+# All ArgoCD-managed resources
+ARGOCD_MANAGED=$(argocd app list -o json | \
+  jq -r '.[].status.resources[].name')
+
+# Diff: workloads NOT in ArgoCD
+echo "$WORKLOADS" | jq -r '.items[] | 
+  select(.metadata.name as $n | 
+    ['$ARGOCD_MANAGED'] | index($n) | not) |
+  [.metadata.namespace, .kind, .metadata.name, 
+   (.metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"] // "no-manifest")] | 
+  @tsv'
+```
+
+This is the skeleton. The classification and notification layers need work. Friday morning I'll flesh it out and test against the cluster. Saturday or Sunday I'll do a dry run, and Monday morning it goes live through ArgoCD.
+
+### EOD Notes (5:45 PM)
+
+### #platform-engineering (5:47 PM)
+
+> **EOD Thursday — on-call update**
+>
+> **PCI review:** completed. James, Legal, Security aligned on GDPR supervisory notification by Saturday. Rachel drafting. Remediation dates committed — table going to Rachel at 10 AM tomorrow.
+>
+> **ServiceProfile fix:** per-route timeout on payment authorize was causing 0.3% NR flags for 17 hours. Removed. NR rate back to zero by 3:54 PM. Budget impact: 1.1%.
+>
+> **CB PR reviewed:** three blockers identified, one resolved through business context from Nina. Derek updating. Will re-review when ready.
+>
+> **ETL alert:** investigated. False positive from Atlas sink health check (intentionally blocked). Silenced with 7-day expiry. Data flow is healthy.
+>
+> **KMS gap:** Kafka Connect S3 writer IAM role missing from KMS key policy. Fixed. S3 data flow confirmed healthy and explicitly encrypted.
+>
+> **Tomorrow:**
+> - 10 AM: Rachel's remediation dates table delivered
+> - AM: Drift detection script development + testing
+> - PM: EKS runbook (PLAT-892, deadline pushed to Monday per Sarah)
+> - Re-review Derek's CB PR if updated
+>
+> Phone on for PagerDuty. See you all tomorrow.
+
+### Personal Notes (5:50 PM)
+
+```
+THURSDAY SCORECARD:
+  ✅ PCI meeting — presented clearly, stayed in lane, 
+     answered James's prevention question concretely
+  ✅ Linkerd dry-run — clean, all four namespaces
+  ✅ ETL alert — traced to intentional containment, not breakage
+  ✅ KMS permission gap — found, fixed, honestly disclosed
+  ✅ ServiceProfile NR — caught from Derek's signal, confirmed,
+     fixed within 20 minutes of investigation
+  ✅ CB PR review — found real issues including repeated 
+     timeout pattern
+  ✅ Rachel's table — done, specific dates with evidence
+  ✅ Drift detection skeleton — started
+  
+  MISTAKES TODAY:
+  - KMS key policy gap from yesterday (found through ETL failure)
+  - Didn't re-check Derek's PR after approval (found through NR signal)
+  - Blocked on business decision without asking for context (Nina)
+  
+  PATTERN: I'm catching my mistakes within 24 hours and 
+  disclosing them honestly. That's preserving trust. But 
+  I'd rather catch them before they hit production.
+  
+  TOMORROW: Drift detection is the hard commitment. Rachel's 
+  table is the first deliverable. EKS runbook if time allows.
+```
+
+
