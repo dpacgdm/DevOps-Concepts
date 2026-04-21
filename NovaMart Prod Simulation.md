@@ -16567,3 +16567,1086 @@ The finance thing is going to live in my head for a while. I had the information
 Lesson: when you identify a downstream impact, tell the downstream team *that day*, even if it's a "heads up, you'll probably see X" message. Don't wait for them to find it.
 
 
+---
+
+## FRIDAY 10:50 AM — RACHEL RESPONDS
+
+---
+
+```
+Email from Rachel Torres (10:50 AM)
+Subject: RE: RE: Remediation Timeline — Approved with one change
+
+[User],
+
+This is good. The R-6 split is smart — I was going to suggest 
+exactly that. Search cluster as C-5, yes, include it.
+
+One change: your evidence-of-completion for C-5 says "onboarding 
+timeline TBD." I can't file a notification with TBD in it. Give 
+me an interim ownership date — when does the platform team formally 
+assume interim responsibility? That can be Monday if you want, 
+but I need a date and an owner name, not TBD.
+
+Make that change and reply. I'm filing at 1 PM today.
+
+— Rachel
+```
+
+Quick fix:
+
+```
+Email to Rachel (10:53 AM)
+
+C-5 updated:
+
+| C-5 | Search/ES cluster identified as unmanaged | 
+  Fri Jan 19, 6:06 AM | [me] | 
+  Cluster secured (PDB, ResourceQuota corrected, emergency 
+  stabilization completed). Platform team assumes interim 
+  ownership effective Mon Jan 22. Drift detection scan 
+  confirms cluster is tracked. Permanent ownership assignment 
+  to be determined in Q1 infrastructure review. |
+
+Interim owner: me (platform on-call) effective Monday.
+Permanent ownership is a staffing/org decision, not a 
+technical one — flagging that for James/Sarah.
+```
+
+```
+Rachel (10:58 AM): "Filed at 1. Thank you."
+```
+
+✅ GDPR notification filed. Two days ahead of Saturday deadline.
+
+---
+
+### 11:00 AM — Finance Follow-up
+
+```
+Slack — #finance-engineering (11:02 AM)
+Martha Reeves: "Thanks for the explanation. David walked me 
+through the transaction list. The $47.23 is actually across 
+two settlement batches — Thursday EUR and Thursday GBP. 
+We can reconcile with a one-time adjustment entry. David's 
+drafting it now.
+
+One question: should we expect any further discrepancies on 
+future batches? If everything going forward is HALF_EVEN, 
+we just need to know the cutover point."
+
+Slack — DM from David Okafor (11:04 AM)
+"Martha's taking it well. The adjustment is straightforward. 
+But she asked me something I couldn't answer: were there any 
+transactions between the rollback (Wed 2:58 PM) and the fix 
+deploy (Wed 4:28 PM) that used the OLD code's rounding? Because 
+the rollback would have reverted to whatever was running before 
+sha-f91a2b7, which might have been HALF_UP or might have been 
+the double-precision arithmetic that was even less predictable.
+
+If there's a 90-minute window where the rolled-back code processed 
+transactions with old rounding, those transactions would match 
+the old settlement expectations but NOT match the new HALF_EVEN 
+transactions from Thursday. Basically: are there THREE rounding 
+behaviors in this week's data, not two?"
+```
+
+**RULE 4: You will be wrong. Your mental model of "old code = HALF_UP, new code = HALF_EVEN, clean cutover" may be incomplete.**
+
+David is asking the right question. During the 90-minute rollback window (Wed 2:58-4:28 PM), what code was running? The rollback target was the version *before* the broken hotfix — which was the version with `double` arithmetic, not explicit `BigDecimal` with any RoundingMode. `double` doesn't use HALF_UP or HALF_EVEN — it uses IEEE 754 floating point, which has its own rounding behavior that's *neither* consistently HALF_UP nor HALF_EVEN.
+
+So the week's transactions potentially have three rounding behaviors:
+1. **Pre-Wednesday:** `double` arithmetic (IEEE 754, unpredictable rounding)
+2. **Wednesday 2:58-4:28 PM (rollback):** Same `double` arithmetic
+3. **Post-Wednesday 4:28 PM:** `BigDecimal` with `HALF_EVEN`
+
+The discrepancy Martha found is between groups 2 and 3 (retried transactions). But if settlement is comparing *any* of these groups against each other, there could be additional discrepancies.
+
+---
+
+### 11:30 AM — EKS Runbook Work
+
+You spend an hour polishing the EKS 1.28→1.29 upgrade runbook. It's mostly done from Monday's research — you're adding the Linkerd dry-run results from Thursday's successful staging test, updating the pre-flight checklist, and writing the rollback procedure.
+
+Nothing dramatic. Solid engineering work. Due Monday, on track.
+
+---
+
+### 12:00 PM — Lunch
+
+You eat at your desk, half-watching Slack. The search cluster is stable. Derek confirms he's merging the CB PR after lunch. Lisa's canary AnalysisTemplate PR is up for review — she messages that it'll be ready for your review at 2 PM.
+
+---
+
+### 1:15 PM — Rachel Files
+
+```
+Slack — DM from Rachel Torres (1:15 PM)
+"GDPR Art. 33 notification filed with the supervisory authority. 
+Reference number SA-2024-0119-NM. They'll acknowledge within 
+48 hours and may request additional documentation.
+
+I included your full remediation table. The 'defense in depth' 
+framing on the KMS gap and the proactive search cluster disclosure 
+both landed well in the final draft. James reviewed and signed 
+before I sent.
+
+One thing: the supervisory authority may request an on-site 
+technical review within 30 days. If they do, you'll need to 
+demonstrate the drift detection scan, the image admission 
+policy, and the containment controls live. Keep everything 
+you've built demonstrable, not just deployed.
+
+Thank you for the thoroughness this week. It made my job 
+significantly easier."
+```
+
+---
+
+### 2:00 PM — Lisa's Canary PR Review
+
+Lisa's `AnalysisTemplate` PR is clean. She's built two new gates:
+
+1. **Volume gate:** Canary analysis requires minimum 1,000 requests before evaluation. Prevents the Incident 1 failure mode (canary passed at low RPM).
+
+2. **Currency-pair diversity gate:** Canary analysis requires successful transactions in at least 5 distinct currency pairs. Prevents the Incident 6 failure mode (USD-only sample).
+
+You review it, leave two minor comments (a typo in a metric name, a suggestion to make the minimum-pairs count configurable), and approve. Lisa fixes both in 10 minutes and merges.
+
+**PLAT-916 — DONE.** ✅
+
+---
+
+### 2:30 PM — Derek Merges CB PR
+
+```
+Slack — DM from Derek Huang (2:30 PM)
+"CB PR merged. Deployed to staging. Running Nina's load test now.
+
+Quick question: should I deploy to production today or wait until 
+Monday? Error budget is at 86% and I don't want to be the fourth 
+hit this week. On the other hand, every hour without the CB is 
+an hour where an inventory slowdown could cascade into order 
+failures — which is literally what the CB is designed to prevent."
+```
+
+---
+
+### 3:00 PM — Derek's Staging Results
+
+```
+Slack — DM from Derek Huang (3:00 PM)
+"Staging load test results:
+
+CB behavior:
+- Closed state: 0 errors, p99 280ms (normal)
+- Injected 40% failure rate on inventory: CB opens after 
+  12 requests (expected: ~12 at window 50, threshold 25%)
+- Open state: 100% of requests go to fallback
+- Fallback: all return available:true, source:degraded ✅
+- Metric firing: orders_accepted_without_stock_verification_total 
+  incrementing correctly ✅
+- Half-open: 5 requests permitted, 4 succeeded, CB closes ✅
+
+One thing I noticed: when the CB is open and ALL traffic hits 
+the fallback, the order-service p99 drops to 15ms (because 
+there's no inventory call). Ironically the system is fastest 
+when it's most degraded. Might confuse alerting — our latency 
+SLI would look GREAT during a CB event."
+
+```
+
+---
+
+### 3:15 PM — Friday Afternoon Quiet
+
+The cluster is stable. Search is GREEN. Payment error rate is baseline. Rachel filed the GDPR notification. Drift detection is staged. Lisa's canary template is merged. Derek's CB is tested in staging.
+
+You spend the rest of the afternoon on:
+- Answering David's three-rounding-behavior question for Martha
+- Final EKS runbook polish
+- Weekly summary email
+- Handoff notes
+
+---
+
+### 4:30 PM — EOD Friday
+
+```
+#platform-engineering (4:30 PM)
+
+EOD Friday — Weekly Summary
+
+INCIDENTS THIS WEEK: 7
+  #1 Mon — Order timeout (SEV2) ✅
+  #2 Mon — Terraform state lock (SEV4) ✅
+  #3 Mon — Redis capacity (SEV3) ✅
+  #4 Mon-Thu — Shadow Kafka pipeline (SEV3, PCI) ✅ Mitigated
+  #5 Tue — Zombie Jenkins agents (SEV2) ✅
+  #6 Wed — Payment currency bug (SEV2) ✅
+  #7 Fri — Search/ES outage (SEV2) ✅
+
+KEY ACCOMPLISHMENTS:
+  ✅ GDPR supervisory notification filed (Rachel, 1:15 PM today)
+  ✅ Drift detection scanner built + tested + staged (prod Monday)
+  ✅ Canary diversity gate merged (Lisa, PLAT-916)
+  ✅ Circuit breaker tested in staging (Derek, PLAT-915)
+  ✅ Linkerd staging dry-run complete (Priya)
+  ✅ PCI remediation table committed with board-ready dates
+  ✅ Payment service stabilized with corrected rounding
+  ✅ Search cluster stabilized + interim ownership assumed
+
+ERROR BUDGETS:
+  Payment-service: 86.0% (three incidents this week)
+  Order-service: 64.5% (one incident)
+  Search-service: no SLO defined (follow-up next week)
+
+MONDAY:
+  8:00 AM — Drift detection first production scan
+  10:00 AM — Tom Chen onboarding meeting
+  EKS runbook due
+  CB production deploy decision
+  Search cluster: ILM, PriorityClass, gp2 assessment
+
+On-call phone is on. Have a good weekend.
+```
+
+---
+
+### Friday Night — Quiet
+
+No pages. You sleep.
+
+---
+
+### Saturday — Quiet
+
+No pages. The GDPR notification is filed. You check your phone twice — nothing. You do not open your laptop.
+
+---
+
+### Sunday 3:47 PM
+
+You're on the couch. Your phone buzzes.
+
+```
+🟡 Slack — DM from Wei Liu (3:47 PM Sunday)
+
+"Hey, sorry to bother you on the weekend. I know you're 
+on-call but this isn't a page — more of a heads-up that 
+might become one.
+
+Tom's been working remotely today to prep for tomorrow's 
+meeting. He's trying to be helpful. He asked me for access 
+to the data-analytics namespace to 'verify the pipeline 
+state before the meeting.'
+
+I told him to wait for tomorrow, but he said he 'just wants 
+to look, not touch anything.' He already has his kubeconfig 
+from before PTO — I don't think we revoked his access.
+
+I trust Tom's intentions but I don't trust anyone's definition 
+of 'just looking' in a namespace under active containment with 
+Legal preservation requirements. Especially since Rachel 
+specifically said don't touch the Atlas data.
+
+Should I be worried? Do we need to do anything before tomorrow?"
+```
+
+---
+
+**Current time: Sunday 3:47 PM.**
+
+Tom Chen has active kubeconfig credentials and is motivated to "look" at a namespace under Legal hold with an active GDPR supervisory notification referencing it.
+
+Wei is flagging this because he's uncomfortable but doesn't want to be the one to tell Tom no.
+
+**You're on the couch. This isn't a page. But it's a risk.**
+
+**What do you do?**
+
+
+
+I sit up. This isn't a PagerDuty alert but it's more urgent than most of them.
+
+The problem is simple: Tom has credentials, good intentions, and the ability to accidentally destroy evidence that's under Legal preservation. "Just looking" in a Kafka namespace could mean `kubectl logs`, which is fine. It could also mean `kubectl exec` into a broker, which could trigger compaction or offset changes. Or he could check the MongoDB Atlas connector status and try to "fix" it, not knowing we intentionally blocked it. And if he touches anything in the connect-configs topic where the Atlas password lives — that's part of the evidence chain Rachel filed with the supervisory authority.
+
+Tom isn't the risk. The gap between Tom's context and the current legal situation is the risk. He doesn't know about the GDPR notification. He doesn't know the namespace is under Legal hold. He's trying to be a good teammate.
+
+### Wei Liu — DM (3:52 PM)
+
+> Not bothering me at all — this is exactly the kind of thing I want to hear about before it becomes a problem. Your instincts are right.
+>
+> Short answer: yes, we need to do something before tomorrow, and I need about 15 minutes.
+>
+> Here's the concern: the data-analytics namespace is under active Legal preservation. Rachel filed a GDPR supervisory notification on Friday that specifically references the Kafka pipeline, the Atlas data, and the containment actions we've taken. The supervisory authority may request an audit of that environment. If anything changes between now and then — even accidentally, even with good intentions — it could complicate our legal position.
+>
+> Tom doesn't know any of this. He went on PTO before the audit and he's operating on two-week-old context. "Just looking" to Tom might mean checking connector status or tailing logs, which could be fine. But it could also mean restarting a failed connector or running a Kafka consumer command that shifts offsets. He can't know what's safe to touch because he doesn't know what's under preservation.
+>
+> Two things I need you to do:
+>
+> **1. Call Tom now.** Not Slack — call him. Tell him:
+> - You appreciate him prepping and he's not in trouble
+> - The namespace is under Legal hold as of this week — you can explain that there's a compliance review without getting into the GDPR details
+> - He should NOT access the namespace until tomorrow's 10 AM meeting where we'll give him full context
+> - This isn't about trust, it's about protecting him — if he touches something that's under Legal hold without knowing it, that's a problem for him too
+>
+> **2. Forward me his response** so I know whether he understood and agreed.
+>
+> I'm going to do one thing on my end right now to add a safety net in case the message doesn't land or he's already in the namespace.
+
+### RBAC Lockdown (3:55 PM)
+
+I open my laptop. This takes 5 minutes.
+
+```bash
+# Check: what RBAC does Tom have?
+kubectl get rolebindings -n data-analytics -o json | \
+  jq -r '.items[] | select(.subjects[]?.name == "tom.chen@novamart.com" or .subjects[]?.name == "tom-chen") | .metadata.name + " -> " + .roleRef.name'
+```
+
+```bash
+# Also check clusterrolebindings
+kubectl get clusterrolebindings -o json | \
+  jq -r '.items[] | select(.subjects[]?.name == "tom.chen@novamart.com" or .subjects[]?.name == "tom-chen") | .metadata.name + " -> " + .roleRef.name'
+```
+
+I need to see what he can do before I decide how to restrict it. If he has namespace-admin or edit, I need to reduce it to view-only or remove it entirely.
+
+```bash
+# Reduce Tom to read-only in data-analytics
+# Create a restricted rolebinding
+cat <<EOF | kubectl apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tom-chen-readonly
+  namespace: data-analytics
+  annotations:
+    reason: "Legal preservation hold — GDPR SA-2024-0119-NM"
+    applied-by: "platform-oncall"
+    applied-date: "2024-01-21"
+    revert-after: "Tom onboarding meeting Mon Jan 22"
+subjects:
+- kind: User
+  name: tom.chen@novamart.com
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+EOF
+```
+
+```bash
+# Remove his existing edit/admin binding
+kubectl delete rolebinding <tom's-edit-binding> -n data-analytics
+```
+
+This gives Tom read-only: he can `kubectl get` and `kubectl describe` and `kubectl logs`, but he can't `kubectl exec`, `kubectl delete`, `kubectl edit`, or `kubectl apply`. He can look but he genuinely cannot touch.
+
+I annotate the rolebinding with the legal reference number so anyone who finds it knows why it exists and that it's intentional.
+
+```bash
+# Verify: test what Tom can do
+kubectl auth can-i create pods -n data-analytics --as=tom.chen@novamart.com
+# no
+
+kubectl auth can-i exec pods -n data-analytics --as=tom.chen@novamart.com
+# no
+
+kubectl auth can-i get pods -n data-analytics --as=tom.chen@novamart.com
+# yes
+
+kubectl auth can-i delete pods -n data-analytics --as=tom.chen@novamart.com
+# no
+```
+
+### Wei Liu — DM (4:02 PM)
+
+> RBAC updated. Tom now has read-only access to data-analytics. He can look at pod status, logs, and configs, but he cannot exec into pods, modify resources, or delete anything. This is a safety net, not a punishment — and we'll explain that context tomorrow.
+>
+> If he tries something that requires write access, he'll get a clean permission denied. No ambiguity.
+>
+> Still important that you call him. The RBAC change protects the evidence, but the conversation protects Tom. He deserves to understand why before he hits a permission wall and thinks something weird is going on.
+
+### Aisha Rahman — DM (4:05 PM)
+
+> Aisha — quick heads-up. Wei flagged that Tom Chen is prepping for tomorrow and wants to access the data-analytics namespace. He went on PTO before the audit and doesn't know about the Legal hold or the GDPR notification.
+>
+> I've done two things:
+> 1. Asked Wei to call Tom and tell him not to access the namespace until tomorrow's meeting
+> 2. Reduced Tom's RBAC to read-only in data-analytics as a safety net. Annotated with the SA reference number.
+>
+> Tom's intentions are good — he's trying to be helpful. But he doesn't have the context to know what's under preservation. Tomorrow's meeting will give him the full picture.
+>
+> Wanted you aware in case this comes up. No action needed from you unless you disagree with the approach.
+
+### 4:10 PM — Close Laptop
+
+```
+Aisha (4:12 PM): "Good call on both. The RBAC change is exactly 
+right. Make sure Wei frames it gently — Tom is going to feel 
+bad enough tomorrow when he hears the full story."
+
+Wei (4:15 PM): "Called Tom. He understood. He said 'I had a 
+feeling something happened while I was out.' He's going to 
+wait for the meeting. He sounded nervous but not defensive. 
+He asked if he's in trouble. I told him no, same thing 
+you said — this is about protecting him, not punishing him."
+```
+
+### Wei — DM (4:17 PM)
+
+> Thank you for handling that well. Tomorrow's meeting is about getting Tom the context he needs and building the path forward together. Not an interrogation. He'll see that when he's in the room.
+>
+> Get some rest. See you at 10 AM.
+
+### Personal Note (4:18 PM)
+
+```
+SUNDAY INCIDENT (non-incident):
+  
+  What happened: Tom prepping for Monday, wants namespace access.
+  Doesn't know about Legal hold.
+  
+  What I did:
+  - RBAC reduced to read-only (technical control)
+  - Wei called Tom (human communication)
+  - Aisha informed (security awareness)
+  - Annotated everything with legal reference
+  
+  Why this matters: if Tom had run kubectl exec on a Kafka 
+  broker and triggered a log rotation or compaction, we'd 
+  potentially have modified evidence under Legal hold during 
+  an active supervisory review. Explaining that to Rachel 
+  Monday morning would have been a very bad conversation.
+  
+  Pattern: the recurring theme this week is that good people 
+  do reasonable-seeming things that create problems because 
+  they're missing context. Tom deploying the pipeline, Nina 
+  deploying the export, Derek adding timeouts, Tom wanting 
+  to "just look." The fix is never blame — it's making sure 
+  people have the context they need before they act, and 
+  having technical controls for when they don't.
+```
+
+Laptop closed. Back to the couch. Phone stays on for PagerDuty, but that's it.
+
+Seven incidents and one near-miss. Three more to the checkpoint at ten.
+
+---
+
+## SUNDAY NIGHT — QUIET
+
+No pages. You sleep well for the first time since Monday.
+
+---
+
+## MONDAY 7:45 AM — WEEK 2 BEGINS
+
+You log in early. Coffee in hand. The drift detection scan is scheduled for 8 AM — your first VP-committed deliverable of the week.
+
+**Pre-flight check:**
+
+```
+$ kubectl get cronjob drift-detection-scan -n monitoring
+NAME                    SCHEDULE     SUSPEND   ACTIVE   LAST SCHEDULE
+drift-detection-scan    0 8 * * 1    False     0        <none>
+```
+
+Ready. Never run in production. First fire in 15 minutes.
+
+**Cluster health sweep:**
+
+```
+Search cluster:    GREEN, 4/4 data nodes, error rate 0.1%
+Payment service:   Healthy, error rate 0.08%, budget 86.0%
+Order service:     Healthy, budget 64.5%
+Redis:             Hit rate 94.1%, memory 54%
+Jenkins:           6 agents, heap stable
+Kafka:             Consumer lag: 1,200 (normal)
+```
+
+Clean board. Good.
+
+**Overnight Slack scan:**
+
+```
+Slack — #platform-engineering (Sun 11:42 PM)
+Marcus Webb: "node-problem-detector is now in ArgoCD. 
+Synced and healthy. One less thing for the drift scanner 
+to find 😄"
+```
+
+```
+Slack — DM from Priya Sharma (Mon 7:20 AM)
+"EKS production upgrade runbook is ready for your review. 
+I incorporated the staging dry-run results. One open question: 
+do we upgrade the search namespace in the same window or 
+separate it? Given it's unmanaged Helm + gp2, I'm nervous 
+about it."
+```
+
+```
+Slack — DM from Tom Chen (Mon 7:31 AM)
+"Hey. I know the meeting is at 10 but I wanted to say — 
+I'm sorry about the pipeline. I built it in November 
+because we needed the data and there was no process for 
+getting it. That's an explanation, not an excuse. I know 
+it caused a lot of work for a lot of people.
+
+I spent yesterday reading every message in #platform-engineering 
+from the past two weeks. I have a pretty good picture of what 
+happened. I have some questions about the technical state but 
+I'll save those for the meeting.
+
+One thing I want to flag before we're in a room with managers: 
+the Atlas account. I know it's a free-tier personal account 
+and that it's a big deal. I should have known better. I didn't 
+think about it as production data at the time — I was 
+prototyping and it just... stayed. I'll say all of this in 
+the meeting too, but I didn't want it to be the first time."
+```
+
+---
+
+### 8:00 AM — Drift Detection First Production Run
+
+```
+$ kubectl get jobs -n monitoring -l app=drift-detection --watch
+
+NAME                              COMPLETIONS   DURATION   AGE
+drift-detection-scan-28948800     0/1           0s         0s
+drift-detection-scan-28948800     0/1           12s        12s
+drift-detection-scan-28948800     1/1           23s        23s
+```
+
+Completed in 23 seconds.
+
+**Slack — #platform-engineering (8:00 AM) — automated:**
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║  DRIFT DETECTION SCAN — novamart-prod-cluster               ║
+║  Timestamp: 2024-01-22T13:00:00Z                            ║
+║  Scanned: 47 workloads across 12 namespaces                 ║
+╠══════════════════════════════════════════════════════════════╣
+║  MANAGED (ArgoCD):     39  (+1 from last scan)              ║
+║  SYSTEM (exempt):      14                                   ║
+║  UNMANAGED:            8   (-1 from last scan)              ║
+║    CRITICAL:           8                                    ║
+║    HIGH:               0   (-1 from last scan)              ║
+║    LOW:                0                                    ║
+╠══════════════════════════════════════════════════════════════╣
+║  CHANGES SINCE LAST SCAN:                                   ║
+║  [RESOLVED] monitoring/Deployment/node-problem-detector     ║
+║    → Now managed by ArgoCD (marcus.webb, Sun 23:42)         ║
+║                                                             ║
+║  UNMANAGED FINDINGS:                                        ║
+║  [CRITICAL] data-analytics/StatefulSet/kafka                ║
+║  [CRITICAL] data-analytics/StatefulSet/zookeeper            ║
+║  [CRITICAL] data-analytics/Deployment/kafka-connect         ║
+║  [CRITICAL] data-analytics/CronJob/etl-daily-aggregation    ║
+║  [CRITICAL] data-analytics/Deployment/analytics-dashboard   ║
+║  [CRITICAL] search/StatefulSet/es-master                    ║
+║  [CRITICAL] search/StatefulSet/es-data                      ║
+║  [CRITICAL] search/Deployment/kibana                        ║
+║                                                             ║
+║  NOTE: order-prod/CronJob/order-data-export not detected    ║
+║  — namespace not in scan scope? Verify.                     ║
+╚══════════════════════════════════════════════════════════════╝
+```
+
+Wait. **Nina's order-data-export CronJob is missing from the findings.** The scan found 8 unmanaged workloads, not 9. Marcus's node-problem-detector resolved (expected), but the order-export CronJob should still be there.
+
+```bash
+$ kubectl get cronjob -n order-prod
+NAME               SCHEDULE    SUSPEND   ACTIVE   LAST SCHEDULE
+order-data-export  0 2 * * *   False     0        15h
+```
+
+It exists. The scanner didn't find it.
+
+```bash
+# Check: is order-prod in the scan scope?
+$ kubectl get namespace order-prod -o jsonpath='{.metadata.labels}'
+
+{"kubernetes.io/metadata.name":"order-prod"}
+```
+
+You check your `scan.sh`:
+
+```bash
+$ grep -n "namespace\|SYSTEM_NS" classify.sh
+
+SYSTEM_NS="kube-system|kube-public|kube-node-lease|karpenter-system|argocd|linkerd|linkerd-viz"
+```
+
+`order-prod` isn't in the system exclusion list. It should be scanned. But looking more carefully at `scan.sh`:
+
+```bash
+$ head -20 scan.sh
+
+#!/bin/bash
+set -euo pipefail
+
+kubectl get deploy,sts,ds,cronjob \
+  --all-namespaces -o json
+```
+
+`--all-namespaces` should catch everything. But then you realize — the scanner's ArgoCD comparison:
+
+```bash
+$ argocd app list -o json | jq -r '.[].status.resources[]? | 
+  "\(.namespace)/\(.kind)/\(.name)"' | grep order-prod
+
+order-prod/Deployment/order-service
+order-prod/Deployment/order-worker
+order-prod/Service/order-service
+order-prod/ConfigMap/order-config
+order-prod/CronJob/order-data-export
+```
+
+**The CronJob is listed as an ArgoCD resource.** Someone added it to ArgoCD.
+
+```bash
+$ argocd app get order-service -o json | jq '.status.resources[] | 
+  select(.name == "order-data-export")'
+
+{
+  "group": "batch",
+  "version": "v1",
+  "kind": "CronJob",
+  "namespace": "order-prod",
+  "name": "order-data-export",
+  "status": "Synced",
+  "health": {"status": "Healthy"}
+}
+```
+
+```bash
+$ argocd app history order-service | tail -3
+
+ID  DATE                  REVISION
+7   2024-01-20 14:22:11   sha-a8f7b21  
+    Message: "Add order-data-export CronJob to ArgoCD management (Nina)"
+```
+
+**Nina added it to ArgoCD on Saturday.** She said she was willing to hand it over, and she did — on her own time, without being asked. The CronJob is now managed. The scanner correctly classified it as MANAGED.
+
+That's 8 findings, not 9. And one of the 8 is already known to have a plan (Kafka cluster → Tom meeting at 10 AM).
+
+---
+
+### 8:05 AM — Responses
+
+```
+Slack — #platform-engineering (8:04 AM)
+Sarah Chen: "This is exactly what James wanted to see. 
+Nice work. Forwarding to him."
+```
+
+```
+Slack — #platform-engineering (8:06 AM)  
+Aisha Rahman: "Confirmed — matches my audit list minus 
+the order-data-export which... someone already onboarded? 
+@nina.petrov was that you?"
+```
+
+```
+Slack — DM from Nina Petrov (8:07 AM)
+"Yeah, I did it Saturday. The CronJob was small enough that 
+I could add it to the order-service ArgoCD app as a new 
+manifest. Figured I'd just get it done rather than talk 
+about it more.
+
+Also: I moved the S3 destination to the KMS-encrypted bucket 
+path and added the IAM role annotation you used for the 
+export role. Tested the 2 AM run — it worked. Let me know 
+if I did anything wrong."
+```
+
+---
+
+### 8:15 AM — Tom Meeting Prep
+
+You have 105 minutes before the meeting. You've got Tom's DM to respond to, Priya's runbook question, and the meeting itself to prepare for.
+
+**Tom Chen — DM (8:15 AM):**
+
+> Tom — I read your message. Thank you for being upfront. A few things before the meeting:
+>
+> First: the meeting isn't an ambush. Sarah, Wei, you, and I. The goal is to get you the full context of what happened while you were out, understand what the pipeline does and needs, and build a realistic onboarding plan together. You're not walking into a firing squad.
+>
+> Second: you've clearly done your homework reading through the channel. That helps a lot. There are some things that aren't in Slack — the GDPR notification, the Legal preservation hold on the Atlas data, the supervisory authority reference number. We'll cover those in the meeting.
+>
+> Third: I appreciate you flagging the Atlas account ahead of time. That's the right instinct. In the meeting, own what you own, but know that the framing throughout this process has been "process gap, not people failure." The system didn't give you a path to do this correctly. That's what we're fixing.
+>
+> See you at 10.
+
+**Priya — DM (8:18 AM):**
+
+> Good question on the search namespace. My recommendation: separate window, after the main upgrade. Search is unmanaged Helm with gp2 PVCs, no ArgoCD, and I just stabilized it Friday from an outage. I want to onboard it to ArgoCD and migrate to gp3 before we touch the EKS version. Upgrading Kubernetes underneath an unmanaged Elasticsearch cluster with stale Helm charts is asking for trouble.
+>
+> I'll add a note to the runbook: "search namespace excluded from initial upgrade — separate window after onboarding."
+
+**Nina — DM (8:20 AM):**
+
+> Nina — this is great. Thank you for taking the initiative. And yes, the ArgoCD manifest and the KMS bucket path both look correct from what you described. The 2 AM run succeeded, so you did it right.
+>
+> One ask: can you add a brief README in the manifest directory explaining what the CronJob does, where the data goes, and who owns it? That's the kind of documentation that would have prevented this week from happening if it existed for Tom's pipeline.
+
+---
+
+### 9:45 AM — Meeting Prep Notes
+
+You write a one-page agenda for the 10 AM:
+
+```
+TOM CHEN ONBOARDING MEETING — Mon Jan 22, 10:00 AM
+Attendees: Sarah Chen, Wei Liu, Tom Chen, [me]
+
+AGENDA:
+1. Context setting (5 min) — [me]
+   - Week 1 audit findings: what we found, what we contained
+   - Current state: what's running, what's blocked, what's preserved
+   - Legal status: GDPR notification filed, Atlas under preservation
+
+2. Pipeline walkthrough (15 min) — Tom
+   - Original purpose and requirements
+   - Data flow: RDS → ETL → Kafka → S3 / Atlas
+   - Who depends on what (Wei's 3 analysts)
+   - What Tom would change if he rebuilt it today
+
+3. Onboarding plan (15 min) — [me] + Tom
+   - R-6a scope (secured by Jan 26): ECR images, mesh, monitoring
+   - R-6b scope (fully onboarded by Feb 9): ArgoCD, Terraform, CI/CD
+   - Tom's role: he knows the system best, he leads the technical work
+   - Platform team provides: templates, reviews, infrastructure support
+
+4. Atlas decommissioning (10 min) — all
+   - Legal hold: no purge until Rachel clears
+   - Data migration: do we need the Atlas data elsewhere?
+   - Account handover: personal account → corporate or decommission
+   - Timeline: depends on Legal, but plan for end of Jan
+
+5. Questions + next steps (10 min)
+
+TONE: Collaborative. Tom is the domain expert on this pipeline. 
+We're giving him the context and the tools to fix it properly.
+James said "make it productive, not an ambush." That's the bar.
+```
+
+---
+
+### 10:00 AM — Tom Chen Onboarding Meeting
+
+**Sarah's office. Door closed. Four people.**
+
+Sarah opens: "Tom, welcome back. Before we start — this meeting exists because we found some things while you were out that need attention. You're here because you know the system better than anyone and we need your help to fix it. That's the spirit of the next hour."
+
+Tom nods. He looks nervous but prepared.
+
+You walk through the context. Five minutes. Clean, factual. Discovery, containment, GDPR notification, current state. You use the same framing as the PCI document: process gap, not people failure.
+
+Tom's face goes through several phases. When you mention the GDPR notification, he goes pale. When you mention the Atlas free-tier details — no encryption at rest, no VPC peering, public internet — he closes his eyes for a moment.
+
+"I knew it was free tier," he says. "I didn't know free tier meant no encryption at rest. I honestly thought Atlas encrypted everything by default. That's... that's really bad."
+
+Wei puts a hand on his shoulder. "We're past the blame part. We're in the fix part."
+
+Tom walks through the pipeline. It's actually well-engineered for what it is — the ETL logic is clean, the Kafka topic partitioning is sensible, the S3 sink configuration is solid. He built it in three days during a sprint where the analytics team was blocked on a data request from the VP of Product.
+
+"There was no self-service path," Tom says. "I asked about getting a managed Kafka cluster and was told it was a six-week platform request. The VP wanted the data in two weeks. So I did what I knew how to do."
+
+Sarah: "That's the same thing Nina said in the PCI meeting. We're building the self-service path now."
+
+You walk through the onboarding plan. Tom lights up — he's been anxious about being punished, and instead you're handing him the lead on fixing his own system with proper infrastructure support.
+
+"I can do the ECR migration Tuesday," Tom says. "I've already got the Dockerfiles. Mesh injection is a label change. Monitoring — I actually have Grafana dashboards in a local folder that I never deployed because I didn't have access to the monitoring namespace."
+
+Wei: "Give him access to the monitoring namespace."
+
+You make a note.
+
+The Atlas discussion is harder. Tom confirms there's no data in Atlas that doesn't also exist in S3 (the S3 sink has been running longer than the Atlas sink). The Atlas data is a subset. Decommissioning it loses nothing — once Legal clears.
+
+"I'll delete the account the minute Rachel says I can," Tom says.
+
+Sarah: "We'll coordinate with Rachel. Don't touch anything until then."
+
+The meeting runs to 10:55. Clean. Productive. Tom leaves with a clear task list and a Monday-Tuesday sprint plan. Wei looks relieved.
+
+**Sarah catches you after:**
+
+"That went well. James is going to ask me about it at our 11:30. Anything I should flag?"
+
+---
+
+### 11:10 AM — Back at Your Desk
+
+Meeting went well. Tom is energized. Onboarding sprint is planned. Monday is going well so far.
+
+Then:
+
+```
+🔴 PagerDuty — TRIGGERED
+   Alert: RDSHighConnectionCount  
+   Service: orders-db-prod (RDS)
+   Details: Connection count >400 (threshold: 350)
+   Current: 418 connections
+   Max configured: 500
+   Firing since: 11:07 AM
+   On-call: You (primary)
+```
+
+You ack at 11:11 AM.
+
+```
+🟡 Slack — #alerts-production (11:08 AM)
+   OrderServiceLatencyP99High — order-service p99 >2s for 5 min
+   Current: 2,847ms
+   Namespace: production
+```
+
+```
+🟡 Slack — #alerts-production (11:09 AM)
+   PaymentServiceLatencyP99High — payment-service p99 >1.5s for 5 min
+   Current: 1,923ms
+   Namespace: production
+```
+
+```
+🟡 Slack — #alerts-production (11:10 AM)
+   InventoryServiceLatencyP99High — inventory-service p99 >800ms for 5 min
+   Current: 1,241ms
+   Namespace: production
+```
+
+**Four alerts. All production services simultaneously spiking latency. RDS connections climbing toward the limit.**
+
+The dashboard shows:
+
+```
+RDS orders-db-prod:
+  Connections:     418 / 500 (83.6%)
+  CPU:             78% (normally ~30%)
+  Read IOPS:       12,400 (normally ~3,000)  
+  Write IOPS:      2,100 (normally ~800)
+  Queue depth:     47 (normally ~2)
+  Freeable memory: 1.2 GB (normally ~4 GB)
+
+  Top wait event: io/table/sql/handler (67% of waits)
+  Active sessions: 23 (normally ~8)
+```
+
+The database is under heavy load. IO-bound — read IOPS 4x normal, queue depth sky-high. All three services that share this RDS instance are feeling it.
+
+---
+
+```
+Slack — DM from Derek Huang (11:11 AM)
+"Order service is slow. All our p99s just went red. 
+Is the database dying?"
+```
+
+```
+Slack — DM from Lisa Park (11:12 AM)
+"Order-service error budget was at 64.5%. With this 
+latency it's going to start burning. Payment is already 
+at 86%. If this stays elevated for 30 minutes we're 
+going to hit budget thresholds on both."
+```
+
+```
+Slack — #platform-engineering (11:12 AM)
+Alex Kim: "I just deployed a migration to staging that 
+adds an index to the orders table. Should I be worried 
+about production?"
+```
+
+---
+
+**Current time: Monday 11:12 AM. Error budgets are burning. RDS is IO-bound at 418/500 connections. Three services degraded. Multiple people pinging you.**
+
+**RULE 3 fires: Alex's staging migration is probably a red herring — staging is a different database. But "adds an index to the orders table" is suspicious timing. And RULE 1: your own changes this week (the analytics_reader, the ETL CronJob, the KMS changes) all interact with this database.**
+
+**What do you do?**
+
+
+
+### Ack + Initial Triage (11:12 AM)
+
+```
+#incidents (11:12 AM)
+
+🔴 ACK — RDSHighConnectionCount (orders-db-prod)
+418/500 connections, CPU 78%, read IOPS 4x normal, queue depth 47.
+Order/payment/inventory services all latency-spiking.
+Investigating. Update in 5 minutes.
+```
+
+Three services degraded simultaneously, all sharing one RDS instance. This is a database problem, not an application problem. The services are victims, not causes.
+
+**Quick responses to unblock people asking questions (30 seconds):**
+
+**Derek — DM:**
+> Yes, the database is under heavy load. Investigating now. Don't change anything on order-service yet.
+
+**Alex — #platform-engineering:**
+> Your staging migration is a separate database — staging isn't causing this. But hold on any production index changes until I understand what's happening with the prod RDS. Don't deploy anything to production right now.
+
+**Lisa — DM:**
+> Tracking. Give me 10 minutes to assess. If this is going to be extended, I'll let you know.
+
+### Investigation — What's Hitting the Database? (11:13 AM)
+
+The database is IO-bound. Read IOPS 4x normal. 23 active sessions instead of 8. Queue depth 47. The question is: what's generating the extra load?
+
+```bash
+# RDS Performance Insights — what queries are running?
+aws rds describe-db-instances --db-instance-identifier orders-db-prod \
+  --query 'DBInstances[0].PerformanceInsightsEnabled'
+```
+
+```bash
+# If Performance Insights is on, get top SQL
+aws pi get-resource-metrics \
+  --service-type RDS \
+  --identifier db-orders-prod-xxxxx \
+  --metric-queries '[{"Metric": "db.load.avg", "GroupBy": {"Group": "db.sql", "Limit": 10}}]' \
+  --start-time $(date -u -d '15 minutes ago' +%Y-%m-%dT%H:%M:%SZ) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  --period-in-seconds 60
+```
+
+While that returns, I can check from the application side — which connections are open?
+
+```bash
+# Connect to RDS and check active sessions
+kubectl exec -n order-prod \
+  $(kubectl get pods -n order-prod -l app=order-service \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  env PGPASSWORD=$DB_PASS psql -h orders-db-prod.xxxxx.us-east-1.rds.amazonaws.com \
+  -U platform_admin -d orders -c "
+    SELECT pid, usename, application_name, state, 
+           wait_event_type, wait_event,
+           now() - query_start as duration,
+           left(query, 80) as query_preview
+    FROM pg_stat_activity 
+    WHERE datname = 'orders'
+    ORDER BY duration DESC NULLS LAST
+    LIMIT 25;"
+```
+
+This tells me:
+- **Which users** are connected (order-service? payment-service? analytics_reader? something else?)
+- **What queries** are running
+- **How long** they've been running
+- **What they're waiting on**
+
+```bash
+# Connection count by user — is one user hogging connections?
+kubectl exec -n order-prod \
+  $(kubectl get pods -n order-prod -l app=order-service \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  env PGPASSWORD=$DB_PASS psql -h orders-db-prod.xxxxx.us-east-1.rds.amazonaws.com \
+  -U platform_admin -d orders -c "
+    SELECT usename, state, count(*) 
+    FROM pg_stat_activity 
+    WHERE datname = 'orders'
+    GROUP BY usename, state 
+    ORDER BY count DESC;"
+```
+
+```bash
+# Any long-running queries? (>30 seconds is suspicious for OLTP)
+kubectl exec -n order-prod \
+  $(kubectl get pods -n order-prod -l app=order-service \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  env PGPASSWORD=$DB_PASS psql -h orders-db-prod.xxxxx.us-east-1.rds.amazonaws.com \
+  -U platform_admin -d orders -c "
+    SELECT pid, usename, now() - query_start as duration, 
+           wait_event_type, wait_event,
+           left(query, 120) as query
+    FROM pg_stat_activity 
+    WHERE state = 'active' 
+      AND now() - query_start > interval '30 seconds'
+    ORDER BY duration DESC;"
+```
+
+I'm also checking if this is my own doing — the analytics_reader user that the ETL CronJob uses. The ETL runs at 2 AM, so it shouldn't be active now. But I never audited what else uses that user.
+
+```bash
+# Specifically check analytics_reader connections
+kubectl exec -n order-prod \
+  $(kubectl get pods -n order-prod -l app=order-service \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  env PGPASSWORD=$DB_PASS psql -h orders-db-prod.xxxxx.us-east-1.rds.amazonaws.com \
+  -U platform_admin -d orders -c "
+    SELECT pid, usename, client_addr, state, 
+           now() - query_start as duration,
+           left(query, 120) as query
+    FROM pg_stat_activity 
+    WHERE usename = 'analytics_reader';"
+```
+
+And one more — this is the thing that's been on my TODO list all week and never got done:
+
+```bash
+# What permissions does analytics_reader actually have?
+kubectl exec -n order-prod \
+  $(kubectl get pods -n order-prod -l app=order-service \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  env PGPASSWORD=$DB_PASS psql -h orders-db-prod.xxxxx.us-east-1.rds.amazonaws.com \
+  -U platform_admin -d orders -c "
+    \du analytics_reader"
+```
+
+### What I'm Looking For (11:14 AM)
+
+The pattern I expect to see from the data is one of these:
+
+**Scenario A — Connection leak:** One of the services has a connection pool misconfiguration and is opening connections without closing them. The count climbs gradually until the database is saturated. I'd see one usename with a disproportionate number of connections in `idle` state.
+
+**Scenario B — Runaway query:** A long-running analytical query (maybe Tom's analytics dashboard, maybe a report someone's running manually) is doing a full table scan, consuming all IO and blocking OLTP queries behind it. I'd see one or two active sessions with very long durations and high IO wait.
+
+**Scenario C — Traffic spike:** Legitimate traffic increase (Monday morning, post-weekend) is hitting the database harder than normal. Connection count would be high but distributed evenly across services, and the queries would be normal OLTP queries, just more of them.
+
+**Scenario D — Lock contention:** Something acquired a table lock (maybe an index creation, migration, or maintenance operation) and queries are queuing behind it. I'd see many sessions in `Lock` or `LWLock` wait state and one session holding the lock.
+
+The top wait event is `io/table/sql/handler` at 67% of waits. That's disk IO wait on table access. Suggests either a table scan (Scenario B) or massive IO from too many concurrent queries (Scenario C). Not lock contention (that would show `Lock` wait events).
+
+**Read IOPS at 4x normal with queue depth 47** — something is reading a LOT of data from disk. Normal OLTP queries hit indexes and read a few pages. This pattern looks like sequential scans — either a big analytical query or missing indexes causing full table scans.
+
+### Time Check (11:15 AM)
+
+```
+3 minutes in. Connections 418/500.
+Waiting for query results. The pg_stat_activity output 
+will tell me which scenario I'm in.
+
+If connections keep climbing toward 500:
+- At 480: I need to consider killing non-essential connections
+- At 500: new connections fail, services start erroring 5xx
+  instead of just being slow
+
+Watching the connection count while I wait for data.
+```
+
+```bash
+# Quick connection trend
+curl -s 'http://prometheus:9090/api/v1/query' \
+  --data-urlencode 'query=aws_rds_database_connections_average{dbinstance="orders-db-prod"}' | jq
+```
+
+Is it climbing, stable, or stabilizing? That tells me if I have minutes or if I need to act now.
+
+**Sarah — DM (11:15 AM):**
+
+> Tom meeting went well — he's energized and has a clear sprint plan. ECR migration Tuesday, mesh Wednesday. For James at your 11:30: the onboarding is on track for R-6a by Friday.
+>
+> Also: I'm on an RDS incident right now. All three services latency-spiking, database IO-bound at 418/500 connections. Investigating. Will update you if it's going to be extended.
+
+
