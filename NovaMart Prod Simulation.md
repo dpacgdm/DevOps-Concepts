@@ -14916,3 +14916,205 @@ You have a stuck scheduling problem, a PDB that's not protecting anything, a clu
 **What do you do?**
 
 
+
+
+### Priority Zero: Free Up Node ip-10-0-42-44 for es-data-3 (6:15 AM)
+
+es-data-3's PVC is locked to that specific node. Karpenter can't move it. I can't move the volume. The only path is making room on that node so es-data-3 can schedule there.
+
+```bash
+# What's running on ip-10-0-42-44 that I can move?
+kubectl get pods --field-selector spec.nodeName=ip-10-0-42-44 \
+  -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,CPU_REQ:.spec.containers[0].resources.requests.cpu,MEM_REQ:.spec.containers[0].resources.requests.memory' \
+  --all-namespaces
+```
+
+I need to evict or relocate enough pods to free 8Gi of memory requests on that node. I'm looking for pods that:
+- Are NOT stateful (no PVCs tying them to this node)
+- Are replicated (evicting one won't cause downtime)
+- Request significant memory
+
+```bash
+# Cordon the node first so nothing new schedules there 
+# while I'm making room
+kubectl cordon ip-10-0-42-44
+```
+
+Wait — if I cordon it, es-data-3 also can't schedule there. I need the opposite: I need to make room on this specific node FOR es-data-3 while keeping the node schedulable.
+
+Don't cordon. Instead, identify what to move:
+
+```bash
+# What's consuming the most memory on this node?
+kubectl get pods --field-selector spec.nodeName=ip-10-0-42-44 \
+  --all-namespaces \
+  -o json | jq -r '.items[] | 
+  select(.metadata.namespace != "kube-system") |
+  [.metadata.namespace, .metadata.name, 
+   (.spec.containers[].resources.requests.memory // "0")] | @tsv' | \
+  sort -k3 -h -r | head -10
+```
+
+While those commands run — **fix the PDB immediately.**
+
+### Fix PDB (6:16 AM)
+
+```bash
+# Get the correct labels
+kubectl get pods -n search es-data-0 -o jsonpath='{.metadata.labels}' | jq
+
+# Use the StatefulSet pod label
+kubectl delete pdb es-data-emergency-pdb -n search
+
+cat <<EOF | kubectl apply -f -
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: es-data-emergency-pdb
+  namespace: search
+spec:
+  minAvailable: 3
+  selector:
+    matchLabels:
+      app: elasticsearch-master
+      controller-revision-hash: es-data-6b8d9f7c4
+EOF
+```
+
+Actually — `controller-revision-hash` changes on updates, and `app: elasticsearch-master` matches ALL ES pods including masters. I need to be precise.
+
+```bash
+# StatefulSet name is es-data. What label uniquely identifies 
+# pods from this StatefulSet?
+kubectl get pods -n search -l app=elasticsearch-master \
+  -o custom-columns='NAME:.metadata.name,LABELS:.metadata.labels'
+```
+
+The StatefulSet controller adds `statefulset.kubernetes.io/pod-name` per pod, but there's no common label that says "I'm a data node." The safest approach:
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: es-data-emergency-pdb
+  namespace: search
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: elasticsearch-master
+EOF
+```
+
+This is broader than ideal — it protects ALL elasticsearch pods (masters too) from voluntary disruption. But right now that's what I want. No elasticsearch pod should be evicted while we're in this state. I'll refine it after stabilization.
+
+```bash
+# Verify it matches
+kubectl get pdb es-data-emergency-pdb -n search
+```
+
+### Back to Node Capacity (6:17 AM)
+
+I need to see what's on ip-10-0-42-44 and find 8Gi to free up. But I also have a faster option.
+
+```bash
+# Can I just delete the Karpenter pod that preempted es-data-3?
+kubectl get pods --field-selector spec.nodeName=ip-10-0-42-44 \
+  -n karpenter-system
+```
+
+The events said es-data-3 was "Preempted by pod karpenter-system/karpenter-xxxxx." If a Karpenter controller pod landed on this node after the preemption, and it's a replicated deployment, I might be able to evict that specific pod and free the memory. Karpenter controller has multiple replicas and would reschedule elsewhere.
+
+```bash
+# Broader — everything on the node, sorted by memory
+kubectl get pods --field-selector spec.nodeName=ip-10-0-42-44 \
+  --all-namespaces -o json | jq -r '
+  .items[] | 
+  "\(.metadata.namespace)/\(.metadata.name) \(.spec.containers[0].resources.requests.memory // "0") \(.spec.volumes // [] | map(select(.persistentVolumeClaim)) | length) PVCs"' | \
+  sort -k2 -h -r | head -15
+```
+
+Once I identify candidates — pods that are replicated, not PVC-bound to this node, and requesting significant memory — I evict them:
+
+```bash
+# For each candidate:
+kubectl delete pod <namespace>/<pod-name>
+# (or kubectl drain with specific pod targeting)
+# Kubernetes reschedules them on nodes with capacity
+# Karpenter provisions new nodes if needed
+```
+
+The moment 8Gi of memory requests frees up on ip-10-0-42-44, es-data-3 should schedule.
+
+### Comms — Brief, Can't Afford More Than 30 Seconds (6:17 AM)
+
+**Ryan Mitchell — #platform-engineering:**
+
+> On it. ES data node went down, 27% of shards unavailable including January catalog indices. Working on getting the node back — ETA 10-15 minutes for initial recovery, search results will progressively improve as shards reassign. CS should expect degraded search for new products until then — older catalog searches may work.
+
+**Lisa — DM:**
+
+> Kafka consumer lag is unrelated — recovery from yesterday's connector restart. Search doesn't have an SLO, but don't create one mid-incident. Let's define it post-mortem. Right now I'm focused on stabilization.
+
+**Aisha — DM:**
+
+> Noted. Adding it to the shadow infrastructure tally. Another one for the drift detection CronJob that I'm suddenly very motivated to ship today.
+
+### Monitoring es-data-2 Actively (6:18 AM)
+
+```bash
+# How many readiness failures away from NotReady?
+kubectl get pod es-data-2 -n search \
+  -o jsonpath='{.spec.containers[0].readinessProbe.failureThreshold}'
+
+# Current consecutive failures
+kubectl describe pod es-data-2 -n search | grep -A3 "Conditions"
+
+# Can I reduce pressure on es-data-2 while waiting?
+# Temporarily reduce search-service replicas to reduce query load
+kubectl get deployment search-service -n search \
+  -o jsonpath='{.spec.replicas}'
+```
+
+This is a counterintuitive option — if I scale down search-service replicas from 6 to 3, fewer pods are hammering the ES cluster with queries. The 19% error rate stays the same (it's determined by shard availability, not query volume), but the total query load on the surviving data nodes drops. That might keep es-data-2 alive long enough for es-data-3 to come back.
+
+The tradeoff: halving search-service replicas means higher latency for the queries that DO succeed, and risk of search-service pod overload if traffic ramps up with East Coast wake-up. But right now the bottleneck is ES, not search-service pods.
+
+```bash
+# If es-data-2 is close to death, this buys time
+kubectl scale deployment search-service -n search --replicas=3
+```
+
+I'll make this call based on what I see from the readiness probe status. If es-data-2 is at 4/5 failures, I scale down immediately. If it's recovered to 2/5, I hold.
+
+### The Critical Path (6:19 AM)
+
+```
+CRITICAL PATH:
+  6:17  Identify pods to evict from ip-10-0-42-44
+  6:18  Evict pods, free 8Gi memory requests
+  6:19  es-data-3 schedules on ip-10-0-42-44
+  6:21  ES JVM starts (~2 min)
+  6:22  es-data-3 joins cluster
+  6:23  Shard recovery begins
+  6:28  Primary shards recover (error rate drops significantly)
+  6:35  Full shard recovery (cluster GREEN or YELLOW with replicas)
+
+IF es-data-2 DIES BEFORE 6:23:
+  Error rate jumps to 40-60%
+  Two data nodes down, one data node standing
+  Recovery becomes much slower (less capacity for shard relocation)
+  May need to consider: do I reroute search traffic to the 
+  December stale index as a degraded fallback?
+
+PARALLEL TRACK:
+  PDB fixed — protects against voluntary disruption
+  Search-service scale-down — ready if needed to reduce ES load
+  es-data-2 monitoring — watching probe failures
+```
+
+I'm waiting for the pod list on ip-10-0-42-44. The moment I see what's there, I evict the right things and es-data-3 schedules. Everything after that is waiting for Elasticsearch recovery.
+
+This is the kind of incident where the fix is simple — get the pod running — but the path to the fix has three obstacles stacked on top of each other. Quota was obstacle one (cleared). Scheduling is obstacle two (clearing). If there's a data corruption obstacle three, I'll deal with that when I see it.
+
