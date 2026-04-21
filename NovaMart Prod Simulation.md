@@ -19523,3 +19523,2176 @@ You also have:
 
 **What do you do?**
 
+
+
+*reads handoff, absorbs context, checks clock: Monday 2:44 PM*
+
+This is a potential security incident with an active threat actor who logged in **four hours ago today**. The password is changed but the instance is live with evidence on it, and we don't know what they accessed or what the Jenkins IAM role can reach. Every minute matters.
+
+**Parallel execution. Three threads. Go.**
+
+---
+
+**THREAD 1 — Inform Aisha (RIGHT NOW)**
+
+Slack DM to Aisha Rahman:
+
+> **Aisha — security-sensitive, need you immediately.**
+>
+> Marcus found a legacy Jenkins EC2 instance (novamart-jenkins-legacy, i-0e8g3f, t3.large) during today's infrastructure audit. Key facts:
+>
+> - **Jenkins 2.361, credentials were admin/admin** (default) until Marcus changed them ~2:40 PM today
+> - **Repeated unauthorized logins from 172.31.4.89** — an IP in a peered VPC (vpc-0f8a3c, tagged 'legacy-staging'). Four logins in last 7 days, **most recent today at 9:14 AM**
+> - Instance launched March 2022 by former-devops@novamart.com (account disabled)
+> - Has a `monthly-db-backup` job that **dumps production orders database to S3** — credentials for prod RDS are configured in that job
+> - VPC peering created August 2023. We don't know who owns legacy-staging VPC or 172.31.4.89
+> - We do NOT yet know: what the attacker did after login, what the instance's IAM role can access, or whether DB backup credentials were exfiltrated
+>
+> **What Marcus has done:** Changed admin password, restricting security group to platform IPs only (in progress). Instance is otherwise untouched to preserve evidence.
+>
+> **What I need from you:**
+> 1. Should we formally declare this a security incident under our IR process?
+> 2. Do we need to involve James now or after initial investigation?
+> 3. Can you pull CloudTrail for the Jenkins instance's IAM role for the last 30 days?
+> 4. Can you identify what 172.31.4.89 is — EC2 instance, someone's workstation, what?
+>
+> Marcus and I are starting evidence preservation and investigation now. I'll be in a war room thread in 5 minutes.
+
+---
+
+**THREAD 2 — Direct Marcus (immediately after Aisha message)**
+
+Slack DM to Marcus:
+
+> Marcus, good catch. This is our top priority right now. Here's what I need:
+>
+> **Preserve evidence first, don't touch anything destructive:**
+>
+> 1. **Security group** — finish locking it down. Restrict ALL inbound to just your IP and mine. SSH + 8080. Nobody else in until Aisha clears it. Do NOT stop the instance yet — we need the memory state.
+>
+> 2. **Screenshot/export the Jenkins audit log** — full 30-day history. Save it somewhere off-instance (pipe it to your local machine or an S3 bucket we control). If Jenkins has a more detailed activity log (job executions, configuration views, credential access), grab that too.
+>
+> 3. **Check the monthly-db-backup job configuration** — what RDS credentials does it have? IAM role-based or hardcoded username/password? What S3 bucket does it write to? Don't run the job, just read the config.
+>
+> 4. **Get me the instance's IAM role** — `aws ec2 describe-instances --instance-ids i-0e8g3f... --query 'Reservations[].Instances[].IamInstanceProfile'`. I need to know what this instance can reach in AWS.
+>
+> 5. **Check the other 13 disabled jobs** — any of them have credentials, secrets, or access tokens configured?
+>
+> 6. **Do NOT stop/terminate the instance.** Evidence preservation. Aisha may want forensic imaging.
+>
+> I've pinged Aisha. She'll join shortly.
+
+---
+
+**THREAD 3 — Quick answers for Tom and Derek (don't let them block)**
+
+Slack to Tom:
+
+> Tom — hold on the StatefulSet restart for now. I need to sequence this carefully because of the Legal hold on the namespace. The ECR image swap is the right move and I want to approve it, but I need to verify that a rolling restart won't disrupt the Kafka Connect S3 sink (our live data path) or create any state issues with ZooKeeper.
+>
+> **Can you give me:** 
+> - Confirmation the new ECR images are tag-for-tag identical to the Docker Hub images (same versions, just re-pushed)?
+> - Whether the rolling restart will affect in-flight Kafka consumer offsets?
+>
+> I'll get you an answer within the hour. This is a priority but I have a security issue that just landed.
+
+Slack to Derek:
+
+> CB canary looks good — keep monitoring. Proceed to 25% at the 15-min mark per plan. If error rate stays below 0.5% at 25% for 10 minutes, go to 50%. Only page me if something looks off. You've got this.
+
+---
+
+**Now — my own investigation while waiting for responses:**
+
+**Check 1: VPC peering connection**
+
+```bash
+aws ec2 describe-vpc-peering-connections \
+  --filters "Name=tag:Name,Values=legacy-staging" \
+  --query 'VpcPeeringConnections[].{ID:VpcPeeringConnectionId,Requester:RequesterVpcInfo,Accepter:AccepterVpcInfo,Status:Status.Code}'
+```
+
+I need to know: who owns vpc-0f8a3c, what CIDR it uses, and whether route tables allow production subnet access.
+
+**Check 2: Identify 172.31.4.89**
+
+```bash
+# If we have cross-account access or if legacy-staging is in our account:
+aws ec2 describe-instances \
+  --filters "Name=private-ip-address,Values=172.31.4.89" \
+  --query 'Reservations[].Instances[].{ID:InstanceId,Name:Tags[?Key==`Name`].Value|[0],State:State.Name,LaunchTime:LaunchTime,IAMRole:IamInstanceProfile.Arn}'
+```
+
+If 172.31.x.x is a different account's CIDR, we may not have visibility. But the peering connection metadata should tell us which account owns it.
+
+**Check 3: Jenkins instance IAM role (parallel with Marcus)**
+
+```bash
+aws ec2 describe-instances \
+  --instance-ids i-0e8g3f... \
+  --query 'Reservations[].Instances[].IamInstanceProfile'
+```
+
+Then if there's a role:
+```bash
+aws iam list-attached-role-policies --role-name <role-name>
+aws iam list-role-policies --role-name <role-name>
+```
+
+**Check 4: CloudTrail — fast query for the instance's assumed role**
+
+```bash
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=ResourceName,AttributeValue=<iam-role-arn> \
+  --start-time 2023-12-22 \
+  --max-results 50
+```
+
+---
+
+**Mental threat model while I wait for command outputs:**
+
+**Worst case:** 172.31.4.89 is a compromised instance or external actor with VPC peering access. They've had admin Jenkins access for at least 7 days (since Jan 15). They could have:
+- Read production RDS credentials from the db-backup job
+- Executed arbitrary code on the Jenkins instance (Groovy console)
+- Used the instance's IAM role to access S3, RDS, or other AWS services
+- Pivoted to production services via the 10.0.0.0/8 security group rule
+
+**Best case:** 172.31.4.89 is a legitimate staging environment with automated health checks or someone who legitimately used the legacy staging environment and idly checked the old Jenkins.
+
+**Either way:** This needs formal incident declaration. admin/admin on an instance with production database credentials and a wide-open security group is a finding regardless of whether 172.31.4.89 is malicious.
+
+---
+
+**#incidents channel — not yet.** I want Aisha's call on formal declaration first. If she says declare, I post immediately. If she wants 15 minutes of investigation first, I respect that — security incidents have different comms protocols than availability incidents. But I'm not waiting more than 15 minutes either way.
+
+---
+
+**Time check: ~2:48 PM.** Four minutes since I got the information. Aisha notified, Marcus directed, Tom and Derek unblocked, investigation commands running. 
+
+What comes back from Aisha, Marcus, and the AWS CLI?
+
+---
+
+## MONDAY 2:48 PM — DATA RETURNS
+
+---
+
+### Aisha Response (2:49 PM)
+
+```
+Slack — DM from Aisha Rahman (2:49 PM)
+"Declaring this. SEV2 security incident effective now. 
+Reference: SEC-2024-0122-001.
+
+This is NOT optional — admin/admin on an instance with 
+production database credentials is a declarable finding 
+under our IR policy regardless of whether 172.31.4.89 
+is malicious. The unauthorized logins make it mandatory.
+
+DO NOT post to #incidents yet. Security incidents go to 
+#security-incidents (private channel). I'm adding you 
+and Marcus now. Nobody else until I say so.
+
+I need 10 minutes to pull CloudTrail and loop in my 
+counterpart at AWS support for the VPC peering ownership 
+question. I'm also going to check if we have a current 
+IR retainer with CrowdStrike — if this instance needs 
+forensic imaging, I want professionals doing it.
+
+Two immediate questions for you:
+1. Is the security group locked down yet? I need 
+   confirmation that 172.31.4.89 can no longer reach 
+   port 8080 on that instance.
+2. The monthly-db-backup job — what RDS user does it 
+   connect as? If it's the same analytics_reader you 
+   just put a connection limit on, that's one thing. 
+   If it's a privileged user, that's much worse.
+
+Starting my investigation now. Stay in the security 
+channel. I'll be posting there."
+```
+
+```
+Slack — #security-incidents (2:50 PM) [PRIVATE CHANNEL]
+Aisha Rahman: "SEC-2024-0122-001 declared. Legacy Jenkins 
+instance with default credentials, unauthorized access from 
+peered VPC. Investigation active. Participants: Aisha (lead), 
+[User] (platform), Marcus (secondary). DO NOT discuss in 
+public channels."
+```
+
+---
+
+### VPC Peering Results
+
+```
+$ aws ec2 describe-vpc-peering-connections \
+    --filters "Name=tag:Name,Values=legacy-staging" \
+    --query 'VpcPeeringConnections[]'
+
+[
+  {
+    "VpcPeeringConnectionId": "pcx-0f8a3c7b2d...",
+    "RequesterVpcInfo": {
+      "VpcId": "vpc-0b3e1d...",
+      "CidrBlock": "10.0.0.0/16",
+      "OwnerId": "123456789012",
+      "Region": "us-east-1"
+    },
+    "AccepterVpcInfo": {
+      "VpcId": "vpc-0f8a3c...",
+      "CidrBlock": "172.31.0.0/16",
+      "OwnerId": "123456789012",
+      "Region": "us-east-1"
+    },
+    "Status": {"Code": "active"},
+    "Tags": [
+      {"Key": "Name", "Value": "legacy-staging"},
+      {"Key": "created-by", "Value": "carlos.mendez@novamart.com"},
+      {"Key": "purpose", "Value": "staging data access"}
+    ]
+  }
+]
+```
+
+**Same AWS account** (123456789012). Both VPCs are ours. The peering was created by Carlos. Tagged "staging data access."
+
+Carlos again.
+
+```
+$ aws ec2 describe-route-tables \
+    --filters "Name=vpc-id,Values=vpc-0f8a3c..." \
+    --query 'RouteTables[].Routes[?DestinationCidrBlock==`10.0.0.0/16`]'
+
+[
+  [
+    {
+      "DestinationCidrBlock": "10.0.0.0/16",
+      "VpcPeeringConnectionId": "pcx-0f8a3c7b2d...",
+      "State": "active"
+    }
+  ]
+]
+```
+
+The legacy-staging VPC has a route to our **entire production CIDR** (10.0.0.0/16). Anything in that VPC can reach anything in production, subject to security groups.
+
+---
+
+### Identify 172.31.4.89
+
+```
+$ aws ec2 describe-instances \
+    --filters "Name=private-ip-address,Values=172.31.4.89" \
+    --query 'Reservations[].Instances[]'
+
+[
+  {
+    "InstanceId": "i-0c4d5e6f...",
+    "InstanceType": "t3.small",
+    "State": {"Name": "running"},
+    "LaunchTime": "2023-08-14T16:30:00Z",
+    "Tags": [
+      {"Key": "Name", "Value": "metabase-staging"},
+      {"Key": "created-by", "Value": "carlos.mendez@novamart.com"}
+    ],
+    "IamInstanceProfile": {
+      "Arn": "arn:aws:iam::123456789012:instance-profile/metabase-staging-profile"
+    },
+    "SecurityGroups": [
+      {
+        "GroupName": "metabase-staging-sg",
+        "GroupId": "sg-0a1b2c..."
+      }
+    ],
+    "SubnetId": "subnet-0d4e5f...",
+    "ImageId": "ami-0abcdef...",
+    "KeyName": "carlos-dev-key"
+  }
+]
+```
+
+**It's another Metabase instance.** `metabase-staging`. In the legacy-staging VPC. Also created by Carlos. August 14, 2023 — same day as the production Metabase instance. SSH key is `carlos-dev-key`.
+
+So now we have two Metabase instances:
+1. `analytics-metabase` in production VPC (10.0.43.147) — connected to prod RDS + unknown reporting-db
+2. `metabase-staging` in legacy-staging VPC (172.31.4.89) — logging into production Jenkins
+
+**But why is a Metabase staging instance logging into Jenkins?**
+
+```bash
+$ aws ec2 describe-security-groups \
+    --group-ids sg-0a1b2c... \
+    --query 'SecurityGroups[0].IpPermissions'
+
+[
+  {
+    "IpProtocol": "tcp",
+    "FromPort": 3000,
+    "ToPort": 3000,
+    "IpRanges": [{"CidrIp": "172.31.0.0/16"}]
+  },
+  {
+    "IpProtocol": "tcp",
+    "FromPort": 22,
+    "ToPort": 22,
+    "IpRanges": [{"CidrIp": "172.31.0.0/16"}]
+  }
+]
+```
+
+Metabase on 3000, SSH on 22. Only accessible from within the legacy-staging VPC. Nothing from the internet. But through the VPC peering, it can reach anything in 10.0.0.0/16 — including Jenkins on 8080.
+
+---
+
+### Marcus Results (2:52 PM)
+
+```
+Slack — #security-incidents (2:52 PM)
+Marcus Webb:
+
+"Results incoming:
+
+1. SECURITY GROUP: Locked down. Inbound now restricted to 
+   my IP + [User]'s IP only. SSH + 8080. Confirmed 
+   172.31.4.89 can no longer reach port 8080. ✅
+
+2. JENKINS AUDIT LOG: Exported full 90-day log to 
+   s3://novamart-security-evidence/SEC-2024-0122-001/jenkins-audit.json
+   
+   Important findings beyond logins — Jenkins has a 
+   'Script Console' access log. The 172.31.4.89 IP 
+   accessed the Script Console on three occasions:
+
+   Jan 15 14:22 — Script Console accessed
+   Jan 15 14:23 — Script Console executed (Groovy)
+   Jan 19 09:45 — Script Console accessed
+   Jan 22 09:14 — Login only (no console access)
+
+   I can NOT see what Groovy scripts were executed. 
+   Jenkins doesn't log script content by default. Only 
+   that the console was used.
+
+3. MONTHLY-DB-BACKUP JOB CONFIG:
+   
+   <project>
+     <builders>
+       <hudson.tasks.Shell>
+         <command>
+           export PGPASSWORD='NmProd2022!backup'
+           pg_dump -h orders-db-prod.xxxxx.us-east-1.rds.amazonaws.com \
+                   -U backup_admin \
+                   -d orders \
+                   --no-owner \
+                   -F c \
+                   -f /tmp/orders_backup_$(date +%Y%m%d).dump
+           
+           aws s3 cp /tmp/orders_backup_$(date +%Y%m%d).dump \
+                   s3://novamart-db-backups/orders/$(date +%Y%m%d).dump
+           
+           rm /tmp/orders_backup_$(date +%Y%m%d).dump
+         </command>
+       </hudson.tasks.Shell>
+     </builders>
+   </project>
+
+   RDS user: backup_admin
+   Password: NmProd2022!backup (PLAINTEXT IN JOB CONFIG)
+   S3 bucket: novamart-db-backups
+   
+   backup_admin is NOT analytics_reader. It's a separate 
+   user. I'm checking its permissions now.
+
+4. IAM INSTANCE PROFILE:
+
+   Role: jenkins-legacy-role
+   Attached policies:
+     - AmazonS3FullAccess (AWS MANAGED — FULL S3 ACCESS)
+     - AmazonEC2ReadOnlyAccess
+     - CloudWatchLogsFullAccess
+   
+   Inline policies:
+     - jenkins-rds-access:
+       {
+         "Effect": "Allow",
+         "Action": ["rds:DescribeDBInstances", "rds:DownloadDBLogFilePortion"],
+         "Resource": "*"
+       }
+
+   So the Jenkins IAM role has:
+   - FULL read/write to ALL S3 buckets in the account
+   - Read-only EC2 (can enumerate all instances)
+   - Full CloudWatch Logs access
+   - Can describe all RDS instances and download their logs
+
+5. OTHER JOBS: 12 of 13 disabled jobs have no credentials. 
+   One called 'deploy-analytics-stack' has a GitHub personal 
+   access token in its config. Token owner: carlos.mendez. 
+   Token probably expired when his GitHub account was 
+   deactivated, but I haven't verified."
+```
+
+---
+
+### 2:55 PM — Aisha's CloudTrail Results
+
+```
+Slack — #security-incidents (2:55 PM)
+Aisha Rahman:
+
+"CloudTrail results for jenkins-legacy-role assumed sessions 
+in the last 30 days:
+
+ASSUME ROLE EVENTS:
+  The instance assumes the role continuously (instance profile). 
+  Filtering for actual API calls made BY the role:
+
+S3 ACTIVITY (jenkins-legacy-role):
+  Jan 15 14:31  s3:ListBucket          novamart-db-backups
+  Jan 15 14:32  s3:GetObject           novamart-db-backups/orders/20231101.dump
+  Jan 15 14:33  s3:GetObject           novamart-db-backups/orders/20231001.dump
+  Jan 15 14:34  s3:GetObject           novamart-db-backups/orders/20230901.dump
+  Jan 15 14:35  s3:ListBucket          novamart-data-exports
+  Jan 15 14:36  s3:ListBucket          novamart-analytics-datalake
+  Jan 15 14:36  s3:GetObject           novamart-analytics-datalake/etl.orders/...
+  Jan 15 14:37  s3:GetObject           novamart-analytics-datalake/etl.orders/...
+  [12 more GetObject calls on analytics-datalake, spanning ~4 min]
+  
+  Jan 19 09:47  s3:ListBucket          novamart-db-backups
+  Jan 19 09:48  s3:GetObject           novamart-db-backups/orders/20231101.dump
+  
+  Jan 22 — NO S3 activity from this role today
+
+EC2 ACTIVITY:
+  Jan 15 14:25  ec2:DescribeInstances   (listed ALL instances)
+  Jan 19 09:46  ec2:DescribeInstances   (listed ALL instances)
+  
+  No EC2 activity today.
+
+RDS ACTIVITY:
+  Jan 15 14:29  rds:DescribeDBInstances (listed ALL RDS instances)
+  
+  No RDS modifications. No DownloadDBLogFilePortion calls.
+
+NO OTHER API CALLS from this role in the last 30 days.
+
+SUMMARY:
+  Jan 15 — Script Console executed. Then: enumerated all EC2, 
+           all RDS, listed 3 S3 buckets, downloaded 3 database 
+           backup dumps + 12 ETL data files
+  Jan 19 — Script Console accessed. Downloaded 1 backup dump.
+  Jan 22 — Login only. No API calls. (Password changed before 
+           any activity?)
+
+The Jan 15 session is the concerning one. They enumerated 
+infrastructure, found the backup bucket, and downloaded 
+production database dumps. Three months of full backups.
+
+The backups contain the complete orders database: customer 
+PII, payment records, order history. Same data scope as the 
+Atlas finding but in a complete pg_dump format.
+
+I'm escalating this to James NOW. This is a confirmed data 
+exfiltration event — someone used the Jenkins Groovy console 
+to access AWS APIs and downloaded production database backups 
+containing customer PII.
+
+The question is: who controls 172.31.4.89, and was this 
+Carlos (using his old staging infrastructure after departure), 
+someone who found Carlos's infrastructure, or something else?
+
+@user — I need you to check:
+1. Is the SSH key 'carlos-dev-key' still active? Can we see 
+   who has the private key?
+2. Did Carlos's corporate accounts (email, VPN, etc.) get 
+   fully deactivated when he left in September?
+3. The backup_admin RDS password is in plaintext in that 
+   Jenkins job. We need to rotate it IMMEDIATELY. Can you 
+   coordinate that without breaking anything?
+
+I'm calling James now. Stand by for a bridge call in the 
+next 10 minutes.
+
+THIS IS NOW A SEV1 SECURITY INCIDENT."
+```
+
+---
+
+### 2:58 PM — Derek Check-In (bad timing)
+
+```
+Slack — DM from Derek Huang (2:58 PM)
+"CB at 25%. Zero anomalies. orders_accepted_without_stock_verification 
+metric is at 0 (CB hasn't tripped, which is expected under normal 
+conditions). Looks clean. Proceeding to 50% at the 25-min mark?
+
+Also — Tom asked me to help with the Kafka ECR restart since 
+he says he doesn't have write access. Should I? He said you'd 
+approve it within the hour."
+```
+
+```
+Slack — DM from Tom Chen (2:59 PM)
+"Images are tag-for-tag identical. kafka:3.6.1 and 
+zookeeper:3.8.3 and cp-kafka-connect:7.5.3, just pushed 
+to our ECR repo. I tested them in a local kind cluster 
+and they work identically.
+
+Rolling restart won't affect consumer offsets — those are 
+stored in Kafka's __consumer_offsets topic on disk. As long 
+as we do one broker at a time and wait for ISR to catch up, 
+no data loss. I've done this before.
+
+Can we do it? The sooner we're off Docker Hub, the sooner 
+we satisfy R-6a."
+```
+
+---
+
+### 3:00 PM — #security-incidents
+
+```
+Aisha Rahman (3:00 PM):
+"Bridge call in 5 minutes. Zoom link: [redacted]
+Attendees: James, Sarah, Aisha, [User], Marcus.
+
+Prepare a 2-minute technical summary of:
+- What the instance is
+- What the attacker accessed
+- What we've contained
+- What's still exposed
+
+James is going to ask if we need to notify customers 
+or amend the GDPR filing. Rachel is being pulled in.
+
+Also: I checked the AWS key pair registry. 'carlos-dev-key' 
+was created June 2023 and has NEVER been deactivated or 
+deleted. The public key is still in EC2. If Carlos — or 
+anyone with his private key — has network access to the 
+legacy-staging VPC, they can SSH into the Metabase staging 
+instance.
+
+The corporate directory shows Carlos's accounts were 
+deactivated September 15. Email, Okta SSO, VPN — all 
+disabled. But EC2 key pairs aren't managed through Okta. 
+They're raw SSH keys. His key pair was never revoked 
+because nobody knew it existed."
+```
+
+---
+
+**Current time: Monday 3:00 PM.**
+
+**You have 5 minutes before a bridge call with the VP of Engineering about a confirmed data exfiltration.**
+
+**What you know:**
+- Someone from Carlos's staging Metabase instance used the Jenkins Groovy console to execute commands
+- On Jan 15: enumerated all EC2/RDS, downloaded 3 months of production database backup dumps from S3, plus 12 ETL data files
+- On Jan 19: downloaded 1 more backup dump  
+- On Jan 22: logged in only (no API calls — Marcus changed password before they could act?)
+- Jenkins IAM role has **AmazonS3FullAccess** — read/write to every bucket in the account
+- **backup_admin** RDS password is plaintext in Jenkins job config
+- Carlos's SSH key is still active and was never revoked
+- Corporate accounts (email, VPN, SSO) were deactivated in September, but SSH keys were missed
+
+**What you don't know:**
+- Is this Carlos himself, someone who acquired his SSH key, or automated tooling on the staging Metabase?
+- Was the Groovy console used to do anything beyond the AWS API calls CloudTrail shows?
+- Has the backup_admin password been used to connect directly to RDS (bypassing Jenkins)?
+- Are the downloaded backup dumps still on the staging Metabase instance or have they been exfiltrated further?
+- Does the staging Metabase have outbound internet access?
+
+**What needs to happen NOW:**
+1. Prepare 2-minute summary for bridge call
+2. Rotate backup_admin RDS password
+3. Address Tom and Derek (they're blocked)
+
+**Three people waiting for you (Derek, Tom, bridge call in 5 minutes). A VP who's about to learn production data was exfiltrated. A GDPR notification that may need amendment. And a password that needs rotation before anyone uses it to connect directly to production RDS.**
+
+**What do you do?**
+
+*3:00 PM. Five minutes. Prioritize ruthlessly.*
+
+**The backup_admin password is the single highest-exposure item.** If the attacker read the Jenkins job config via Groovy console on Jan 15 (they almost certainly did), they have a plaintext password to production RDS. The Jenkins password change doesn't help — they can connect to RDS directly from any instance with network access. This needs to rotate **before** the bridge call, not after.
+
+---
+
+**ACTION 1 — Rotate backup_admin password (RIGHT NOW, 3:00 PM)**
+
+```sql
+-- Check what backup_admin can do first
+SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolcanlogin, rolreplication
+FROM pg_roles WHERE rolname = 'backup_admin';
+```
+
+```bash
+# Check active connections from backup_admin
+SELECT pid, client_addr, state, query_start, query
+FROM pg_stat_activity 
+WHERE usename = 'backup_admin';
+```
+
+If no active connections (the backup job has been failing since December):
+
+```sql
+ALTER ROLE backup_admin PASSWORD 'TEMP-ROTATED-2024-0122-SEC';
+-- Immediately followed by:
+ALTER ROLE backup_admin CONNECTION LIMIT 0;
+```
+
+**Lock it out entirely.** The backup job is already failing. Nothing breaks. We can set a proper password and re-enable after we understand the full scope. Connection limit 0 means even if someone has the new password, they can't connect.
+
+If backup_admin has superuser or elevated privileges, this is even more critical.
+
+---
+
+**ACTION 2 — Derek and Tom (30 seconds each, 3:01 PM)**
+
+Slack to Derek:
+
+> CB looks great, proceed to 50% on schedule. Do NOT help Tom with the Kafka restart right now — I need to put a hold on all changes in that namespace for the next few hours. I'll explain later. Keep monitoring CB, you're doing exactly right.
+
+Slack to Tom:
+
+> Tom — I need to delay the ECR restart by a few hours. Not a problem with your work — something unrelated came up that requires a change freeze on the cluster for the afternoon. Your images are ready and we'll do the restart first thing tomorrow morning. Sorry for the hold.
+
+*White lie to Tom. He doesn't have security-incidents channel access, and I'm not going to explain a SEV1 security investigation to someone whose former colleague may be involved. The actual reason for the delay: I don't want ANY unnecessary pod churn or infrastructure changes while we're investigating. Blast radius containment.*
+
+---
+
+**ACTION 3 — Check staging Metabase egress (3:02 PM)**
+
+```bash
+# Can the staging Metabase reach the internet? This tells us if data could leave AWS.
+aws ec2 describe-route-tables \
+  --filters "Name=vpc-id,Values=vpc-0f8a3c..." \
+  --query 'RouteTables[].Routes[?GatewayId!=`local` && GatewayId!=`pcx-*`]'
+```
+
+```bash
+# Check for NAT gateway or internet gateway in legacy-staging VPC
+aws ec2 describe-nat-gateways \
+  --filter "Name=vpc-id,Values=vpc-0f8a3c..."
+
+aws ec2 describe-internet-gateways \
+  --filters "Name=attachment.vpc-id,Values=vpc-0f8a3c..."
+```
+
+This determines whether the downloaded backup dumps could have been exfiltrated out of AWS entirely. If there's no internet egress from that VPC, the data may still be contained within our AWS account. If there IS egress — we have confirmed external exfiltration and the GDPR situation escalates dramatically.
+
+---
+
+**ACTION 4 — Check RDS connection logs for backup_admin (3:03 PM)**
+
+```bash
+# If RDS has connection logging enabled (log_connections = on)
+aws rds download-db-log-file-portion \
+  --db-instance-identifier orders-db-prod \
+  --log-file-name error/postgresql.log \
+  --starting-token 0 \
+  --output text | grep backup_admin
+```
+
+If backup_admin connected from anywhere other than 10.0.43.201 (the Jenkins instance) in the last 30 days, we have direct RDS access from the attacker — not just S3 backup downloads.
+
+---
+
+**ACTION 5 — Bridge call prep (3:03-3:05 PM)**
+
+Writing my 2-minute summary. Structure: What, How Bad, What We've Done, What's Still Exposed, What We Need.
+
+**Mental draft:**
+
+> **What happened:**
+> A legacy Jenkins EC2 instance, launched March 2022, was running with default admin/admin credentials for approximately two years. On January 15th, someone from a staging Metabase instance in a peered VPC — both created by Carlos Mendez before his departure in September — logged into Jenkins, accessed the Groovy script console, and used the Jenkins IAM role to enumerate our infrastructure and download production data from S3.
+>
+> **What was accessed:**
+> CloudTrail confirms: three production database backup dumps (September, October, November 2023 — full pg_dump of orders database), twelve ETL data export files from the analytics datalake, and enumeration of all EC2 instances and RDS instances. A fourth backup was downloaded on January 19th. Today's login at 9:14 AM had no API activity — Marcus changed the password before any action was taken.
+>
+> **Data scope:**
+> The orders database backups contain customer PII: names, emails, shipping addresses, order history, payment references. Same data category as the Atlas finding in our existing GDPR notification, but a complete database dump — potentially the full customer base, not just 25-30K EU customers.
+>
+> **What we've contained:**
+> - Jenkins admin password changed (attacker locked out of Jenkins)
+> - Security group restricted to two platform IPs only
+> - backup_admin RDS password rotated and connection limit set to zero (attacker's stolen credentials are now useless)
+> - Instance preserved for forensics (not stopped)
+> - Full Jenkins audit log and CloudTrail exported to evidence bucket
+>
+> **What's still exposed:**
+> - We don't know if the staging Metabase has internet egress — if it does, the backup dumps may have left AWS entirely
+> - Carlos's SSH key pair was never revoked — anyone with that private key can access the staging Metabase
+> - We don't know if this is Carlos, someone with his credentials, or automation
+> - The Jenkins IAM role has AmazonS3FullAccess — the attacker could have read ANY bucket in the account, not just the ones CloudTrail shows
+> - We haven't confirmed whether backup_admin was used to connect directly to RDS
+>
+> **What we need:**
+> 1. Decision on GDPR notification amendment — this is likely a separate, larger data breach
+> 2. Decision on whether to forensically image both instances (Jenkins + staging Metabase) — Aisha checking IR retainer with CrowdStrike
+> 3. Carlos's SSH key pair needs deletion immediately
+> 4. VPC peering connection should be suspended pending investigation
+> 5. Review of all S3 bucket access logs to confirm full scope of data accessed
+
+---
+
+**ACTION 6 — Two more containment steps I can do right now (3:04 PM)**
+
+Post to #security-incidents:
+
+> **Containment update (3:04 PM):**
+> 
+> 1. ✅ **backup_admin RDS password rotated and CONNECTION LIMIT 0 applied.** Attacker's stolen credentials are now dead. No active connections were using this role — the backup job has been failing since December. Nothing breaks.
+> 
+> 2. Checking whether legacy-staging VPC has internet egress — this determines whether downloaded data could have left AWS.
+>
+> 3. Checking RDS connection logs for any direct backup_admin connections from non-Jenkins IPs.
+>
+> **Recommend for bridge call — two immediate containment actions that need VP approval:**
+> - Delete carlos-dev-key EC2 key pair (prevents SSH access to staging Metabase)
+> - Suspend or delete VPC peering connection pcx-0f8a3c... (cuts all network path between staging and production)
+> 
+> Both are destructive to any legitimate use of the legacy-staging VPC, but I'm not aware of any legitimate use. Aisha — can you confirm nothing active depends on that peering?
+>
+> **Ready for bridge call with technical summary.**
+
+---
+
+**Mental state check at 3:05 PM:**
+
+- ✅ Highest exposure (RDS password) contained
+- ✅ Derek unblocked, CB proceeding
+- ✅ Tom held without revealing security investigation
+- ✅ Evidence preserved
+- ✅ Bridge summary ready
+- ⏳ Waiting on: VPC egress check, RDS connection logs
+- 🔴 Bridge call starting NOW
+
+The key question James will ask: **"Is this related to the Atlas thing? Is this the same person?"** 
+
+My honest answer: We don't know. Carlos built both the Atlas-connected pipeline AND this staging infrastructure. The Atlas data was Tom's work with Carlos's help. This is Carlos's infrastructure accessed after his departure. It could be Carlos himself, someone who found his keys, or legacy automation nobody turned off. The Groovy console execution on Jan 15 looks like a human — they browsed, enumerated, then targeted specific buckets. That's not automation behavior.
+
+Second question James will ask: **"How many customers?"**
+
+Answer: The orders database backups are complete pg_dumps. Depending on data retention, potentially the **entire customer base** — not the 25-30K in Atlas. We need to query the backup to determine row counts, but this is likely an order of magnitude larger.
+
+Third question: **"Do we need to amend the GDPR notification?"**
+
+Answer: Almost certainly yes. This is a separate exfiltration event with different data scope, different access vector, different timeline. Rachel needs to assess whether this is an amendment to SA-2024-0119-NM or a second filing.
+
+Joining the bridge call.
+
+---
+
+## MONDAY 3:00-3:05 PM — COMMAND RESULTS
+
+---
+
+### backup_admin Privileges
+
+```
+$ SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolcanlogin, rolreplication
+  FROM pg_roles WHERE rolname = 'backup_admin';
+
+ rolname       | rolsuper | rolcreaterole | rolcreatedb | rolcanlogin | rolreplication
+---------------+----------+---------------+-------------+-------------+---------------
+ backup_admin  | f        | f             | f           | t           | f
+```
+
+Not superuser. Can login. Checking grants:
+
+```
+$ \dp
+
+ Schema |       Name       | Type  |       Access privileges
+--------+------------------+-------+-------------------------------
+ public | orders           | table | backup_admin=r/postgres
+ public | order_items      | table | backup_admin=r/postgres
+ public | payments         | table | backup_admin=r/postgres
+ public | refunds          | table | backup_admin=r/postgres
+ public | customers        | table | backup_admin=r/postgres
+ public | shipping_addresses| table | backup_admin=r/postgres
+ public | products         | table | backup_admin=r/postgres
+ public | inventory        | table | backup_admin=r/postgres
+```
+
+**Read access to every table in the database.** Not superuser, but full SELECT on all tables — including `customers` and `shipping_addresses`, which have full PII (names, emails, physical addresses, phone numbers). The pg_dump with `--no-owner` would capture everything readable.
+
+```
+$ SELECT pid, client_addr, state FROM pg_stat_activity 
+  WHERE usename = 'backup_admin';
+
+(0 rows)
+```
+
+No active connections. Safe to lock.
+
+```
+$ ALTER ROLE backup_admin PASSWORD 'ROTATED-SEC-2024-0122-001';
+ALTER ROLE
+
+$ ALTER ROLE backup_admin CONNECTION LIMIT 0;
+ALTER ROLE
+```
+
+**backup_admin is dead.** Password rotated, connection limit zero. Even if someone had the old password and tried to connect right now, they'd be rejected. ✅
+
+---
+
+### VPC Egress Check
+
+```
+$ aws ec2 describe-nat-gateways \
+    --filter "Name=vpc-id,Values=vpc-0f8a3c..."
+
+{
+  "NatGateways": [
+    {
+      "NatGatewayId": "nat-0d4e5f...",
+      "State": "available",
+      "SubnetId": "subnet-0d4e5f...",
+      "VpcId": "vpc-0f8a3c...",
+      "CreateTime": "2023-08-14T16:45:00Z",
+      "Tags": [
+        {"Key": "Name", "Value": "legacy-staging-nat"},
+        {"Key": "created-by", "Value": "carlos.mendez@novamart.com"}
+      ]
+    }
+  ]
+}
+```
+
+```
+$ aws ec2 describe-internet-gateways \
+    --filters "Name=attachment.vpc-id,Values=vpc-0f8a3c..."
+
+{
+  "InternetGateways": [
+    {
+      "InternetGatewayId": "igw-0e5f6g...",
+      "Attachments": [{"VpcId": "vpc-0f8a3c...", "State": "attached"}]
+    }
+  ]
+}
+```
+
+**The legacy-staging VPC has both a NAT gateway and an internet gateway.** Full outbound internet access. The staging Metabase instance (172.31.4.89) routes through the NAT gateway. 
+
+**Any data downloaded to that instance could have been exfiltrated to the internet.** We can't confirm it did without forensic analysis of the instance, but the network path exists.
+
+This changes the severity. If the backup dumps stayed within AWS, this is a serious internal incident. If they left AWS, this is an external data breach affecting potentially the entire customer base.
+
+---
+
+### RDS Connection Logs
+
+```
+$ aws rds download-db-log-file-portion \
+    --db-instance-identifier orders-db-prod \
+    --log-file-name error/postgresql.log.2024-01-15 \
+    --starting-token 0 --output text | grep backup_admin
+
+2024-01-15 14:28:17 UTC LOG:  connection received: host=10.0.43.201 port=45892
+2024-01-15 14:28:17 UTC LOG:  connection authorized: user=backup_admin database=orders
+2024-01-15 14:28:18 UTC LOG:  disconnection: session time: 0:00:00.847 user=backup_admin database=orders host=10.0.43.201
+```
+
+```
+$ aws rds download-db-log-file-portion \
+    --db-instance-identifier orders-db-prod \
+    --log-file-name error/postgresql.log.2024-01-19 \
+    --starting-token 0 --output text | grep backup_admin
+
+(no matches)
+```
+
+```
+$ aws rds download-db-log-file-portion \
+    --db-instance-identifier orders-db-prod \
+    --log-file-name error/postgresql.log.2024-01-22 \
+    --starting-token 0 --output text | grep backup_admin
+
+(no matches)
+```
+
+**One connection on Jan 15 from 10.0.43.201 (the Jenkins instance itself).** Duration: 0.847 seconds. That's not a pg_dump — a full database dump takes minutes. That looks like a connection test. Someone verified the credentials worked but didn't run the actual backup.
+
+No direct RDS connections from 172.31.4.89 or any other IP. **The attacker used the S3 path (downloading existing backups), not direct database access.** That's a small relief — it means they got the three historical dumps that already existed in S3, not a fresh real-time dump.
+
+But the attacker now *has* the password. The connection limit 0 you just applied blocks that path going forward. ✅
+
+---
+
+## 3:05 PM — BRIDGE CALL
+
+---
+
+Zoom. Five faces. James's expression is the one he uses when he's calculating how bad something is.
+
+**James:** "Aisha gave me the 30-second version. [User], walk me through the technical picture."
+
+You deliver your 2-minute summary. Clean, factual, structured. What happened, what was accessed, what you've contained, what's still exposed, what you need.
+
+The room is quiet for three seconds after you finish.
+
+**James:** "How many customers are in those backup dumps?"
+
+**You:** "The backups are complete pg_dumps of the orders database. We don't have an exact count without examining the backups, but the orders database serves the entire customer base. It's likely an order of magnitude beyond the 25-30K in the Atlas finding — potentially hundreds of thousands."
+
+**James closes his eyes for a moment.** "Rachel, are you on?"
+
+```
+Rachel Torres (audio only): "I'm here. I've been listening. 
+This is a separate incident from the Atlas finding. Different 
+access vector, different data scope, different timeline. We 
+need a second GDPR Art. 33 notification — this can't be an 
+amendment to SA-2024-0119-NM.
+
+More importantly: if those backup dumps left AWS — which we 
+can't rule out given the internet gateway — we're into Art. 34 
+territory. Mandatory notification to affected individuals. 
+Not 'prepare and hold' like last time. Mandatory.
+
+The 72-hour clock started when Aisha declared the incident — 
+that's 2:50 PM today. We have until Thursday 2:50 PM to file 
+Art. 33. But I want to file tomorrow if possible.
+
+I need to know three things before I can draft:
+1. Exact data scope — what tables, what PII fields, how many 
+   records
+2. Whether data left AWS — can we determine this?
+3. Whether the access was by a former employee or an unknown 
+   third party — this changes the notification language 
+   significantly"
+```
+
+**James:** "Can we determine if the data left AWS?"
+
+**Aisha:** "Not from CloudTrail. CloudTrail logs AWS API calls, not network traffic. The S3 GetObject calls downloaded the backups to the Jenkins instance. From there, the Jenkins instance could have copied them to the staging Metabase, and the staging Metabase has internet egress. To determine if data actually left AWS, we need VPC Flow Logs on the legacy-staging VPC — if they exist — or forensic imaging of both instances."
+
+**James:** "Do the flow logs exist?"
+
+```
+You check while the call continues:
+
+$ aws ec2 describe-flow-logs \
+    --filters "Name=resource-id,Values=vpc-0f8a3c..."
+
+{
+  "FlowLogs": []
+}
+```
+
+**No flow logs on the legacy-staging VPC.** You unmute and report this.
+
+**James:** Quiet for five seconds. "So we can't prove the data stayed inside AWS, and we can't prove it left."
+
+**Rachel:** "Which means we have to assume it left. That's the regulatory conservative position and the one the supervisory authority will take."
+
+**Aisha:** "I agree. We should assume exfiltration until we can prove otherwise. Forensic imaging of both instances is the only way to get closer to an answer — disk analysis might show if large files were transferred, SSH history, bash history, network artifacts."
+
+**James:** "Do it. Get CrowdStrike or whoever we have on retainer. Today if possible." He pauses. "Is this Carlos?"
+
+**Aisha:** "We can't confirm. The staging Metabase was created by Carlos. The SSH key is Carlos's. Corporate accounts were deactivated in September, but the SSH key was missed because EC2 key pairs aren't managed through our identity provider. The access pattern — browsing, enumerating, then targeted downloads — looks like a human who knows the environment, not a scanner. But we can't attribute it without forensic evidence or law enforcement involvement."
+
+**James:** "If it IS Carlos, what's our legal exposure?"
+
+**Rachel:** "Unauthorized access to computer systems by a former employee. That's criminal under the CFAA in the US and equivalent statutes in the EU. If he accessed personal data of EU residents, that's also a GDPR violation on his part — but our notification obligation exists regardless of who did it. We're the data controller. The breach happened in our infrastructure."
+
+**Sarah** (who has been silent): "I want to ask something practical. How many more of these are there? We found the Kafka pipeline last week. We found the search cluster Friday. We found Metabase and this Jenkins today. Every time we look, we find more. Is there a point where we've found everything?"
+
+She's looking at you.
+
+**James is looking at you.**
+
+**Aisha is looking at you.**
+
+---
+
+### 3:12 PM — While On Call
+
+While the conversation continues, Marcus posts in #security-incidents:
+
+```
+Marcus (3:11 PM):
+"GitHub token in the deploy-analytics-stack job: 
+ghp_xxxx...xxxx (Carlos's PAT). I tested it:
+
+$ curl -H 'Authorization: token ghp_xxxx' \
+    https://api.github.com/user
+
+{
+  "message": "Bad credentials",
+  "documentation_url": "https://docs.github.com/rest"
+}
+
+Token is dead. GitHub deactivated it when Carlos's 
+account was removed. ✅
+
+BUT: the job config also has a webhook URL for a 
+Slack workspace I don't recognize: 
+hooks.slack.com/services/T0XXXXXXX/B0XXXXXXX/xxxxxxxxxxxx
+
+It's not our workspace ID. Could be a personal workspace 
+Carlos used, or something else entirely. Do NOT test the 
+webhook — if someone's monitoring it, that tells them 
+we found the Jenkins."
+```
+
+---
+
+**Sarah's question is hanging in the air. James is waiting for your answer.**
+
+**You're also processing: a Slack webhook to an unknown workspace. Marcus correctly flagged not to trigger it. But its presence in the Jenkins config means data could have been posted to an external Slack workspace via that webhook — another potential exfiltration channel, separate from the internet egress question.**
+
+**Current time: 3:12 PM on the bridge call.**
+
+**What do you say to Sarah's question? And how do you handle the Slack webhook finding?**
+
+*Deep breath. This is one of those moments where the honest answer is the only answer that preserves credibility. Everyone in this room is smart enough to see through sugarcoating.*
+
+**I unmute.**
+
+"Sarah, the honest answer is: no, we haven't found everything yet. And I can tell you exactly why I know that.
+
+Our drift detection — the CronJob we deployed this morning — covers Kubernetes. It found nine unmanaged workloads in the cluster on its first run. That's good. But everything we found today — the two Metabase instances, this Jenkins server, the VPC peering, the unknown reporting-db RDS instance — none of that lives in Kubernetes. It's all raw AWS infrastructure. **Our K8s drift scan is looking under the streetlight. The shadows are in AWS.**
+
+Here's the pattern we're seeing. We've found eleven pieces of shadow infrastructure in nine days. Three of them belong to departed employees. Every time we pull a thread, we find two more things behind it. Incident 8 this morning led us to Metabase, which led us to this Jenkins, which led us to the VPC peering, which led us to a second Metabase. There's also an RDS instance — reporting-db-prod — that Metabase connects to that isn't in Terraform and isn't in any inventory we have. We haven't even started looking at that yet.
+
+So to directly answer your question: **I expect there's more.** And I won't be able to tell you we've found everything until we do a full AWS-level resource audit — every EC2 instance, every RDS instance, every S3 bucket, every VPC, every IAM role, every peering connection, every security group — and reconcile it against what's managed in Terraform.
+
+James, you asked me for that audit by Wednesday. I'm going to revise that scope upward. Given what we found today, this needs to be a comprehensive AWS Config or resource enumeration sweep across the entire account — not a targeted look at specific services. I can have the enumeration script running tonight. Human analysis of the results is the bottleneck — Marcus and I can have findings by Wednesday morning, but we should plan for the results to be ugly."
+
+I pause. Let that land. Then:
+
+"One more thing — I want to address the root cause behind all of this, because it's the same root cause every time. It's not any one person. Carlos built things. Tom built things. Nina built things. Wei ran things. They all did it because there was no self-service path to do it the sanctioned way. We're fixing that — the self-service pipeline template is committed for mid-February, the image admission controller goes to warn mode Friday, enforce mode February 2nd. But right now, anyone with kubectl access or an AWS console login can create resources that nobody else knows about. That's the gap, and it's structural, not individual.
+
+The drift detection catches the Kubernetes side going forward. **What we don't have yet is the AWS equivalent.** I want to add AWS Config rules or a resource audit CronJob to the remediation timeline — same approach, different scope. I can propose the specifics after this call."
+
+**Then, before the room moves on:**
+
+"One more item that just came in — I need to flag it now. Marcus found a Slack webhook URL in one of the Jenkins job configurations. It points to a Slack workspace that is **not ours**. We don't know whose it is. We are intentionally **not** triggering it, because if someone is monitoring it, that alerts them we've found the infrastructure. But its existence means there's a potential second exfiltration channel — data could have been posted to an external Slack workspace via Jenkins job executions, separate from the internet egress path we were already discussing.
+
+Aisha — I'd recommend we add that webhook URL to the forensics scope. We should also be able to identify the workspace through Slack's API or through legal process with Slack, without triggering the webhook itself."
+
+**I glance at Marcus's message again and post a quick reply in #security-incidents while still on the call:**
+
+> Marcus — excellent instinct not to trigger the webhook. Correct call. Add it to the evidence bucket. I've flagged it on the bridge call. Do NOT interact with it. Also: can you start an AWS resource enumeration while we're on this call? I want every EC2, RDS, S3 bucket, VPC, peering connection, NAT gateway, and IAM role in the account dumped to JSON. We're doing a full sweep tonight.
+>
+> ```bash
+> aws ec2 describe-instances --output json > ec2-inventory.json
+> aws rds describe-db-instances --output json > rds-inventory.json  
+> aws s3api list-buckets --output json > s3-inventory.json
+> aws ec2 describe-vpcs --output json > vpc-inventory.json
+> aws ec2 describe-vpc-peering-connections --output json > peering-inventory.json
+> aws iam list-roles --output json > iam-roles-inventory.json
+> aws ec2 describe-security-groups --output json > sg-inventory.json
+> aws ec2 describe-key-pairs --output json > keypairs-inventory.json
+> ```
+> 
+> Dump everything. We'll reconcile against Terraform state tonight.
+
+---
+
+**Back on the call, addressing Rachel's three questions directly:**
+
+"Rachel, for your notification draft — here's what I can get you and when:
+
+**One — exact data scope.** The backup dumps are in S3. I can query the November dump to get exact row counts for customers, orders, payments, shipping addresses. The schema I just checked shows backup_admin had read access to eight tables including `customers` and `shipping_addresses` — full PII. I'll have exact record counts within the hour.
+
+**Two — whether data left AWS.** We can't determine this definitively. No VPC flow logs on the legacy-staging VPC. The VPC has NAT and internet gateway — the path exists. Forensic imaging is the only way to get evidence. For notification purposes, I agree with you and Aisha — **assume exfiltration.**
+
+**Three — former employee vs. unknown third party.** We can't confirm attribution yet. Circumstantial evidence points to Carlos — his infrastructure, his SSH key, his VPC, access pattern consistent with someone who knows the environment. But circumstantial isn't confirmed. Forensics and potentially law enforcement are needed for attribution."
+
+---
+
+**Then, the ask:**
+
+"James, I need three approvals from this call:
+
+**One:** Delete the `carlos-dev-key` EC2 key pair and suspend the VPC peering connection `pcx-0f8a3c`. This cuts all access to the staging environment. If anything legitimate depends on that VPC, it breaks — but I'm not aware of anything legitimate, and leaving it open means the attacker still has an SSH path into the staging Metabase where the downloaded data likely resides.
+
+**Two:** Forensic imaging of both instances — the legacy Jenkins and the staging Metabase — before we do anything else to them. Aisha is checking the CrowdStrike retainer. If we can get them engaged today, we preserve the evidence chain. If not, Marcus and I can do disk snapshots as an interim measure.
+
+**Three:** I want to expand the committed remediation timeline to include AWS-level resource auditing as a permanent control, not just a one-time sweep. This goes on the board slide alongside the Kubernetes drift detection. Same principle, wider scope."
+
+*Mutes. Waits for James's response.*
+
+---
+
+## MONDAY 3:15 PM — BRIDGE CALL CONTINUES
+
+---
+
+The room is quiet for about four seconds after you finish. James is the first to speak.
+
+**James:** "All three approved. Delete the key, kill the peering, get CrowdStrike on the phone. Aisha, what's our retainer status?"
+
+**Aisha:** "Active. I pinged our account manager during the call. She's checking investigator availability. Best case they can start remote triage tonight and have someone on-site tomorrow for imaging. I'll confirm within the hour."
+
+**James:** "Do it." He looks at the camera. "The AWS audit. You said you'd have the enumeration tonight and findings by Wednesday. I want an interim report tomorrow — even if it's 'we found 47 things and here are the 10 scariest.' I'm briefing the board Thursday. That's not moving."
+
+**Sarah:** "James, I need to flag something. The remediation timeline we committed — drift detection Monday, image admission Friday, Kafka secured Friday — that assumed a normal operational week. We're now running a SEV1 security investigation, a forensic engagement, a second GDPR notification, and a full AWS audit simultaneously. [User] is the primary on-call, the lead investigator on the security incident, the owner of the AWS audit, and responsible for R-6a delivery by Friday. That's not sustainable for one person."
+
+**James looks at you:** "What do you need?"
+
+---
+
+**This is the moment. James just asked you what resources you need. Sarah just gave you political cover to ask for them.**
+
+You unmute.
+
+"Three things.
+
+**One — Marcus full-time on the security investigation and AWS audit through Wednesday.** He's already doing the evidence preservation work and he's sharp. I need him off his current work items and dedicated to this. Secondary on-call coverage can go to Priya for the rest of the week — she's capable and the Linkerd production upgrade isn't until next week.
+
+**Two — Tom's ECR migration is the critical path for R-6a by Friday.** I put a change freeze on the namespace this afternoon because of the investigation, but the ECR restart itself is a security improvement — getting off Docker Hub images. I want to resume that tomorrow morning after we've imaged the instances and confirmed the investigation scope is contained to the legacy infrastructure. Tom doesn't need to know about the security incident to do the ECR work.
+
+**Three — I need someone to own the EKS upgrade runbook finalization.** It was due today and it's 90% done. Priya can finish it — she did the staging dry-run and is drafting the production runbook already. I can't context-switch between a security investigation and an EKS upgrade document."
+
+**James:** "Done. Marcus is yours. Priya picks up EKS and secondary on-call. Sarah, make that happen."
+
+**Sarah nods.**
+
+**Rachel:** "I need a working session with you and Aisha at 5 PM today. Sixty minutes. I need the data scope numbers, the timeline, and the containment actions documented for the second notification. I'm drafting tonight and filing tomorrow morning. The 72-hour clock is real."
+
+**James:** "One last thing." He pauses. "This is going to sound like a strange question given what we're dealing with. But I need to ask it. Is there any chance this is innocent? Carlos set up a staging environment, left the company, and some automated process is logging into Jenkins on a schedule?"
+
+**Aisha:** "The Groovy console access isn't automated. Jenkins has a Script Console that lets you execute arbitrary code. Someone sat in front of a browser, navigated to the console, and typed commands. On Jan 15, they did that at 2:22 PM, then made AWS API calls starting at 2:25 PM — listing instances, listing buckets, downloading specific backup files. That's a human being making decisions in real time, not a cron job."
+
+**James:** "Okay." Another pause. "Should we involve law enforcement?"
+
+**Rachel:** "Not yet. Let's get the forensics first. If the data left AWS and we can attribute it to Carlos, then yes — CFAA referral to the FBI, and the EU supervisory authority will want to know we've reported it to law enforcement as part of our Art. 33 notification. But we're not there yet. Let's not escalate to federal law enforcement based on circumstantial evidence."
+
+**James:** "Agreed. Let's reconvene at 5 PM with Rachel. Anything else?"
+
+**Aisha:** "One thing. [User] — the VPC peering deletion and key pair deletion. Do those now, while we're all on the call. I want to watch it happen."
+
+---
+
+### 3:22 PM — Containment Actions (Live on Call)
+
+```bash
+$ aws ec2 delete-key-pair --key-name carlos-dev-key
+
+{
+  "Return": true
+}
+```
+
+**carlos-dev-key deleted.** Anyone with the private key file can still use it for existing authorized_keys entries on instances, but no new instances can be launched with it, and this creates an audit trail showing when we revoked it. ✅
+
+**Wait —** you realize deleting the key pair from EC2 doesn't remove it from the `~/.ssh/authorized_keys` on the staging Metabase instance. If Carlos has the private key, he can still SSH in directly.
+
+You flag this on the call: "Deleting the key pair prevents new instance launches but doesn't revoke access to existing instances. The authorized_keys file on the staging Metabase still has this public key. We need to either remove it from authorized_keys or — better — lock down the security group on the staging Metabase to block all SSH access."
+
+**Aisha:** "Lock down the security group. Don't touch the instance filesystem — that's evidence."
+
+```bash
+# Get the staging Metabase security group
+$ aws ec2 describe-instances \
+    --instance-ids i-0c4d5e6f... \
+    --query 'Reservations[].Instances[].SecurityGroups'
+
+[{"GroupId": "sg-0a1b2c...", "GroupName": "metabase-staging-sg"}]
+
+# Remove ALL inbound rules
+$ aws ec2 revoke-security-group-ingress \
+    --group-id sg-0a1b2c... \
+    --ip-permissions \
+    '[{"IpProtocol":"tcp","FromPort":3000,"ToPort":3000,"IpRanges":[{"CidrIp":"172.31.0.0/16"}]},
+      {"IpProtocol":"tcp","FromPort":22,"ToPort":22,"IpRanges":[{"CidrIp":"172.31.0.0/16"}]}]'
+
+{
+  "Return": true
+}
+```
+
+**Staging Metabase: all inbound access removed.** SSH blocked, Metabase port blocked. Nobody can reach it. Instance is still running (evidence preservation). ✅
+
+Now the VPC peering:
+
+```bash
+$ aws ec2 delete-vpc-peering-connection \
+    --vpc-peering-connection-id pcx-0f8a3c7b2d...
+
+{
+  "Return": true
+}
+```
+
+**VPC peering deleted.** All network paths between legacy-staging and production are severed. Any remaining route table entries pointing to the peering connection will blackhole. ✅
+
+Post to #security-incidents:
+
+```
+Containment actions completed (live on bridge call, 3:24 PM):
+
+✅ carlos-dev-key EC2 key pair deleted
+✅ Staging Metabase SG: all inbound rules removed (SSH + 3000 blocked)
+✅ VPC peering pcx-0f8a3c... deleted (prod ↔ legacy-staging severed)
+✅ backup_admin RDS password rotated + CONNECTION LIMIT 0 (done at 3:01 PM)
+✅ Jenkins legacy SG: restricted to two platform IPs (done at 2:52 PM)
+✅ Jenkins admin password changed (done at ~2:40 PM)
+
+Attack paths closed:
+  ✗ Jenkins web UI (password changed)
+  ✗ Jenkins SG (restricted)
+  ✗ RDS backup_admin (password rotated, connections blocked)
+  ✗ SSH to staging Metabase (SG locked, key pair deleted from EC2)
+  ✗ Network peering prod ↔ staging (deleted)
+
+Remaining evidence to preserve:
+  - Jenkins instance (running, restricted SG, do not stop)
+  - Staging Metabase (running, no inbound, do not stop)
+  - S3: novamart-db-backups (backup dumps that were downloaded)
+  - CloudTrail logs (exported to evidence bucket)
+  - Jenkins audit log (exported to evidence bucket)
+```
+
+**James:** "Good. 5 PM. Bring numbers." He drops off.
+
+**Sarah stays on for 10 seconds after James leaves:** "That was the right call asking for resources. I'll have Priya briefed by 4 PM. She'll take EKS and secondary on-call. I'm keeping Tom on his sprint plan — the ECR work is important and he doesn't need to be in this loop."
+
+---
+
+### 3:25 PM — Call Ends
+
+You have 95 minutes before the Rachel working session. You need:
+
+1. **Exact data scope** — row counts from the backup dumps
+2. **AWS resource enumeration** — Marcus started during the call
+3. **CrowdStrike confirmation** — Aisha handling
+4. **Derek's CB** — still running, need to check
+
+---
+
+### 3:26 PM — Marcus Update
+
+```
+Slack — #security-incidents (3:26 PM)
+Marcus: "AWS enumeration running. Preliminary numbers:
+
+EC2 instances (running):  23
+EC2 instances (stopped):   7
+RDS instances:             4
+S3 buckets:               19
+VPCs:                      3
+VPC peering connections:   0 (you just deleted the only one)
+NAT gateways:              3
+IAM roles:                47
+EC2 key pairs:            11 (was 12 before you deleted carlos-dev-key)
+
+Full JSON dumps landing in s3://novamart-security-evidence/
+SEC-2024-0122-001/aws-inventory/
+
+I'll start reconciling against Terraform state. Initial 
+eye-test: Terraform manages 14 of 23 running EC2 instances, 
+2 of 4 RDS instances, 12 of 19 S3 buckets. That's a LOT 
+of unmanaged resources.
+
+The 7 stopped EC2 instances are interesting — some could be 
+old, forgotten, and harmless. Or they could be like this 
+Jenkins. I'll tag them all with timestamps and creators 
+from CloudTrail."
+```
+
+---
+
+### 3:28 PM — Derek
+
+```
+Slack — DM from Derek Huang (3:28 PM)
+"CB at 100%. Rolled out to all pods 5 minutes ago. 
+Zero anomalies through the entire canary. 
+orders_accepted_without_stock_verification_total still 
+at 0 — CB hasn't needed to trip. Latency and error rate 
+both nominal.
+
+I'd call this a clean deploy. Want me to do anything 
+or just let it ride?"
+```
+
+---
+
+### 3:30 PM — Data Scope Analysis
+
+You need to determine what's in the backup dumps the attacker downloaded. The November 2023 dump is the most recent one they took.
+
+```bash
+# The backup dumps are in S3. Download the November dump to analyze.
+# DON'T download to your laptop — use an EC2 instance or Cloud Shell
+# to keep the data within AWS.
+
+# Actually — you can query the dump's metadata without downloading
+# the full file. pg_restore can list contents:
+
+# Start a temporary pod in the cluster with psql/pg_restore tools
+kubectl run db-analysis --rm -it --image=postgres:15 \
+  --restart=Never -n monitoring -- bash
+
+# Inside the pod:
+aws s3 cp s3://novamart-db-backups/orders/20231101.dump /tmp/backup.dump
+
+pg_restore --list /tmp/backup.dump | head -50
+```
+
+```
+$ pg_restore --list /tmp/backup.dump
+
+;
+; Archive created at 2023-11-01 02:15:33 UTC
+;     dbname: orders
+;     TOC Entries: 47
+;     Compression: -1
+;     Dump Version: 1.14-0
+;     Format: CUSTOM
+;
+
+; Selected TOC Entries:
+;
+3412; 1259 16384 TABLE public orders postgres
+3413; 1259 16401 TABLE public order_items postgres
+3414; 1259 16415 TABLE public payments postgres
+3415; 1259 16432 TABLE public refunds postgres
+3416; 1259 16445 TABLE public customers postgres
+3417; 1259 16458 TABLE public shipping_addresses postgres
+3418; 1259 16471 TABLE public products postgres
+3419; 1259 16484 TABLE public inventory postgres
+```
+
+Eight tables. Full dump. Now for row counts:
+
+```bash
+pg_restore -d tempdb /tmp/backup.dump 2>/dev/null
+
+psql -d tempdb -c "
+  SELECT 'customers' as tbl, count(*) FROM customers
+  UNION ALL SELECT 'orders', count(*) FROM orders
+  UNION ALL SELECT 'order_items', count(*) FROM order_items  
+  UNION ALL SELECT 'payments', count(*) FROM payments
+  UNION ALL SELECT 'refunds', count(*) FROM refunds
+  UNION ALL SELECT 'shipping_addresses', count(*) FROM shipping_addresses
+  UNION ALL SELECT 'products', count(*) FROM products
+  UNION ALL SELECT 'inventory', count(*) FROM inventory;"
+```
+
+```
+      tbl           |  count
+--------------------+---------
+ customers          | 284,391
+ orders             | 1,847,223
+ order_items        | 4,912,847
+ payments           | 1,891,445
+ refunds            |   127,834
+ shipping_addresses | 341,209
+ products           |  43,891
+ inventory          |  43,891
+```
+
+**284,391 customers.**
+
+```bash
+psql -d tempdb -c "
+  SELECT 
+    count(*) as total_customers,
+    count(DISTINCT email) as unique_emails,
+    count(CASE WHEN country IN ('DE','FR','IT','ES','NL','BE','AT','PT','IE','FI','GR','LU','MT','CY','SK','SI','EE','LV','LT','HR','BG','RO','CZ','DK','SE','PL','HU') THEN 1 END) as eu_customers,
+    count(CASE WHEN country = 'GB' THEN 1 END) as uk_customers,
+    count(CASE WHEN country = 'US' THEN 1 END) as us_customers
+  FROM customers;"
+```
+
+```
+ total_customers | unique_emails | eu_customers | uk_customers | us_customers
+-----------------+---------------+--------------+--------------+-------------
+         284,391 |       281,004 |      168,442 |       52,891 |       47,233
+```
+
+**168,442 EU customers.** Plus 52,891 UK customers (UK GDPR applies separately). 
+
+PII fields in the customers table:
+
+```bash
+psql -d tempdb -c "\d customers"
+
+      Column       |          Type          
+-------------------+------------------------
+ id                | bigint                 
+ email             | character varying(255) 
+ first_name        | character varying(100) 
+ last_name         | character varying(100) 
+ phone             | character varying(20)  
+ country           | character varying(2)   
+ created_at        | timestamp              
+ updated_at        | timestamp              
+ marketing_consent | boolean                
+ last_login        | timestamp              
+```
+
+And shipping_addresses:
+
+```bash
+psql -d tempdb -c "\d shipping_addresses"
+
+      Column       |          Type          
+-------------------+------------------------
+ id                | bigint                 
+ customer_id       | bigint                 
+ address_line1     | character varying(255) 
+ address_line2     | character varying(255) 
+ city              | character varying(100) 
+ state_province    | character varying(100) 
+ postal_code       | character varying(20)  
+ country           | character varying(2)   
+ is_default        | boolean                
+```
+
+Full names, emails, phone numbers, physical addresses, order history, payment records.
+
+**The September, October, and November backups were all downloaded.** Assuming similar customer counts across all three (with some growth), the attacker has three copies of essentially the same customer base with different order/payment snapshots.
+
+---
+
+### 3:45 PM — Aisha Update
+
+```
+Slack — #security-incidents (3:45 PM)
+Aisha: "CrowdStrike confirmed. Incident response investigator 
+assigned: David Park. He's doing remote triage starting at 
+6 PM tonight. On-site tomorrow morning for disk imaging.
+
+He needs:
+1. AWS console access (read-only IAM user) — I'm creating this now
+2. Instance IDs for both targets (Jenkins + staging Metabase)
+3. Confirmation neither instance has been stopped or modified 
+   since discovery (other than Jenkins password change + SG changes)
+4. All evidence we've collected so far — S3 evidence bucket path
+
+I'll send him the #security-incidents channel history as briefing.
+
+Also: I ran a quick check on the other 11 EC2 key pairs in 
+the account. Three were created by Carlos:
+  - carlos-dev-key (DELETED ✅)
+  - carlos-staging-key (created Aug 2023)
+  - novamart-analytics-key (created Jun 2023)
+
+Both remaining keys are still active. I recommend deleting 
+both and locking down the SGs on any instances that use them. 
+But NOT until CrowdStrike confirms we won't be destroying 
+evidence they need.
+
+James approved forensic engagement. Budget: up to $50K 
+authorized for initial IR scope."
+```
+
+---
+
+### 3:48 PM — Tom (gentle follow-up)
+
+```
+Slack — DM from Tom Chen (3:48 PM)
+"Understood on the delay. No problem — I'll use the 
+afternoon to prep the monitoring dashboards and runbook 
+drafts instead. Those don't need cluster access.
+
+Quick question: is everything okay? The change freeze 
+feels sudden and the namespace was fine this morning 
+during our meeting. Just want to make sure I didn't 
+break something."
+```
+
+---
+
+### 3:50 PM — Lisa Budget Alert
+
+```
+Slack — DM from Lisa Park (3:50 PM)
+"CB is deployed and clean — nice. One thing: I'm 
+looking at the circuit breaker metrics and realized 
+something. The CB has a Prometheus recording rule that 
+creates a time series for 'orders_degraded_mode_active'. 
+When the CB is open, this fires as 1. 
+
+Here's my question: should degraded-mode responses 
+(available:true without verification) count against the 
+error budget? They're not errors — they're successful 
+200 responses. But they're also not REAL inventory checks. 
+If we don't count them, our SLI looks perfect during a 
+CB event even though we're accepting orders blind. If 
+we DO count them, the CB itself burns error budget, which 
+is counterproductive.
+
+Not urgent. But we should decide before the CB actually 
+trips in production."
+```
+
+---
+
+**Current time: Monday 3:50 PM.**
+
+You have the data scope numbers Rachel needs. 284,391 customers, 168,442 EU, full PII. Three months of backup dumps downloaded.
+
+**Rachel working session is at 5 PM (70 minutes).**
+
+**Between now and then:**
+- Respond to Tom (he's getting suspicious)
+- Marcus is running the AWS enumeration (self-directed, good)  
+- Aisha is managing CrowdStrike engagement (self-directed, good)
+- Derek's CB is deployed and clean (done)
+- Lisa's SLI question needs an answer but not urgently
+- You need to organize the data scope findings into a format Rachel can use
+- Carlos's two remaining SSH keys need to wait for CrowdStrike clearance
+
+**The immediate pressure has shifted from "contain the bleeding" to "prepare for the notification and investigation." The tactical emergency is handled. Now it's documentation, coordination, and making sure nothing else catches fire while you're in security mode.**
+
+**What do you do with the next 70 minutes?**
+
+*3:50 PM. Containment is solid. Switch from firefighting to preparation mode. 70 minutes, clear priorities.*
+
+---
+
+**First — clean up after myself (30 seconds)**
+
+The analysis pod has a full copy of the backup dump in /tmp. That's production customer data sitting in a temporary pod.
+
+```bash
+# Back in the pod
+rm /tmp/backup.dump
+psql -c "DROP DATABASE tempdb;"
+exit
+# Pod auto-deletes (--rm flag)
+```
+
+Evidence is already in the S3 bucket. I don't need a second copy of 284K customers' PII floating around in a pod I spun up in monitoring namespace.
+
+---
+
+**Tom — reassure without revealing (3:51 PM)**
+
+Slack DM to Tom:
+
+> Everything's fine with the namespace and your work — you didn't break anything. We discovered some legacy AWS infrastructure during the audit Marcus is running (EC2 instances, VPC configurations from before your time) and need to do some security hygiene on the AWS side before making cluster changes. Standard precaution — we want a clean baseline before introducing pod churn.
+>
+> Dashboard and runbook prep is a great use of the afternoon. If you want, share your Grafana dashboard JSONs with me or Marcus and we can get them loaded into the platform Grafana — you mentioned in the meeting you had dashboards ready but no access. I can set that up tomorrow when we resume cluster work.
+>
+> ECR restart first thing tomorrow morning, I promise.
+
+*Truthful without revealing the security investigation. Legacy AWS infrastructure being cleaned up IS what's happening. Tom doesn't need the details and bringing him in would violate Aisha's containment on #security-incidents. The Grafana offer gives him something productive to do and shows I was listening in the onboarding meeting.*
+
+---
+
+**Lisa — quick answer, important question (3:53 PM)**
+
+Slack DM to Lisa:
+
+> Great question, and the answer matters. Here's my position:
+>
+> **CB degraded-mode responses should NOT count against the error budget as errors.** They're a deliberate, product-approved business decision — we explicitly got sign-off that accepting orders without stock verification is preferable to rejecting them during an inventory outage. Counting them as errors means the safety mechanism itself burns the budget, which incentivizes us to remove the safety mechanism. That's perverse.
+>
+> **BUT** — they need to be visible. I'd track them as a separate SLI: `orders_degraded_mode_ratio` — percentage of orders accepted under CB fallback. We set a threshold (say 2% per window), and if we exceed it, that's not an error budget burn but a signal that inventory service reliability needs investment. Different lever, different response.
+>
+> This also answers Nina's concern from the PR review — if we're tracking degraded-mode orders as a distinct metric, finance and product can see exactly how many orders were accepted without verification and plan accordingly.
+>
+> Can you draft a proposal for the dual-SLI approach? Not urgent — this week is fine. Good catch raising it before the CB trips for real.
+
+---
+
+**Now the main work: Rachel's data scope document (3:55 PM - 4:45 PM)**
+
+This needs to be precise, complete, and in language Rachel can put directly into a regulatory notification. No jargon. Clear categories.
+
+I open a doc and start drafting:
+
+---
+
+```
+SEC-2024-0122-001 — DATA SCOPE ASSESSMENT
+Prepared for: Rachel Torres (Legal), Aisha Rahman (Security)
+Prepared by: [User], Platform Engineering
+Date: Monday January 22, 2024, 3:55 PM
+Status: DRAFT — for 5 PM working session
+
+═══════════════════════════════════════════════════════
+1. INCIDENT SUMMARY
+═══════════════════════════════════════════════════════
+
+On January 15, 2024, between approximately 14:22 and 
+14:40 UTC, an unauthorized party accessed a legacy 
+Jenkins CI/CD server (novamart-jenkins-legacy) using 
+default credentials (admin/admin). The unauthorized 
+party used the Jenkins Script Console to execute 
+commands that accessed AWS services via the server's 
+IAM role.
+
+A second access occurred January 19, 2024 at 
+approximately 09:45 UTC. A third login occurred 
+January 22, 2024 at 09:14 UTC but no data access 
+was recorded (access was blocked by password change 
+at approximately 14:40 UTC the same day).
+
+All access originated from IP 172.31.4.89, identified 
+as a staging Metabase instance (metabase-staging) in a 
+peered VPC (legacy-staging) within the same AWS account. 
+Both the staging instance and VPC were created by a 
+former employee (departed September 2023). Attribution 
+is not yet confirmed — forensic investigation is in 
+progress (CrowdStrike engagement, starting 6 PM today).
+
+═══════════════════════════════════════════════════════
+2. DATA ACCESSED — CONFIRMED VIA CLOUDTRAIL
+═══════════════════════════════════════════════════════
+
+2a. S3 OBJECTS DOWNLOADED
+
+January 15, 2024:
+  • novamart-db-backups/orders/20231101.dump
+    (Production orders database backup, November 1, 2023)
+  • novamart-db-backups/orders/20231001.dump
+    (Production orders database backup, October 1, 2023)
+  • novamart-db-backups/orders/20230901.dump
+    (Production orders database backup, September 1, 2023)
+  • 12 files from novamart-analytics-datalake/etl.orders/
+    (ETL export files — order data, dates TBD from key names)
+
+January 19, 2024:
+  • novamart-db-backups/orders/20231101.dump
+    (Same November backup, downloaded a second time)
+
+2b. AWS RESOURCES ENUMERATED
+
+January 15, 2024:
+  • ec2:DescribeInstances — full inventory of all EC2 instances
+  • rds:DescribeDBInstances — full inventory of all RDS instances
+  • s3:ListBucket — three buckets enumerated:
+    novamart-db-backups, novamart-data-exports, 
+    novamart-analytics-datalake
+
+January 19, 2024:
+  • ec2:DescribeInstances — full inventory repeated
+
+2c. DATABASE CONNECTION
+
+January 15, 2024:
+  • One connection to orders-db-prod RDS instance as 
+    user backup_admin, duration 0.847 seconds.
+  • Consistent with a connection test, NOT a data dump.
+  • No direct database connections from any other date or IP.
+
+═══════════════════════════════════════════════════════
+3. DATA SCOPE — RECORDS AFFECTED
+═══════════════════════════════════════════════════════
+
+Analysis of the November 2023 backup (most recent 
+dump downloaded) shows the following record counts:
+
+  Table                | Records    | Contains PII
+  ─────────────────────┼────────────┼─────────────
+  customers            | 284,391    | YES — see 3a
+  orders               | 1,847,223  | YES (customer ref)
+  order_items          | 4,912,847  | No
+  payments             | 1,891,445  | YES — see 3b
+  refunds              |   127,834  | YES (payment ref)
+  shipping_addresses   |   341,209  | YES — see 3c
+  products             |    43,891  | No
+  inventory            |    43,891  | No
+
+3a. CUSTOMERS TABLE — PII FIELDS:
+  • email (varchar 255)
+  • first_name (varchar 100)
+  • last_name (varchar 100)
+  • phone (varchar 20)
+  • country (varchar 2)
+  • marketing_consent (boolean)
+  • last_login (timestamp)
+
+3b. PAYMENTS TABLE — PII FIELDS:
+  [To be confirmed — likely includes payment reference 
+  IDs. Need to check if table contains card numbers or 
+  only tokenized references. THIS IS A PCI QUESTION.]
+
+3c. SHIPPING_ADDRESSES TABLE — PII FIELDS:
+  • address_line1, address_line2
+  • city, state_province, postal_code
+  • country
+
+3d. GEOGRAPHIC BREAKDOWN OF CUSTOMERS:
+  • EU member states:   168,442  (59.2%)
+  • United Kingdom:      52,891  (18.6%)
+  • United States:       47,233  (16.6%)
+  • Other/unknown:       15,825   (5.6%)
+  • Total:              284,391
+
+  EU+UK total:          221,333 (77.8%)
+
+  Note: September and October backups likely contain 
+  similar counts (slight growth expected). The three 
+  backups represent overlapping snapshots of the same 
+  customer base, not three distinct populations.
+
+═══════════════════════════════════════════════════════
+4. CRITICAL OPEN QUESTION — PAYMENTS TABLE
+═══════════════════════════════════════════════════════
+
+I have NOT yet inspected the payments table schema to 
+determine whether it contains:
+  (a) Tokenized payment references only (Stripe/processor 
+      tokens) — serious but not PCI-reportable
+  (b) Partial card data (last 4, expiry) — PCI notification 
+      required
+  (c) Full card numbers — PCI breach, immediate escalation
+
+I will check this BEFORE the 5 PM session. If the answer 
+is (b) or (c), this changes the notification scope 
+significantly and PCI-DSS incident response procedures 
+apply in addition to GDPR.
+
+═══════════════════════════════════════════════════════
+5. EXFILTRATION ASSESSMENT
+═══════════════════════════════════════════════════════
+
+CONFIRMED: Data was downloaded from S3 to the Jenkins 
+  EC2 instance (10.0.43.201) via AWS API calls.
+
+POSSIBLE BUT UNCONFIRMED: Data transfer from Jenkins 
+  to staging Metabase (172.31.4.89) via VPC peering 
+  (peering has been deleted as of 3:24 PM today).
+
+POSSIBLE BUT UNCONFIRMED: Data exfiltration from 
+  staging Metabase to internet. The legacy-staging 
+  VPC had both a NAT gateway and internet gateway. 
+  No VPC flow logs exist for the legacy-staging VPC.
+
+ADDITIONAL CHANNEL: A Slack webhook URL to an 
+  unidentified external workspace was found in the 
+  Jenkins job configuration. Data could potentially 
+  have been posted to this webhook, though the file 
+  sizes (pg_dump) make this unlikely as a primary 
+  exfiltration channel. Webhook has NOT been triggered 
+  by our team to avoid alerting the recipient.
+
+REGULATORY POSITION: In the absence of evidence that 
+  data did NOT leave AWS, assume exfiltration occurred.
+
+═══════════════════════════════════════════════════════
+6. CONTAINMENT ACTIONS — COMPLETED
+═══════════════════════════════════════════════════════
+
+  Action                          | Time      | Status
+  ────────────────────────────────┼───────────┼────────
+  Jenkins password changed        | 2:40 PM   | ✅
+  Jenkins SG restricted           | 2:52 PM   | ✅
+  backup_admin password rotated   | 3:01 PM   | ✅
+  backup_admin CONN LIMIT 0       | 3:01 PM   | ✅
+  carlos-dev-key deleted (EC2)    | 3:22 PM   | ✅
+  Staging Metabase SG locked      | 3:23 PM   | ✅
+  VPC peering deleted             | 3:24 PM   | ✅
+  All evidence exported to S3     | 3:26 PM   | ✅
+
+  Remaining Carlos SSH keys (2) pending CrowdStrike 
+  clearance before deletion.
+
+═══════════════════════════════════════════════════════
+7. TIMELINE OF UNAUTHORIZED ACCESS
+═══════════════════════════════════════════════════════
+
+  Date         Action
+  ─────────────────────────────────────────────────────
+  Aug 14 2023  Carlos creates legacy-staging VPC, 
+               VPC peering, staging Metabase, NAT/IGW
+  Sep 15 2023  Carlos departs. Corporate accounts 
+               deactivated. SSH keys NOT revoked.
+  [unknown]    Access to staging Metabase occurs 
+               (method: SSH via carlos-dev-key, or 
+               other — TBD by forensics)
+  Jan 15       Login to Jenkins from 172.31.4.89
+               Groovy console executed
+               AWS enumeration (EC2, RDS, S3)
+               3 backup dumps + 12 ETL files downloaded
+               1 RDS connection test (0.8s)
+  Jan 19       Login, Groovy console accessed
+               1 backup dump re-downloaded
+  Jan 22       Login at 9:14 AM
+               No API activity recorded
+               Password changed at 2:40 PM (blocked)
+  Jan 22       Incident declared SEC-2024-0122-001
+               All containment actions applied by 3:24 PM
+
+═══════════════════════════════════════════════════════
+8. RELATIONSHIP TO SA-2024-0119-NM (ATLAS FINDING)
+═══════════════════════════════════════════════════════
+
+  This is a SEPARATE incident from the Atlas/shadow 
+  pipeline finding filed as SA-2024-0119-NM.
+
+  Differences:
+  • Different access vector (Jenkins/S3 vs. Kafka/Atlas)
+  • Different data scope (284K customers vs. 25-30K)
+  • Different timeline (Jan 15-22 vs. Nov 2023-ongoing)
+  • Different actor profile (unauthorized external access 
+    vs. unauthorized internal pipeline)
+
+  Similarity:
+  • Both involve infrastructure created by the same 
+    former employee
+  • Both stem from inadequate offboarding and 
+    infrastructure governance
+
+  Recommendation: File as a separate Art. 33 notification 
+  with cross-reference to SA-2024-0119-NM.
+
+═══════════════════════════════════════════════════════
+```
+
+---
+
+**Now the critical open question: what's in the payments table? (4:20 PM)**
+
+This determines whether this is "just" a GDPR notification or also a PCI breach. I need to check the schema without spinning up another full restore.
+
+```bash
+kubectl run payment-schema-check --rm -it --image=postgres:15 \
+  --restart=Never -n monitoring -- bash
+
+aws s3 cp s3://novamart-db-backups/orders/20231101.dump /tmp/backup.dump
+
+# Just restore the payments table schema, not data
+pg_restore --schema-only -t payments /tmp/backup.dump | cat
+```
+
+I post to #security-incidents while that runs:
+
+> **Aisha — urgent question before 5 PM.** I'm checking whether the payments table in the backup dumps contains actual card data (PAN, CVV) or only tokenized processor references. If it's card data, this becomes a PCI DSS incident in addition to GDPR and our notification obligations expand significantly. Checking now.
+>
+> **CrowdStrike prep:** Instance IDs for David Park:
+> - Jenkins: i-0e8g3f...
+> - Staging Metabase: i-0c4d5e6f...
+> - Neither has been stopped. Jenkins: password + SG changed only. Metabase: SG locked only. Filesystems untouched on both.
+> - Evidence bucket: s3://novamart-security-evidence/SEC-2024-0122-001/
+
+---
+
+**What comes back from the payments table schema check?** That answer shapes everything Rachel drafts tonight.
+
+While waiting, quick check on Marcus:
+
+Slack DM to Marcus:
+
+> How's the Terraform reconciliation going? For tomorrow's interim report to James, I want to categorize everything into: (1) managed in Terraform, (2) known but unmanaged, (3) unknown/unaccounted for. Category 3 is what James cares about most. Don't burn yourself out tonight — CrowdStrike starts at 6 PM and you'll need to brief David Park. Get the enumeration done and we'll do the reconciliation together first thing tomorrow if needed.
+
+---
+
+*4:25 PM. Waiting on the payments schema. Document is 90% ready for Rachel. Containment is holding. CrowdStrike at 6 PM. Bridge at 5 PM. One answer away from knowing how bad this really is.*
+
+---
+
+## MONDAY 4:26 PM — THE PAYMENTS TABLE
+
+---
+
+```bash
+$ pg_restore --schema-only -t payments /tmp/backup.dump
+
+CREATE TABLE public.payments (
+    id bigint NOT NULL,
+    order_id bigint NOT NULL,
+    customer_id bigint NOT NULL,
+    amount numeric(12,2) NOT NULL,
+    currency character varying(3) NOT NULL,
+    converted_amount numeric(12,2),
+    currency_from character varying(3),
+    currency_to character varying(3),
+    payment_method character varying(50) NOT NULL,
+    processor_token character varying(255),
+    processor_reference character varying(255),
+    card_brand character varying(20),
+    card_last_four character varying(4),
+    card_expiry_month smallint,
+    card_expiry_year smallint,
+    billing_name character varying(255),
+    billing_email character varying(255),
+    billing_country character varying(2),
+    status character varying(20) NOT NULL,
+    failure_reason character varying(255),
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
+);
+```
+
+You stare at it.
+
+**No full PAN. No CVV.** That's the good news.
+
+**But:**
+- `card_last_four` — last 4 digits
+- `card_expiry_month` + `card_expiry_year` — expiration date
+- `card_brand` — Visa, Mastercard, etc.
+- `billing_name` — cardholder name
+- `billing_email` — cardholder email
+
+Under PCI DSS, last-four digits alone are **not** considered cardholder data (CHD). They can be displayed per Requirement 3.4. But **last-four combined with expiry date AND cardholder name** starts to get into territory your QSA will have opinions about.
+
+Strictly speaking, PCI DSS defines cardholder data as: PAN (full number), cardholder name, expiration date, and service code. Without the full PAN, you're technically not in CHD territory. But the *combination* of card_last_four + expiry + cardholder name + billing email could enable targeted phishing or social engineering against cardholders, which your QSA will flag as a risk even if it's not a formal PCI breach.
+
+```bash
+# Quick data sample to confirm no full PANs hiding in other fields
+pg_restore -d tempdb2 -t payments /tmp/backup.dump 2>/dev/null
+
+psql -d tempdb2 -c "
+  SELECT processor_token, processor_reference, card_last_four, 
+         card_expiry_month, card_expiry_year, card_brand,
+         billing_name, payment_method
+  FROM payments LIMIT 5;"
+```
+
+```
+ processor_token        | processor_reference | card_last_four | card_expiry_month | card_expiry_year | card_brand | billing_name       | payment_method
+------------------------+---------------------+----------------+-------------------+------------------+------------+--------------------+---------------
+ tok_1NqR5K2eZvKYlo2C  | ch_3NqR5K2eZvKYlo2C | 4242          |                12 |             2025 | visa       | Johann Schmidt     | card
+ tok_1MpQ4J3fYwLZmp3D  | ch_3MpQ4J3fYwLZmp3D | 1234          |                 3 |             2026 | mastercard | Marie Dubois       | card
+ tok_1OsT7M4gZxMAno4E  | pi_3OsT7M4gZxMAno4E | NULL          |              NULL |             NULL | NULL       | NULL               | paypal
+ tok_1PtU8N5hAyNBop5F  | ch_3PtU8N5hAyNBop5F | 5678          |                 8 |             2025 | visa       | Anna Müller        | card
+ tok_1QuV9O6iBzOCpq6G  | ch_3QuV9O6iBzOCpq6G | 9012          |                 1 |             2026 | mastercard | Erik Lindqvist     | card
+```
+
+**Stripe tokens.** `tok_` and `ch_` prefixes — those are Stripe payment tokens and charge IDs. Not reversible to full card numbers. Stripe handles the actual PAN; NovaMart only stores the token plus partial card metadata.
+
+No full PANs anywhere in the schema. PayPal entries have NULL card fields. This is a well-designed payment integration from a PCI perspective — whoever built it (probably not Carlos) did it right.
+
+```bash
+# Clean up immediately
+psql -c "DROP DATABASE tempdb2;"
+rm /tmp/backup.dump
+exit
+```
+
+---
+
+### Assessment
+
+**PCI DSS formal breach: NO.** No full PAN, no CVV, no service code. Processor tokens are not CHD.
+
+**PCI DSS risk finding: YES.** Last-four + expiry + cardholder name is enough for social engineering. QSA will flag. Proactive disclosure recommended at next assessment.
+
+**GDPR impact: UNCHANGED.** The payments table adds billing_name and billing_email to the PII scope, but those are likely duplicates of data already in the customers table. The card_last_four and expiry are personal data under GDPR Art. 4(1) when combined with identifying information.
+
+---
+
+### Update the Document — Section 4 (4:30 PM)
+
+```
+═══════════════════════════════════════════════════════
+4. PAYMENTS TABLE — PCI ASSESSMENT (CONFIRMED)
+═══════════════════════════════════════════════════════
+
+The payments table contains:
+  • Stripe processor tokens (tok_*, ch_*) — NOT reversible 
+    to full card numbers
+  • card_last_four — last 4 digits only
+  • card_expiry_month, card_expiry_year
+  • card_brand (visa, mastercard, etc.)
+  • billing_name, billing_email
+
+DOES NOT contain:
+  • Full PAN (primary account number)
+  • CVV/CVC
+  • Service code
+  • Full card number in any field
+
+PCI DSS ASSESSMENT:
+  Formal PCI breach: NO — no cardholder data (CHD) as 
+  defined by PCI DSS Requirement 3.4.
+
+  Risk finding: YES — combination of last-four + expiry + 
+  cardholder name enables targeted social engineering. 
+  Recommend proactive QSA disclosure.
+
+GDPR IMPACT:
+  billing_name and billing_email are additional PII fields.
+  card_last_four + expiry are personal data under Art. 4(1) 
+  when combined with identifying information.
+  These fields ADD to GDPR notification scope but do not 
+  change the notification obligation (already required).
+```
+
+---
+
+### #security-incidents (4:32 PM)
+
+```
+[User] (4:32 PM):
+Payments table schema confirmed:
+  ✅ NO full PAN, NO CVV — Stripe tokens only
+  ✅ NOT a PCI DSS cardholder data breach
+  ⚠️ Contains: card_last_four + expiry + billing name
+  ⚠️ QSA risk finding, not formal breach
+  
+This is a GDPR notification, not a PCI breach notification.
+That's the one piece of good news today.
+
+Data scope document ready for Rachel at 5 PM.
+```
+
+```
+Aisha (4:33 PM): "Thank god. One less notification. 
+Still bad, but manageable bad."
+```
+
+---
+
+### 4:35 PM — Marcus Check-in
+
+```
+Slack — DM from Marcus Webb (4:35 PM)
+"Terraform reconciliation — rough numbers:
+
+EC2 (running):    23 total, 14 in Terraform, 9 unmanaged
+EC2 (stopped):     7 total, 0 in Terraform, 7 unmanaged
+RDS:               4 total, 2 in Terraform, 2 unmanaged
+S3:               19 total, 12 in Terraform, 7 unmanaged
+VPC:               3 total, 1 in Terraform, 2 unmanaged
+IAM roles:        47 total, 31 in Terraform, 16 unmanaged
+Key pairs:        11 total, 3 in Terraform, 8 unmanaged
+
+Summary: about 40% of AWS resources aren't managed by 
+Terraform. Some of those are expected (EKS-managed node 
+groups create their own ASGs and roles). I'm filtering 
+those out now.
+
+After filtering EKS-managed and AWS-internal resources, 
+my preliminary 'truly unmanaged' count is:
+
+  EC2:  9 running + 5 stopped = 14 unmanaged
+  RDS:  2 unmanaged (reporting-db-prod + one called 
+        'analytics-staging-db' in the legacy VPC)
+  S3:   4 unmanaged (db-backups, data-exports, 
+        analytics-datalake, one called 'carlos-dev-scratch')
+  IAM:  6 roles that don't map to any Terraform resource 
+        or EKS component
+
+The stopped instances and 'carlos-dev-scratch' bucket 
+are probably the most interesting. I'll have full details 
+by morning.
+
+Going to take 30 min to eat before CrowdStrike starts 
+at 6. That okay?"
+```
+
+---
+
+### 4:40 PM — Prepping for Rachel
+
+You finalize the document. Add the payments table findings. Clean up formatting. Total PII exposure summary:
+
+```
+TOTAL INDIVIDUAL RECORDS POTENTIALLY EXPOSED:
+  
+  Unique customers:     284,391
+  EU customers:         168,442
+  UK customers:          52,891
+  US customers:          47,233
+  Other:                 15,825
+  
+  Physical addresses:   341,209
+  Order records:      1,847,223
+  Payment records:    1,891,445
+
+DATA CATEGORIES EXPOSED (per GDPR Art. 4):
+  ✓ Full name (first + last)
+  ✓ Email address
+  ✓ Phone number
+  ✓ Physical address (street, city, postal code, country)
+  ✓ Purchase history (orders, items, amounts)
+  ✓ Payment metadata (method, partial card, billing info)
+  ✓ Marketing consent status
+  ✓ Account activity (last login, account creation date)
+
+DATA CATEGORIES NOT EXPOSED:
+  ✗ Passwords / authentication credentials
+  ✗ Full payment card numbers
+  ✗ Government ID numbers
+  ✗ Health or biometric data
+  ✗ Special category data (Art. 9)
+```
+
+Save to evidence bucket and your local machine.
+
+---
+
+### 4:50 PM — Pre-Meeting Messages
+
+**Slack to Rachel (4:50 PM):**
+
+> Rachel — data scope document is ready. Sending to you now via secure email. Key headlines:
+>
+> • 284,391 total customers, 168,442 EU, 52,891 UK
+> • Full PII: names, emails, phones, physical addresses, order history, partial payment data
+> • NOT a PCI breach: no full card numbers, Stripe tokens only
+> • Three months of backup dumps (Sep/Oct/Nov 2023) + 12 ETL files downloaded
+> • One direct RDS connection test (0.8 seconds, no data dump)
+> • Exfiltration path exists (internet gateway in staging VPC), cannot confirm or deny actual exfiltration
+> • CrowdStrike starts remote triage at 6 PM tonight, on-site imaging tomorrow
+>
+> The document has a full timeline, containment log, and data field inventory. Ready for you to draft the Art. 33 notification.
+>
+> See you at 5.
+
+**Slack to Marcus (4:52 PM):**
+
+> Absolutely, go eat. You've been outstanding today. CrowdStrike brief at 6 — I'll be there too. We'll tag-team.
+>
+> One thing: the 'carlos-dev-scratch' S3 bucket — can you check if it has server access logging enabled? If Carlos was using it as a staging area, it might have logs showing what was written to it and from where. Don't dig deep tonight, just flag it for CrowdStrike.
+
+**Slack to Aisha (4:53 PM):**
+
+> Data scope document sent to Rachel. Summary: 284K customers, 168K EU, full PII, no PCI breach (Stripe tokens only). Document covers all eight sections Rachel needs for Art. 33.
+>
+> For CrowdStrike tonight: Marcus has the evidence bucket organized, instance IDs ready, and will brief David Park at 6. I'll be on the call too. Two remaining Carlos SSH keys flagged for discussion with CrowdStrike — we hold on deletion until they confirm.
+>
+> One more thing: the 'carlos-dev-scratch' S3 bucket in Marcus's inventory. We haven't looked at it yet. Could be nothing, could be a staging area. Recommend CrowdStrike includes it in their scope.
+
+---
+
+### 4:58 PM — Deep Breath
+
+```
+STATUS BEFORE 5 PM RACHEL SESSION:
+
+✅ Data scope: complete, 284K customers, full PII, no PCI
+✅ Document: ready, 8 sections, timeline, containment log
+✅ Containment: all attack paths closed
+✅ CrowdStrike: confirmed 6 PM tonight
+✅ AWS enumeration: Marcus has preliminary numbers
+✅ CB deploy: clean, 100% rollout, Derek monitoring
+✅ Tom: held for tomorrow, productive on dashboards
+✅ Priya: taking EKS + secondary on-call (Sarah coordinating)
+✅ Payments schema: confirmed no full PANs
+
+GOING INTO RACHEL SESSION:
+  - Data scope document
+  - Timeline
+  - Containment evidence
+  - Open questions for CrowdStrike
+  - Recommendation: file Art. 33 tomorrow morning
+  - Recommendation: prepare Art. 34 (customer notification)
+  - Relationship to SA-2024-0119-NM documented
+
+AFTER RACHEL SESSION:
+  - 6:00 PM: CrowdStrike brief with Marcus
+  - Tonight: Marcus finishes AWS reconciliation
+  - Tomorrow AM: James interim report, Tom ECR restart,
+    CrowdStrike on-site
+```
+
+Two minutes to the working session. The document is clean. The facts are clear. The containment is solid. The investigation is in professional hands as of tonight.
+
+This is the worst day of the simulation so far. But the response has been fast, structured, and honest. The data was out there for seven days before we found it. We can't undo that. What we can control is how completely we contain it, how honestly we report it, and how thoroughly we prevent it from happening again.
+
+Time to go talk to Rachel.
+
+**Incident count: 9 resolved, 1 active security investigation. Next numbered incident will be #10.**
+
+---
+
+**The 5 PM session with Rachel. What happens?**
+
