@@ -17650,3 +17650,1876 @@ Is it climbing, stable, or stabilizing? That tells me if I have minutes or if I 
 > Also: I'm on an RDS incident right now. All three services latency-spiking, database IO-bound at 418/500 connections. Investigating. Will update you if it's going to be extended.
 
 
+---
+
+## MONDAY 11:13 AM — DATA RETURNS
+
+---
+
+### Connection Trend
+
+```
+$ curl -s 'http://prometheus:9090/api/v1/query_range' \
+    --data-urlencode 'query=aws_rds_database_connections_average{dbinstance="orders-db-prod"}' \
+    --data-urlencode 'start=2024-01-22T15:45:00Z' \
+    --data-urlencode 'end=2024-01-22T16:15:00Z' \
+    --data-urlencode 'step=60'
+
+10:50 AM — 187  (normal)
+10:55 AM — 192  (normal)
+11:00 AM — 243  (+51 in 5 min)
+11:02 AM — 289
+11:05 AM — 347
+11:07 AM — 418  (alert fired)
+11:10 AM — 431
+11:13 AM — 447
+```
+
+**Climbing. Not stabilizing.** From 187 to 447 in 23 minutes. At this rate you hit 500 in roughly 8-10 minutes.
+
+---
+
+### pg_stat_activity — Connections by User
+
+```
+ usename          | state  | count
+------------------+--------+-------
+ analytics_reader | active |   184
+ analytics_reader | idle   |    72
+ order_service    | active |    38
+ order_service    | idle   |    87
+ payment_service  | active |    21
+ payment_service  | idle   |    29
+ inventory_service| active |     8
+ inventory_service| idle   |     4
+ platform_admin   | active |     1
+ rdsadmin         | idle   |     3
+                  |        |   447
+```
+
+**analytics_reader: 256 connections.** 184 active, 72 idle. That's more than half the total connections, and 184 of them are *actively running queries right now.*
+
+Normal service traffic accounts for ~187 connections — roughly what the baseline was at 10:50 AM. The entire spike is analytics_reader.
+
+---
+
+### Long-Running Queries
+
+```
+ pid   | usename          | duration        | wait_event_type | wait_event          | query
+-------+------------------+-----------------+-----------------+---------------------+---------------------------
+ 29847 | analytics_reader | 00:22:14.332    | IO              | DataFileRead        | SELECT date_trunc('day', o.created_at) as order_date, c.category, SUM(oi.quantity * oi.unit_price) as revenue, COUNT(DISTINCT o.customer_id) as unique_customers FROM orders o JOIN order_items oi ON o.id = oi.or...
+ 29851 | analytics_reader | 00:21:58.107    | IO              | DataFileRead        | SELECT o.billing_country, p.payment_method, COUNT(*) as tx_count, SUM(p.amount) as total_amount, AVG(p.amount) as avg_amount FROM orders o JOIN payments p ON o.id = p.order_id WHERE o.created_at >= '2023-10-01' AND...
+ 29903 | analytics_reader | 00:19:41.889    | IO              | DataFileRead        | WITH monthly AS (SELECT date_trunc('month', created_at) as month, customer_id, SUM(total_amount) as spend FROM orders WHERE created_at >= '2023-07-01' GROUP BY 1,2) SELECT month, COUNT(CASE WHEN spend > 100...
+ 29912 | analytics_reader | 00:18:22.516    | IO              | DataFileRead        | SELECT o.id, o.customer_email, o.created_at, oi.product_name, oi.quantity, p.status as payment_status, r.reason as refund_reason FROM orders o LEFT JOIN order_items oi ON o.id = oi.order_id LEFT JOIN payments p...
+ 30041 | analytics_reader | 00:14:55.201    | IO              | DataFileRead        | SELECT date_trunc('week', o.created_at) as week, o.currency_from, o.currency_to, COUNT(*) as conversions, SUM(o.converted_amount) as total_converted, AVG(o.converted_amount) as avg_converted FROM orders o WHERE...
+ 30089 | analytics_reader | 00:12:33.774    | IO              | DataFileRead        | SELECT customer_email, COUNT(*) as order_count, SUM(total_amount) as lifetime_value, MAX(created_at) as last_order FROM orders GROUP BY customer_email HAVING COUNT(*) > 1 ORDER BY lifetime_value DESC LIMIT 10000
+ ... [178 more active queries, all analytics_reader, all IO-wait]
+```
+
+**184 active analytics_reader queries.** The longest has been running for 22 minutes. All waiting on `DataFileRead` — sequential scans on the orders table. Multi-table JOINs across orders, order_items, payments, refunds. Full table scans with no index support for these analytical patterns.
+
+These are *analytical workloads running against a production OLTP database.*
+
+---
+
+### analytics_reader — Client Addresses
+
+```
+$ ... -c "SELECT client_addr, count(*) FROM pg_stat_activity 
+    WHERE usename = 'analytics_reader' GROUP BY client_addr ORDER BY count DESC;"
+
+ client_addr    | count
+----------------+-------
+ 10.0.42.88     |   148
+ 10.0.41.67     |    61
+ 10.0.43.22     |    47
+```
+
+Three source IPs. Let's identify them:
+
+```bash
+$ kubectl get pods --all-namespaces -o wide | grep -E "10.0.42.88|10.0.41.67|10.0.43.22"
+
+data-analytics   analytics-dashboard-7f9b2-xk4mn   1/1   Running   10.0.42.88   ip-10-0-42-44
+data-analytics   analytics-dashboard-7f9b2-p3nw8   1/1   Running   10.0.41.67   ip-10-0-41-33
+```
+
+Wait — **two analytics dashboard pods?** You thought there was only one. And the third IP:
+
+```bash
+$ kubectl get pods --all-namespaces -o wide | grep "10.0.43.22"
+# No output
+```
+
+10.0.43.22 doesn't match any pod. It's either a node IP or an external connection routed through the VPC.
+
+```bash
+$ kubectl get nodes -o wide | grep "10.0.43.22"
+# No output
+
+$ aws ec2 describe-network-interfaces \
+    --filters "Name=private-ip-address,Values=10.0.43.22" \
+    --query 'NetworkInterfaces[0].{Description:Description,AZ:AvailabilityZone}'
+
+{
+  "Description": "RDSNetworkInterface",
+  "AZ": "us-east-1c"
+}
+```
+
+That's... the RDS instance's own network interface? No — wait:
+
+```bash
+$ aws ec2 describe-network-interfaces \
+    --filters "Name=private-ip-address,Values=10.0.43.22" \
+    --query 'NetworkInterfaces[0].{Description:Description,Groups:Groups[*].GroupName,AttachmentInstanceOwnerId:Attachment.InstanceOwnerId}'
+
+{
+  "Description": "Interface for NAT Gateway nat-0a8f3b...",
+  "Groups": ["default"],
+  "AttachmentInstanceOwnerId": "amazon"
+}
+```
+
+**NAT Gateway.** The 47 connections from 10.0.43.22 are coming through the NAT gateway — which means they're originating from something *inside the VPC but in a private subnet that routes outbound through NAT.* Or they're from a Lambda function. Or an EC2 instance that isn't part of the EKS cluster.
+
+---
+
+### analytics_reader Permissions
+
+```
+$ ... -c "\du analytics_reader"
+
+                        List of roles
+   Role name       | Attributes  | Member of
+--------------------+-------------+-----------
+ analytics_reader   | No limit    | {}
+```
+
+**No connection limit.** Normal service users:
+
+```
+ order_service      | Connection limit 100 | {}
+ payment_service    | Connection limit 50  | {}
+ inventory_service  | Connection limit 30  | {}
+```
+
+Every service user has a connection limit. analytics_reader has none. It can open unlimited connections until the RDS instance's `max_connections` (500) is exhausted.
+
+---
+
+### The Dashboard Scaling Mystery
+
+```bash
+$ kubectl get deployment analytics-dashboard -n data-analytics
+
+NAME                    READY   UP-TO-DATE   AVAILABLE   AGE
+analytics-dashboard     2/2     2            2           73d
+```
+
+**Two replicas.** The original audit said one deployment, but it has 2 replicas. Each replica opens its own connection pool to RDS. And the dashboard doesn't appear to use connection pooling at all — each report query opens a new database connection.
+
+```bash
+$ kubectl get deployment analytics-dashboard -n data-analytics -o jsonpath='{.spec.replicas}'
+2
+
+$ kubectl get hpa -n data-analytics
+NAME                    REFERENCE                      TARGETS         MINPODS   MAXPODS   REPLICAS
+analytics-dashboard     Deployment/analytics-dashboard  72%/70% cpu    1         5         2
+```
+
+**There's an HPA.** The dashboard has an autoscaler. Min 1, max 5. Currently at 2 because CPU hit 72% (target 70%). If the analysts keep running reports and CPU stays high, it'll scale to 3, then 4, then 5 — each one opening MORE connections to RDS.
+
+This is a feedback loop: analysts run reports → dashboard CPU rises → HPA scales up → more replicas → more connections → more IO load on RDS → queries run slower → queries take longer → connections stay open longer → connection count climbs → RDS saturates → everything degrades.
+
+---
+
+### 11:16 AM — Connection Count Update
+
+```
+Current connections: 459
+```
+
+Still climbing. ~4 connections per minute. You have about 10 minutes before you hit 500.
+
+---
+
+### 11:16 AM — More Slack
+
+```
+Slack — DM from Wei Liu (11:16 AM)
+"Hey — my analysts are saying their dashboards are 'frozen.' 
+They're running their Monday morning reports and the queries 
+just spin. They said they've been trying since about 10:55.
+
+These reports run every Monday. They usually take 2-3 minutes 
+each. Is this related to the database issue?"
+```
+
+```
+Slack — DM from Marcus Webb (11:17 AM)
+"I'm seeing something weird — there's a process running in 
+the data-analytics namespace that I don't recognize. A pod 
+called 'analytics-report-runner-manual-xj7k2'. It wasn't 
+there this morning during the drift scan. Want me to 
+investigate or are you handling it?"
+```
+
+---
+
+**Current time: Monday 11:17 AM.**
+
+**Connection count: 459 and climbing. ~10 minutes to 500.**
+
+**You now know:**
+- 256 connections from analytics_reader, mostly from the dashboard pods
+- The dashboard has an HPA that's actively scaling UP (making it worse)
+- 47 connections from an unknown source through NAT Gateway
+- analytics_reader has no connection limit (the TODO you never did)
+- Marcus found an unexpected pod in data-analytics
+- Wei's analysts have been running reports since 10:55 AM (that matches the connection spike)
+
+**The HPA is a ticking bomb — if it scales to 3 or 4 replicas before you act, you're going to hit 500 connections even faster.**
+
+**Three immediate questions:**
+1. Do you kill the analytical queries now to save the database?
+2. What is the mystery pod Marcus found?
+3. What's connecting through NAT Gateway?
+
+**The room is filling with smoke. What do you do?**
+
+
+
+### Stop the Bleeding — Three Actions in Parallel (11:17 AM)
+
+The database hits 500 connections in ~10 minutes and then production services start failing. I need to break the feedback loop NOW, then investigate.
+
+### Terminal 1 — Kill the HPA Immediately (11:17 AM)
+
+This is the most urgent single action. The HPA is actively making things worse.
+
+```bash
+# Freeze the dashboard at current replicas, stop the scaling loop
+kubectl patch hpa analytics-dashboard -n data-analytics \
+  --type='json' -p='[{"op": "replace", "path": "/spec/maxReplicas", "value": 2}]'
+
+# Actually — just scale to zero. The dashboard is killing the database.
+# Wei's analysts can't use it anyway — their queries are spinning.
+kubectl scale deployment analytics-dashboard -n data-analytics --replicas=0
+```
+
+I'm scaling to zero, not 1. Every running replica is pumping connections into an already-saturated database. The analysts' queries are spinning anyway — taking the dashboard offline doesn't change their experience, it just stops making the database worse. I'll explain to Wei in 60 seconds.
+
+### Terminal 2 — Kill the Long-Running Analytical Queries (11:17 AM)
+
+184 active queries, the longest running 22+ minutes, all doing full table scans. These need to die.
+
+```bash
+# Kill all analytics_reader active queries
+kubectl exec -n order-prod \
+  $(kubectl get pods -n order-prod -l app=order-service \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  env PGPASSWORD=$DB_PASS psql -h orders-db-prod.xxxxx.us-east-1.rds.amazonaws.com \
+  -U platform_admin -d orders -c "
+    SELECT pg_terminate_backend(pid) 
+    FROM pg_stat_activity 
+    WHERE usename = 'analytics_reader' 
+      AND state = 'active'
+      AND pid != pg_backend_pid();"
+```
+
+This terminates all active analytics_reader sessions. The idle ones will drop as the dashboard pods terminate (from scaling to zero). Production service connections are untouched.
+
+### Terminal 3 — Set Connection Limit on analytics_reader (11:18 AM)
+
+The TODO I never did. Doing it now.
+
+```bash
+# Set a connection limit that can't swamp the database
+# Production services use ~187 connections at baseline
+# Leave headroom: 500 - 187 - 50 (buffer) = 263 max for analytics
+# But that's still too many for analytical queries. 
+# Set to 20 — enough for legitimate dashboard use, 
+# not enough to starve production
+kubectl exec -n order-prod \
+  $(kubectl get pods -n order-prod -l app=order-service \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  env PGPASSWORD=$DB_PASS psql -h orders-db-prod.xxxxx.us-east-1.rds.amazonaws.com \
+  -U platform_admin -d orders -c "
+    ALTER ROLE analytics_reader CONNECTION LIMIT 20;"
+```
+
+This prevents this from ever happening again, regardless of how many dashboard replicas are running.
+
+### Marcus — DM (11:18 AM)
+
+> What's the pod? Give me the full details:
+
+```bash
+kubectl describe pod analytics-report-runner-manual-xj7k2 -n data-analytics
+```
+
+> Specifically: who created it, when, what image, and what's it doing?
+
+### #incidents Update (11:18 AM)
+
+```
+🟡 UPDATE — RDS Connection Exhaustion (11:18 AM)
+
+Root cause identified: analytics_reader user has 256 of 459 
+connections, 184 running full table scans against orders/payments 
+tables. Source: analytics-dashboard pods (2 replicas + HPA 
+scaling up). Dashboard has no connection pooling and analytics_reader 
+has no connection limit.
+
+Monday morning analyst reports triggered the spike.
+
+Actions taken:
+- Dashboard scaled to 0 (stops new connections)
+- Killing all active analytics_reader queries
+- Setting connection limit on analytics_reader (20)
+- HPA frozen
+
+Expect connection count to drop rapidly. Production services 
+should recover within 2-3 minutes once IO pressure releases.
+Monitoring.
+```
+
+### Wei Liu — DM (11:19 AM)
+
+> Wei — I need to take the analytics dashboard offline temporarily. Here's why:
+>
+> Your analysts' Monday morning reports are the source of the database overload. The dashboard opens a new database connection per query with no connection pooling, and analytics_reader has no connection limit. 184 analytical queries running simultaneously are doing full table scans that have saturated the production RDS. Order service, payment service, and inventory service are all degraded.
+>
+> I've scaled the dashboard to zero and killed the running queries. Your analysts' reports weren't going to complete anyway — they've been spinning for 20+ minutes.
+>
+> This is a fundamental architecture problem: analytical workloads should not run against the production OLTP database. The right solution is a read replica for analytics, which we should discuss this week. Short term, I'll bring the dashboard back with a connection limit once the database recovers, but the Monday morning report pattern will need to change.
+>
+> Sorry for the disruption. I'll have a plan for you by EOD.
+
+### Monitor Recovery (11:19 AM)
+
+```bash
+# Watch connections drop
+watch -n 10 "kubectl exec -n order-prod \
+  $(kubectl get pods -n order-prod -l app=order-service \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  env PGPASSWORD=$DB_PASS psql -h orders-db-prod.xxxxx.us-east-1.rds.amazonaws.com \
+  -U platform_admin -d orders -t -c \
+  \"SELECT count(*), usename, state FROM pg_stat_activity WHERE datname='orders' GROUP BY usename, state ORDER BY count DESC;\""
+```
+
+```bash
+# Service latency recovery
+watch -n 15 "curl -s 'http://prometheus:9090/api/v1/query' \
+  --data-urlencode 'query=histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{service=~\"order-service|payment-service|inventory-service\"}[2m]))' | \
+  jq -r '.data.result[] | \"\(.metric.service): \(.value[1])s\"'"
+```
+
+Expected recovery sequence:
+```
+11:18  Kill queries + scale dashboard to 0
+11:19  analytics_reader connections dropping (sessions terminated)
+11:20  Connection count drops below 350
+11:21  IO queue depth drops (no more table scans)
+11:22  Service latency starts recovering
+11:25  Latency at baseline, connections at ~190
+```
+
+### The Mystery Pod (11:20 AM)
+
+While the database recovers, I need to understand what Marcus found. This pod appeared after the drift scan at 8 AM, in a namespace under Legal hold, and it's called `analytics-report-runner-manual` — the word "manual" suggests someone created it by hand.
+
+```bash
+# Who created it and when?
+kubectl get pod analytics-report-runner-manual-xj7k2 -n data-analytics \
+  -o jsonpath='{.metadata.creationTimestamp}'
+
+kubectl get pod analytics-report-runner-manual-xj7k2 -n data-analytics \
+  -o jsonpath='{.metadata.annotations}'
+
+# What's it running?
+kubectl get pod analytics-report-runner-manual-xj7k2 -n data-analytics \
+  -o jsonpath='{.spec.containers[0].image}'
+
+kubectl get pod analytics-report-runner-manual-xj7k2 -n data-analytics \
+  -o jsonpath='{.spec.containers[0].command}'
+
+# What service account?
+kubectl get pod analytics-report-runner-manual-xj7k2 -n data-analytics \
+  -o jsonpath='{.spec.serviceAccountName}'
+```
+
+If this pod was created this morning, after Tom said he wouldn't touch anything — that's a problem. If it was created before Tom's PTO and has been running for weeks — it's another audit finding we missed. If it's connecting to RDS through the NAT gateway — it might account for those 47 mystery connections.
+
+```bash
+# Is its IP one of the mystery sources?
+kubectl get pod analytics-report-runner-manual-xj7k2 -n data-analytics -o wide | awk '{print $6}'
+```
+
+If this pod's IP is 10.0.43.22 or routes through it — we found our NAT gateway connections.
+
+But wait — Tom has read-only RBAC since Sunday. He can't create pods. Unless he created it before I applied the restriction, or unless he used a different identity.
+
+```bash
+# Check audit logs for pod creation
+kubectl get events -n data-analytics --sort-by=.lastTimestamp | \
+  grep "analytics-report-runner"
+```
+
+The mystery pod, the NAT gateway connections, and the database overload might all be connected. Or the pod might be totally unrelated. I need the data before I jump to conclusions.
+
+### Priority Stack Right Now (11:20 AM)
+
+```
+IMMEDIATE (next 5 min):
+  1. Confirm database connections dropping     ← watching
+  2. Confirm service latency recovering        ← watching  
+  3. Identify mystery pod                      ← commands running
+  4. Identify NAT gateway connections          ← pending
+
+ONCE STABLE (next 30 min):
+  5. Bring dashboard back at 1 replica with connection limit
+  6. Address the 47 NAT gateway connections
+  7. Plan read replica for analytics workloads
+
+TODAY:
+  8. Wei: analytics architecture plan
+  9. analytics_reader permission audit (the one I should have 
+     done last week)
+```
+
+The connection limit on analytics_reader is the most important thing I did in the last 3 minutes. Even if I bring the dashboard back, even if the HPA scales it to 5 replicas, `analytics_reader` can only open 20 connections. The database is protected. That's the fix that would have prevented this entirely — and it was on my TODO list since Wednesday.
+
+**That's incident 8. Two more to notification checkpoint at 10.**
+
+---
+
+## MONDAY 11:20 AM — RESULTS STREAM IN
+
+---
+
+### Database Recovery
+
+```
+$ watch output (11:20 AM):
+
+ count | usename           | state
+-------+-------------------+--------
+    87 | order_service     | idle
+    31 | order_service     | active
+    29 | payment_service   | idle
+    18 | payment_service   | active
+     4 | inventory_service | idle
+     7 | inventory_service | active
+     3 | analytics_reader  | idle
+     3 | rdsadmin          | idle
+     1 | platform_admin    | active
+-------
+   183 total
+```
+
+**183 connections.** Down from 459. analytics_reader dropped from 256 to 3 idle connections (lingering pool handles from the now-terminated dashboard pods). Production services are back to baseline levels. ✅
+
+```
+RDS CloudWatch (11:22 AM):
+  Connections:     183 ✅
+  CPU:             34% (recovering)
+  Read IOPS:       3,400 (normalizing)
+  Queue depth:     3 (was 47)
+  Freeable memory: 3.1 GB (recovering)
+```
+
+```
+Service latency (11:23 AM):
+  order-service:     412ms p99 (was 2,847ms) ✅
+  payment-service:   289ms p99 (was 1,923ms) ✅
+  inventory-service: 194ms p99 (was 1,241ms) ✅
+```
+
+Database and services recovering fast. The IO backlog cleared once the table scans stopped. Good.
+
+---
+
+### The Mystery Pod
+
+```
+$ kubectl get pod analytics-report-runner-manual-xj7k2 -n data-analytics \
+    -o jsonpath='{.metadata.creationTimestamp}'
+
+2024-01-22T15:52:14Z
+```
+
+**10:52 AM today.** Created 8 minutes before the connection spike started at 11:00 AM.
+
+```
+$ kubectl get pod analytics-report-runner-manual-xj7k2 -n data-analytics \
+    -o jsonpath='{.metadata.annotations}' | jq
+
+{
+  "kubectl.kubernetes.io/last-applied-configuration": "...",
+  "created-by": "kubectl run by wei.liu@novamart.com"
+}
+```
+
+**Wei.** Not Tom.
+
+```
+$ kubectl get pod analytics-report-runner-manual-xj7k2 -n data-analytics \
+    -o jsonpath='{.spec.containers[0].image}'
+
+novamart-analytics-dashboard:latest
+```
+
+Same image as the dashboard. Docker Hub, not ECR.
+
+```
+$ kubectl get pod analytics-report-runner-manual-xj7k2 -n data-analytics \
+    -o jsonpath='{.spec.containers[0].command}' | jq
+
+["/bin/sh", "-c", "python /app/reports/weekly_summary.py --start 2024-01-15 --end 2024-01-22 --output /tmp/report.csv && sleep 3600"]
+```
+
+It's running a weekly summary report script. With a `sleep 3600` to keep the pod alive so Wei can `kubectl cp` the output.
+
+```
+$ kubectl get pod analytics-report-runner-manual-xj7k2 -n data-analytics \
+    -o wide
+
+NAME                                        READY   STATUS    IP           NODE
+analytics-report-runner-manual-xj7k2        1/1     Running   10.0.43.88   ip-10-0-43-40
+```
+
+IP is 10.0.43.88. **Not** 10.0.43.22 (the NAT gateway source). Different IPs.
+
+But the pod connects to RDS. And the weekly_summary.py script is — based on the query patterns you saw — probably one of the heavy analytical queries. It was created at 10:52, and the spike started at 11:00. That tracks — the script likely spawns multiple analytical queries as it generates the report.
+
+```
+$ kubectl logs analytics-report-runner-manual-xj7k2 -n data-analytics --tail=20
+
+[10:52:31] Starting weekly summary report (2024-01-15 to 2024-01-22)
+[10:52:31] Connecting to orders-db-prod...
+[10:52:32] Connected. analytics_reader@orders-db-prod
+[10:52:32] Running revenue_by_category query...
+[10:53:14] Running payment_method_breakdown query...
+[10:54:02] Running customer_cohort_analysis query...
+[10:55:18] Running currency_conversion_summary query...
+[10:56:44] Running customer_ltv_report query...
+[10:58:01] Running refund_analysis query...
+[10:59:30] Running full_order_export (WARNING: large dataset)...
+[10:59:30] Spawning 12 parallel workers for export...
+[11:00:01] Worker 1: SELECT ... FROM orders WHERE created_at >= ...
+[11:00:01] Worker 2: SELECT ... FROM orders WHERE created_at >= ...
+...
+[11:00:02] Worker 12: SELECT ... FROM orders JOIN order_items ...
+[STATUS] 6/7 reports complete. Export at 34%. ETA: ~15 min
+[11:18:47] Connection terminated by administrator
+[11:18:47] ERROR: All workers lost connection. Export failed.
+[11:18:48] Partial report saved to /tmp/report_partial.csv
+```
+
+**There it is.** The report script spawns 12 parallel workers for the "full order export" — each opens its own connection and does a sequential scan. That's 12 heavy queries on top of whatever the dashboard was already running. The 12 parallel workers started at 11:00 AM — exactly when the connection spike began.
+
+The dashboard was already under load from the regular Monday morning analyst reports. Wei's manual report pod was the straw that broke the camel's back — 12 parallel export workers plus the dashboard's normal query load pushed connections from "elevated but survivable" to "runaway feedback loop."
+
+Your `pg_terminate_backend` killed the workers along with all the other analytics_reader queries.
+
+---
+
+### NAT Gateway Connections — Still Unexplained
+
+The mystery pod is on 10.0.43.88, not 10.0.43.22. So the 47 NAT gateway connections are something else.
+
+```bash
+$ kubectl exec -n order-prod \
+    $(kubectl get pods -n order-prod -l app=order-service \
+    -o jsonpath='{.items[0].metadata.name}') -- \
+    env PGPASSWORD=$DB_PASS psql -h orders-db-prod.xxxxx.us-east-1.rds.amazonaws.com \
+    -U platform_admin -d orders -c "
+    SELECT client_addr, usename, state, count(*),
+           min(backend_start) as oldest_conn
+    FROM pg_stat_activity 
+    WHERE client_addr = '10.0.43.22'
+    GROUP BY client_addr, usename, state;"
+
+ client_addr | usename          | state  | count | oldest_conn
+-------------+------------------+--------+-------+------------------------
+ 10.0.43.22  | analytics_reader | idle   |    14 | 2024-01-22T08:15:33Z
+ 10.0.43.22  | analytics_reader | active |     2 | 2024-01-22T10:55:12Z
+```
+
+16 connections from the NAT gateway. Down from 47 (your `pg_terminate_backend` killed the active ones, idle ones persisted). **Oldest connection opened at 8:15 AM today.**
+
+These connections are using analytics_reader but they're NOT from any pod in the cluster. They're coming through the NAT gateway from something in a private subnet.
+
+```bash
+$ aws ec2 describe-nat-gateways \
+    --filter "Name=nat-gateway-id,Values=nat-0a8f3b*" \
+    --query 'NatGateways[0].{SubnetId:SubnetId,VpcId:VpcId}'
+
+{
+  "SubnetId": "subnet-0f4a8c...",
+  "VpcId": "vpc-0b3e1d..."
+}
+
+$ aws ec2 describe-instances \
+    --filters "Name=vpc-id,Values=vpc-0b3e1d..." \
+              "Name=instance-state-name,Values=running" \
+    --query 'Reservations[].Instances[].{ID:InstanceId,Name:Tags[?Key==`Name`].Value|[0],Type:InstanceType,PrivateIP:PrivateIpAddress,SubnetId:SubnetId}' | jq
+
+[
+  { "ID": "i-0a8f3b...", "Name": "novamart-eks-node-...", "PrivateIP": "10.0.41.33", ... },
+  { "ID": "i-0b9e4c...", "Name": "novamart-eks-node-...", "PrivateIP": "10.0.42.37", ... },
+  ... [EKS nodes],
+  { "ID": "i-0d7f2e...", "Name": "analytics-metabase", "Type": "t3.medium", "PrivateIP": "10.0.43.147", "SubnetId": "subnet-0e5b9d..." },
+  { "ID": "i-0e8g3f...", "Name": "novamart-jenkins-legacy", "Type": "t3.large", "PrivateIP": "10.0.43.201", "SubnetId": "subnet-0e5b9d..." }
+]
+```
+
+**Two non-EKS EC2 instances in the VPC:**
+
+1. **`analytics-metabase`** — a t3.medium running Metabase (open-source BI tool). In a private subnet that routes through NAT.
+2. **`novamart-jenkins-legacy`** — a t3.large. Legacy Jenkins. Also in the private subnet.
+
+The Metabase instance is almost certainly the source of the 16 remaining connections. Another analytics tool hitting the production database with `analytics_reader` credentials. Another piece of shadow infrastructure.
+
+---
+
+### 11:24 AM — Slack
+
+```
+Slack — DM from Wei Liu (11:24 AM)
+"Sorry — I should have warned you. I ran a manual report pod 
+this morning to generate the weekly summary for the product 
+VP. It's a report I normally run through the dashboard but 
+the dashboard was being slow so I ran it directly.
+
+I didn't realize it would spawn parallel workers. The 
+weekly_summary.py script has a parallel export mode that 
+I forgot about — Tom wrote it for speed and it opens 12 
+connections simultaneously.
+
+This is my fault. Is the database okay?"
+```
+
+```
+Slack — DM from Marcus Webb (11:25 AM)
+"The pod is Wei's. I checked the audit log. Created at 10:52 
+by wei.liu via kubectl run. Using the analytics dashboard 
+image. 
+
+Also — while I was poking around, I noticed something else. 
+There's an EC2 instance called 'analytics-metabase' in our 
+VPC that's not in any inventory I've seen. IP 10.0.43.147. 
+Want me to dig into it?"
+```
+
+```
+Slack — #platform-engineering (11:25 AM)
+Ryan Mitchell: "Catalog pages are responsive again. 
+Whatever you did worked. Thanks."
+```
+
+```
+Slack — DM from Lisa Park (11:26 AM)
+"Order-service budget impact: 64.5% → 61.8%. Burned 2.7% 
+in 25 minutes. Payment-service held at 86.0% — the latency 
+spike was below the error threshold so it didn't burn budget.
+
+We're getting thin on order-service. 61.8% remaining with 
+8 days left in the error budget window. One more significant 
+incident and we're in budget freeze territory."
+```
+
+---
+
+### 11:27 AM — Sarah DM
+
+```
+Slack — DM from Sarah Chen (11:27 AM)
+"I'm in my 11:30 with James in 3 minutes. He already knows 
+about the database incident — Lisa's budget alerts go to the 
+eng-leads channel. 
+
+He's going to ask me:
+1. What happened
+2. Is it related to the shadow infrastructure problem
+3. How many more of these are we going to discover
+
+Give me your honest answers. Quick."
+```
+
+---
+
+**Current time: Monday 11:27 AM.**
+
+**Database: recovered.** Connections 183, latency baseline. ✅
+
+**But you have:**
+- Wei's manual pod (created the spike, needs to be addressed)
+- A Metabase EC2 instance nobody knew about (shadow infrastructure #9)
+- A legacy Jenkins EC2 instance in the VPC (shadow infrastructure #10?)
+- Wei just admitted fault — you need to handle this without damaging the relationship you just built
+- Sarah needs answers for James in 3 minutes
+- Marcus is offering to investigate Metabase
+- Lisa is warning order-service budget is getting thin (61.8%)
+- Wei's analysts still need their Monday reports (dashboard is at 0 replicas)
+- The mystery pod is dead (you killed its queries) and Wei's weekly VP report is incomplete
+
+**RULE 7: Wei just ran a manual pod in a namespace under Legal hold using `kubectl run` — which means he has write access despite your read-only restriction on Tom. Wei has different RBAC than Tom. And he did it with good intentions, zero malice, and it almost took down production.**
+
+**Four people waiting. James about to ask hard questions. The shadow infrastructure tally just grew. Your dashboard fix broke Wei's VP deliverable.**
+
+**What do you do?**
+
+
+
+### Sarah First — She Has 3 Minutes (11:27 AM)
+
+**Sarah Chen — DM:**
+
+> Quick answers for James:
+>
+> **1. What happened:** Analytics dashboard and a manual report pod opened 250+ database connections running full table scans against production RDS. analytics_reader user had no connection limit — every service user has one, this one was missed. Monday morning analyst reports were the trigger. Contained in 8 minutes, database recovered, services at baseline.
+>
+> **2. Is it related to shadow infrastructure:** Yes. The analytics dashboard is item #5 on Aisha's shadow infrastructure list. It connects directly to production RDS with an overprivileged, unlimited user. We also just discovered a Metabase EC2 instance in the VPC that nobody had in inventory — same pattern, different tool. Same analytics_reader credentials.
+>
+> **3. How many more:** Honest answer — I don't know yet, but we're getting closer to the floor. The drift detection scan this morning caught 8 unmanaged workloads in Kubernetes. What it can't catch is EC2 instances and other non-K8s infrastructure. Marcus just found the Metabase instance. I'd recommend an AWS-level infrastructure audit — EC2, RDS users, IAM roles — as a complement to the K8s drift scan. I can scope that this week.
+>
+> One-liner for James: "Analytics overloaded the production database through an unmanaged connection path. Same governance gap. Contained in 8 minutes. We're adding database-level controls now to prevent recurrence."
+
+### Wei Liu — DM (11:29 AM)
+
+This needs to be handled carefully. Wei flagged the Tom situation to me yesterday — good instincts. Now he accidentally caused an incident through the same kind of "just need to get something done quickly" action. He's already feeling bad. But there are real issues I need to address.
+
+> Wei — database is recovered, everything's fine. Let me separate the "what happened" from the "what we need to fix."
+>
+> **What happened is understandable.** You needed a report for the VP, the dashboard was slow, you ran it directly. That's the same pattern we've been talking about all week — people do reasonable things because the managed path is too slow or doesn't exist. I'm not angry.
+>
+> **What we need to fix has two parts:**
+>
+> First — the `weekly_summary.py` script spawns 12 parallel database workers without any connection limiting. That's a footgun regardless of who runs it. When Tom's back working on the pipeline, this script needs connection pooling or at minimum a max-workers cap. Until then, please don't run it against production.
+>
+> Second — I need to flag something sensitive. The `data-analytics` namespace is under Legal preservation hold. Rachel's GDPR notification references it specifically. I restricted Tom's access to read-only yesterday for this reason. Your `kubectl run` created a new pod in that namespace — you have write access that Tom doesn't. The pod itself is harmless, but if the supervisory authority audits the namespace state and sees a pod created during the preservation period, it's a question we'd have to answer.
+>
+> I'm not escalating this. The pod didn't modify any preserved data. But I want to be transparent about why this matters, and I'd like to extend the read-only RBAC to all non-platform users in `data-analytics` until the Legal hold is resolved. That includes your account. You'd still have full access to your other namespaces. Is that okay?
+>
+> On the VP report — I killed the export when I terminated the queries. The partial output is in `/tmp/report_partial.csv` on the pod. I can help you get the report generated safely later today, either against a snapshot or with connection-limited queries. What's the VP's deadline?
+
+### Marcus Webb — DM (11:30 AM)
+
+> Yes, dig into the Metabase instance. Specifically I need:
+>
+> 1. Who launched it and when (check EC2 tags, CloudTrail `RunInstances` event)
+> 2. What databases it connects to (check its configuration or security group rules)
+> 3. Is it using analytics_reader credentials (almost certainly yes)
+> 4. Who has access to it (SSH keys, security group ingress)
+> 5. Same for the legacy Jenkins instance — is it actually in use or forgotten?
+>
+> Don't touch either instance — just document. Add findings to the shadow infrastructure tally. Aisha will want to know about these for Monday's governance presentation.
+>
+> This is exactly what the drift detection CronJob can't catch — it only scans Kubernetes. We need an AWS-level counterpart. I'll scope that this week.
+
+### #incidents Update (11:31 AM)
+
+```
+🟢 RESOLVING — RDS Connection Exhaustion (11:31 AM)
+
+Database recovered. 183 connections (was 459). Service latency 
+at baseline. CPU 34%, queue depth 3.
+
+Root cause: analytics_reader user with no connection limit. 
+256 connections from analytics dashboard pods + manual report 
+pod running 12 parallel full-table-scan workers. Monday morning 
+analyst reports were the trigger.
+
+Combined with HPA autoscaling the dashboard (feedback loop: 
+more queries → more CPU → more replicas → more connections) 
+and a manual report pod spawning 12 parallel workers at 10:52 AM.
+
+Fix applied:
+- Dashboard scaled to 0 (temporary)
+- All analytics_reader queries terminated
+- analytics_reader CONNECTION LIMIT set to 20
+- HPA maxReplicas frozen at 2
+
+Additional discovery: Metabase EC2 instance (analytics-metabase) 
+found in VPC, also connecting to production RDS with 
+analytics_reader. Not in any infrastructure inventory. 
+Marcus investigating.
+
+Follow-up needed:
+- Read replica for analytics workloads
+- analytics_reader permission audit
+- RBAC lockdown for data-analytics namespace
+- weekly_summary.py connection pooling
+- Metabase + legacy Jenkins EC2 assessment
+- AWS-level infrastructure audit (complement to K8s drift scan)
+
+Timeline:
+  10:52  Manual report pod created by Wei
+  11:00  Connection spike begins (12 parallel workers + dashboard)
+  11:07  Alert fires (418 connections)
+  11:11  Acked
+  11:17  Root cause confirmed, dashboard scaled to 0, queries killed
+  11:22  Database recovered
+
+Budget impact: order-service 64.5% → 61.8% (-2.7%)
+```
+
+### RBAC Lockdown — data-analytics (11:33 AM)
+
+I'm doing this now before anything else happens in that namespace.
+
+```bash
+# Check Wei's current RBAC
+kubectl get rolebindings -n data-analytics -o json | \
+  jq -r '.items[] | select(.subjects[]?.name == "wei.liu@novamart.com") | 
+  .metadata.name + " -> " + .roleRef.name'
+
+# Restrict Wei to read-only (same as Tom)
+cat <<EOF | kubectl apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: wei-liu-readonly
+  namespace: data-analytics
+  annotations:
+    reason: "Legal preservation hold — GDPR SA-2024-0119-NM"
+    applied-by: "platform-oncall"
+    applied-date: "2024-01-22"
+    revert-after: "Legal hold lifted"
+subjects:
+- kind: User
+  name: wei.liu@novamart.com
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+# Remove Wei's existing edit/admin binding
+# (after confirming the binding name from the query above)
+kubectl delete rolebinding <wei-edit-binding> -n data-analytics
+```
+
+```bash
+# Verify
+kubectl auth can-i create pods -n data-analytics --as=wei.liu@novamart.com
+# no
+
+kubectl auth can-i get pods -n data-analytics --as=wei.liu@novamart.com
+# yes
+```
+
+### Aisha — DM (11:35 AM)
+
+> Aisha — two updates for the shadow infrastructure tally:
+>
+> **Item 9:** EC2 instance `analytics-metabase` (t3.medium, IP 10.0.43.147) in our VPC. Running Metabase BI tool. Connecting to production RDS with analytics_reader credentials. Not in any infrastructure inventory. Marcus investigating ownership and access.
+>
+> **Item 10:** EC2 instance `novamart-jenkins-legacy` (t3.large, IP 10.0.43.201) in the same private subnet. Status unknown. Marcus investigating.
+>
+> Both are outside Kubernetes, which means the drift detection CronJob doesn't catch them. We need an AWS-level audit to complement the K8s scan. I'll scope it this week.
+>
+> Also — Wei Liu ran a `kubectl run` in data-analytics this morning to generate a report. It accidentally caused the RDS incident. I've restricted his RBAC to read-only, same as Tom. The namespace is now locked to read-only for all non-platform users until the Legal hold is lifted.
+
+### Clean Up Wei's Pod (11:36 AM)
+
+```bash
+# The pod is dead (queries killed) but still running (sleep 3600)
+# Get the partial report first so Wei has something
+kubectl cp data-analytics/analytics-report-runner-manual-xj7k2:/tmp/report_partial.csv \
+  /tmp/wei-report-partial.csv
+
+# Then delete the pod
+kubectl delete pod analytics-report-runner-manual-xj7k2 -n data-analytics
+```
+
+### Wei — DM Follow-up (11:37 AM)
+
+> Wei — I pulled the partial report off the pod before deleting it. I've got `report_partial.csv` — it has the first 6 of 7 reports. The full order export (the 7th) failed when I killed the queries. 
+>
+> For the VP report: I can help you run the export query this afternoon with a single connection (not 12 parallel), constrained by the new 20-connection limit. It'll be slower — maybe 15-20 minutes instead of the parallel 5 minutes — but it won't endanger production. Or if it can wait until tomorrow, Tom can help set up a proper export path as part of the onboarding work.
+>
+> Also — I've restricted your RBAC in data-analytics to read-only, same as Tom's. Legal preservation hold. I hope you understand the reasoning given our conversation yesterday about exactly this kind of situation. You'll still have full access everywhere else.
+
+### Priority Stack (11:38 AM)
+
+```
+✅ DONE:  Database recovered
+✅ DONE:  Sarah briefed for James
+✅ DONE:  Wei handled (honest, not punitive)
+✅ DONE:  RBAC locked down 
+✅ DONE:  Marcus investigating EC2 instances
+✅ DONE:  Aisha updated
+✅ DONE:  #incidents posted
+✅ DONE:  Wei's partial report salvaged
+
+NEXT:
+  11:40  Bring dashboard back at 1 replica (analysts need it)
+         BUT: with connection limit working, max 20 connections
+         regardless of replica count
+  12:00  Lunch
+  1:00   Help Wei with constrained report if VP deadline is today
+  1:30   Tom onboarding sprint work (ECR migration support)
+  2:00   Scope AWS-level audit (EC2, RDS users, IAM)
+  3:00   analytics_reader permission audit (overdue since Wednesday)
+  4:00   EKS runbook finalize + EOD notes
+```
+
+### Restore Dashboard — Controlled (11:40 AM)
+
+The analytics_reader connection limit is set to 20. It's now safe to bring the dashboard back — even if it opens connections aggressively, it can't exceed 20.
+
+```bash
+# Bring back at 1 replica
+kubectl scale deployment analytics-dashboard -n data-analytics --replicas=1
+
+# Freeze HPA at max 1 until we have proper connection pooling
+kubectl patch hpa analytics-dashboard -n data-analytics \
+  --type='json' -p='[{"op": "replace", "path": "/spec/maxReplicas", "value": 1}]'
+```
+
+```bash
+# Verify connections stay bounded
+watch -n 30 "kubectl exec -n order-prod \
+  $(kubectl get pods -n order-prod -l app=order-service \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  env PGPASSWORD=$DB_PASS psql -h orders-db-prod.xxxxx.us-east-1.rds.amazonaws.com \
+  -U platform_admin -d orders -t -c \
+  \"SELECT count(*) FROM pg_stat_activity WHERE usename='analytics_reader';\""
+```
+
+If it approaches 20, the connection limit catches it. That's the guardrail.
+
+### Self-Assessment Note (11:42 AM)
+
+```
+INCIDENT 8: RDS Connection Exhaustion
+
+What I should have done earlier:
+- Set analytics_reader CONNECTION LIMIT on Wednesday when I 
+  first audited the pipeline. It was on my TODO list (R-7 
+  in Rachel's table: "analytics_reader DB permissions audit").
+  I committed to Wed Jan 24 for the audit. The incident 
+  happened Mon Jan 22. Two days of exposure because I 
+  prioritized other work.
+  
+- Locked down data-analytics RBAC for ALL users, not just Tom. 
+  Yesterday I restricted Tom but not Wei. I was thinking about 
+  the specific risk (Tom) not the general risk (anyone with 
+  write access in a preserved namespace).
+
+Pattern: I keep identifying risks correctly and then fixing 
+them in priority order rather than in exposure order. The 
+analytics_reader connection limit was lower priority than the 
+GDPR notification and the drift detection CronJob — but it 
+had higher exposure because production traffic hits it every day.
+
+Going forward: when I identify a database-level risk, fix it 
+immediately. Database changes are low-effort, high-impact, 
+and have zero deployment complexity. ALTER ROLE takes 2 seconds.
+```
+
+**That's 8 incidents. Two more to the checkpoint at 10.**
+
+---
+
+## MONDAY 11:42 AM — AFTERNOON UNFOLDS
+
+---
+
+### Wei Response (11:44 AM)
+
+```
+Slack — DM from Wei Liu (11:44 AM)
+"I understand the RBAC change. You're right — I did exactly 
+what I was worried Tom would do, just with a different tool. 
+That's a humbling realization.
+
+VP report deadline is tomorrow morning standup (Tue 10 AM). 
+If you can help me run the export this afternoon with a 
+single connection, that works. The partial report has the 
+6 summary sections — the export is the raw data backing 
+for questions the VP might drill into.
+
+And thank you for not making this a bigger deal than it 
+needed to be. I know I caused an incident."
+```
+
+```
+Slack — DM from Sarah Chen (11:51 AM)
+"James took it well. He actually laughed at 'how many more' — 
+not a fun laugh, more of a 'we're going to keep finding these 
+aren't we' laugh. He wants the AWS-level audit scoped by 
+Wednesday. He said, and I quote: 'I want to know about every 
+piece of infrastructure in this company that isn't in a 
+manifest somewhere, even if it's a Raspberry Pi someone 
+plugged into the break room.'
+
+Also: he asked about the order-service error budget. Lisa's 
+numbers got his attention. 61.8% with 8 days left. He wants 
+to know if we need a proactive velocity freeze on order-service 
+or if we think we can ride it out."
+```
+
+---
+
+### 12:00 PM — Lunch (At Desk)
+
+You eat while reviewing Marcus's preliminary findings on the EC2 instances.
+
+```
+Slack — DM from Marcus Webb (12:15 PM)
+"Findings on the EC2 instances:
+
+ANALYTICS-METABASE (i-0d7f2e...)
+- Launched: August 14, 2023
+- Launched by: carlos.mendez@novamart.com (CloudTrail)
+- Carlos again.
+- t3.medium, running Ubuntu 22.04
+- Metabase 0.47.2 (current is 0.48.x, so one minor behind)
+- Connected to orders-db-prod via analytics_reader
+- Also connected to a SECOND database I didn't know about: 
+  reporting-db-prod.xxxxx.us-east-1.rds.amazonaws.com
+  That's a separate RDS instance. Not in Terraform. 
+  I don't even know what that is.
+- Security group: allows inbound 3000 from 10.0.0.0/8 (VPC)
+  and 443 from 0.0.0.0/0 (OPEN TO INTERNET via ALB)
+- There's an ALB: metabase.internal.novamart.com
+  But the SG allows 443 from anywhere. Checking if the ALB 
+  is actually internet-facing...
+- ALB is internal. So the 0.0.0.0/0 rule is probably leftover 
+  from when it was being set up. Still bad hygiene.
+- Metabase has 7 user accounts. Carlos (admin), Wei, Tom, 
+  and 4 people I don't recognize — might be product/finance.
+- No MFA. No SSO integration. Local Metabase passwords.
+
+NOVAMART-JENKINS-LEGACY (i-0e8g3f...)
+- Launched: March 2, 2022. Almost TWO YEARS old.
+- Launched by: former-devops@novamart.com (account disabled)
+- t3.large, running Amazon Linux 2
+- Jenkins 2.361 (current is 2.426 — 65 versions behind)
+- Last build: October 17, 2023 (3 months ago)
+- 14 configured jobs, all disabled except one called 
+  'monthly-db-backup' which last ran... let me check...
+  Last successful: November 1, 2023. 
+  Last attempted: December 1, 2023 — FAILED.
+  It's a monthly CronJob that dumps the orders database 
+  and uploads to S3. It's been failing for 2 months and 
+  nobody noticed because there are no alerts.
+- Security group: SSH from 10.0.0.0/8, Jenkins UI 8080 
+  from 10.0.0.0/8
+- Jenkins has admin/admin credentials. Yes, really.
+  I checked because the security group allows 8080 from 
+  the entire VPC.
+
+I stopped myself from going further because you said 
+'just document.' But the Metabase 443 rule and the 
+Jenkins admin/admin are both things Aisha needs to know 
+about immediately, right?"
+```
+
+---
+
+### 12:20 PM — That's A Lot
+
+Let's process what Marcus found:
+
+1. **A second RDS instance** (`reporting-db-prod`) that nobody knows about. Not in Terraform. Connected to by Metabase.
+2. **Metabase open to VPC** with 7 users, no MFA, no SSO, local passwords.
+3. **Legacy Jenkins with admin/admin** accessible from the entire VPC. Last meaningful use: 3 months ago.
+4. **A database backup job** that's been silently failing for 2 months.
+
+The shadow infrastructure tally is now:
+
+```
+K8s (drift scan): 8 items
+EC2: 2 instances (Metabase, legacy Jenkins)
+RDS: 1 unknown instance (reporting-db-prod)
+ALB: 1 (Metabase)
+S3: 2 unmanaged buckets (already known)
+---
+Total: 13+ items of shadow infrastructure
+```
+
+And the `admin/admin` Jenkins accessible from VPC is a genuine security finding. Not theoretical — anyone with VPC access can log into that Jenkins and run arbitrary builds, which means arbitrary code execution on that instance, which means access to everything that instance can reach (RDS, S3, internal services).
+
+---
+
+### 12:35 PM — Derek Production Deploy Decision
+
+```
+Slack — DM from Derek Huang (12:35 PM)
+"CB PR is merged and tested in staging. Circling back on 
+the production deploy question. 
+
+I know order-service budget is at 61.8%. But the whole 
+point of the circuit breaker is to PREVENT budget burn 
+from inventory service issues. If inventory has a slow 
+day and we don't have the CB, we're burning budget on 
+something the CB was designed to avoid.
+
+Can I deploy to production? I'll do a careful canary using 
+Lisa's new diversity template."
+```
+
+---
+
+### 1:15 PM — Wei's Export
+
+You help Wei run the order export with a single-threaded query:
+
+```bash
+kubectl exec -n order-prod \
+  $(kubectl get pods -n order-prod -l app=order-service \
+  -o jsonpath='{.items[0].metadata.name}') -- \
+  env PGPASSWORD=$ANALYTICS_PASS psql \
+  -h orders-db-prod.xxxxx.us-east-1.rds.amazonaws.com \
+  -U analytics_reader -d orders \
+  -c "\COPY (SELECT o.id, o.customer_email, o.created_at, 
+      oi.product_name, oi.quantity, p.status as payment_status 
+      FROM orders o LEFT JOIN order_items oi ON o.id = oi.order_id 
+      LEFT JOIN payments p ON o.id = p.order_id 
+      WHERE o.created_at >= '2024-01-15' 
+      AND o.created_at < '2024-01-22'
+      ORDER BY o.created_at) 
+      TO '/tmp/weekly_export.csv' WITH CSV HEADER"
+```
+
+Runs for 14 minutes. Single connection. Database doesn't flinch — connections stay at 195, CPU at 31%. Wei has his export.
+
+```
+Wei (1:33 PM): "Got it. Thank you. I'll combine with 
+the partial and have the VP report ready by 4."
+```
+
+---
+
+### 2:00 PM — Your Desk
+
+You're about to start the AWS-level audit scoping when:
+
+```
+🟡 Slack — #alerts-production (2:00 PM)
+   CertificateExpiringWithin7Days
+   Namespace: production
+   Certificate: novamart-tls-wildcard
+   Expiry: January 29, 2024 (7 days)
+   Issuer: Let's Encrypt
+   Domains: *.novamart.com, novamart.com
+```
+
+A cert expiry alert. The wildcard TLS certificate for `*.novamart.com` expires in 7 days. This covers *everything* — the storefront, the API, internal services behind the ALB, potentially the service mesh.
+
+```bash
+$ kubectl get certificate novamart-tls-wildcard -n production -o yaml
+
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: novamart-tls-wildcard
+  namespace: production
+spec:
+  secretName: novamart-tls-wildcard
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - "*.novamart.com"
+    - "novamart.com"
+  renewBefore: 720h  # 30 days
+status:
+  conditions:
+  - type: Ready
+    status: "True"
+    lastTransitionTime: "2023-10-31T14:22:00Z"
+  renewalTime: "2024-01-01T14:22:00Z"
+  notAfter: "2024-01-29T14:22:00Z"
+```
+
+`renewBefore: 720h` means cert-manager should have started renewal 30 days before expiry — that's **December 30th.** It's now January 22nd. The cert should have been renewed 23 days ago.
+
+```bash
+$ kubectl describe certificate novamart-tls-wildcard -n production | tail -30
+
+Events:
+  Type     Reason             Age   Message
+  ----     ------             ----  -------
+  Warning  RenewalFailed      23d   Failed to renew certificate: 
+    order creation failed: acme: error: 429, 
+    body: {"type":"urn:ietf:params:acme:error:rateLimited",
+    "detail":"too many failed authorizations recently"}
+  Warning  RenewalFailed      22d   [retry 1/5] Failed to renew: 
+    rate limited by ACME server
+  Warning  RenewalFailed      21d   [retry 2/5] Failed to renew: 
+    rate limited by ACME server  
+  Warning  RenewalFailed      19d   [retry 3/5] Failed to renew: 
+    rate limited by ACME server
+  Warning  RenewalFailed      16d   [retry 4/5] Failed to renew: 
+    DNS-01 challenge failed: timeout waiting for DNS propagation
+  Warning  RenewalFailed      12d   [retry 5/5] Failed to renew: 
+    DNS-01 challenge failed: timeout waiting for DNS propagation
+  Normal   RetryExhausted     12d   All renewal attempts exhausted. 
+    Manual intervention required.
+```
+
+Cert-manager tried to renew starting Dec 30. First three attempts were rate-limited by Let's Encrypt (too many failed authorizations — something broke before this). Last two attempts failed on DNS-01 challenge — the DNS propagation timed out.
+
+**And then it stopped trying 12 days ago.** "Manual intervention required." 
+
+Nobody noticed because — you check:
+
+```bash
+$ kubectl get prometheusrule -A | grep -i cert
+
+monitoring   cert-manager-alerts   44d
+```
+
+```bash
+$ kubectl get prometheusrule cert-manager-alerts -n monitoring -o yaml | \
+    grep -A8 'CertificateExpiringSoon'
+
+- alert: CertificateExpiringSoon
+  expr: certmanager_certificate_expiration_timestamp_seconds - time() < 604800
+  for: 1h
+  labels:
+    severity: warning
+  annotations:
+    summary: "Certificate {{ $labels.name }} expiring within 7 days"
+```
+
+The alert only fires when the cert is **within 7 days** of expiry. That's today. The renewal has been failing for 23 days and the alert didn't fire because the threshold is 7 days. There's no alert for "renewal failed" — only for "about to expire."
+
+**You have 7 days.** If this cert expires, every `*.novamart.com` endpoint goes down. The storefront. The API. Everything behind that wildcard. **This is not an incident yet, but it will be the biggest incident of the quarter if you don't fix it.**
+
+---
+
+### 2:05 PM — More Context
+
+```bash
+$ kubectl get clusterissuer letsencrypt-prod -o yaml | grep -A10 'status'
+
+status:
+  acme:
+    lastRegisteredEmail: carlos.mendez@novamart.com
+    uri: https://acme-v02.api.letsencrypt.org/acme/acct/123456789
+  conditions:
+  - type: Ready
+    status: "True"
+```
+
+The ACME account is registered to Carlos's email. Carlos who left in September.
+
+```bash
+$ kubectl get secret letsencrypt-prod-account -n cert-manager -o yaml | \
+    grep -c 'tls.key'
+1
+```
+
+The ACME account key exists. The registration is valid. The issue is the DNS-01 challenge.
+
+```bash
+$ kubectl get clusterissuer letsencrypt-prod -o yaml | grep -A15 'solvers'
+
+  solvers:
+  - dns01:
+      route53:
+        region: us-east-1
+        hostedZoneID: Z1234567890
+        accessKeyID: AKIA3EXAMPLE1234
+        secretAccessKeySecretRef:
+          name: route53-credentials
+          key: secret-access-key
+```
+
+It's using Route53 DNS-01 challenge with **static IAM access keys** stored in a Kubernetes secret. Let's check if those keys are still valid:
+
+```bash
+$ kubectl get secret route53-credentials -n cert-manager \
+    -o jsonpath='{.data.secret-access-key}' | base64 -d | head -c 5
+```
+
+```bash
+# Check if the access key is active
+$ aws iam list-access-keys --user-name cert-manager-dns01
+
+{
+  "AccessKeyMetadata": [
+    {
+      "UserName": "cert-manager-dns01",
+      "AccessKeyId": "AKIA3EXAMPLE1234",
+      "Status": "Inactive",
+      "CreateDate": "2023-06-15T00:00:00Z"
+    }
+  ]
+}
+```
+
+**The access key is INACTIVE.** Someone disabled it. That's why the DNS-01 challenge is failing — cert-manager can't create the TXT record in Route53 to prove domain ownership because its IAM credentials are deactivated.
+
+```bash
+# Who disabled it and when?
+$ aws cloudtrail lookup-events \
+    --lookup-attributes AttributeKey=EventName,AttributeValue=UpdateAccessKey \
+    --start-time 2023-12-01 --end-time 2024-01-22 \
+    --query 'Events[?contains(CloudTrailEvent, `AKIA3EXAMPLE1234`)]' | jq
+
+{
+  "EventTime": "2023-12-28T09:15:00Z",
+  "Username": "security-automation",
+  "EventName": "UpdateAccessKey",
+  "CloudTrailEvent": "...\"requestParameters\":{\"userName\":\"cert-manager-dns01\",\"accessKeyId\":\"AKIA3EXAMPLE1234\",\"status\":\"Inactive\"}..."
+}
+```
+
+**`security-automation` disabled the key on December 28th.** That's an automated IAM key rotation/hygiene process. It deactivated a key that was 6+ months old (created June 15) — which is correct security hygiene. But nobody knew cert-manager depended on it.
+
+**The timeline:**
+```
+Jun 15   — Carlos creates IAM user + access key for cert-manager DNS-01
+Sep      — Carlos leaves. No handover on cert infrastructure.
+Oct 31   — Certificate last renewed successfully (90-day LE cert)
+Dec 28   — Security automation deactivates 6-month-old IAM key
+Dec 30   — cert-manager tries to renew, DNS-01 fails (key inactive)
+Dec 30-Jan 10 — 5 retry attempts, all fail
+Jan 10   — Retries exhausted
+Jan 22   — Alert fires (7 days to expiry)
+Jan 29   — Certificate expires. *.novamart.com goes dark.
+```
+
+**RULE 2: Second-order consequences.** The security automation did the right thing (deactivate old keys). But it broke cert renewal because nobody documented the dependency.
+
+---
+
+**Current time: Monday 2:08 PM.**
+
+You have:
+- **7 days** until the wildcard cert expires
+- A deactivated IAM key that cert-manager needs
+- A DNS-01 challenge that hasn't worked in 23 days  
+- A Let's Encrypt rate limit that may still be in effect
+- Carlos's email on the ACME account
+- Static IAM keys in a Kubernetes secret (bad practice)
+- The security automation that deactivated the key (correct action, bad outcome)
+- Marcus's EC2 findings (Metabase, legacy Jenkins, admin/admin, unknown RDS)
+- Sarah wants the AWS audit scoped by Wednesday
+- James wants the order-service budget assessment
+- Derek wants to deploy the CB to production
+- Tom's onboarding sprint started this morning
+- The EKS runbook is due today
+
+**Seven days isn't an emergency. But the rate limit might make it one — if Let's Encrypt is still rate-limiting the account, you can't just reactivate the key and retry. You might need to wait for the rate limit window to expire, or use a different ACME account, or switch to a different challenge type.**
+
+**What do you do?**
+
+
+
+### Triage — This Is Not a SEV2 Yet, But It's a SEV2 in 5 Days (2:08 PM)
+
+Seven days sounds like plenty. It's not. Here's why:
+
+- Let's Encrypt rate limits reset on a rolling window, typically 7 days for failed authorizations. The last rate limit error was Dec 30. That window has passed — good.
+- But the DNS-01 challenge failures on Jan 6 and Jan 10 were a different problem (inactive key). If I fix the key and retry, I need to confirm the rate limit is actually cleared.
+- Let's Encrypt certs take minutes to issue if everything works. But "if everything works" has been false for 23 days.
+- If my first fix attempt fails, I need time for plan B. If plan B fails, I need time for plan C. Seven days with a working escalation path is fine. Seven days with "retry and pray" is not.
+
+I need to fix this today, verify the cert renews, and have a fallback plan if it doesn't.
+
+### Step 1 — Fix the IAM Key Situation (2:10 PM)
+
+I'm not reactivating the old key. It was correctly deactivated — a 6-month-old static key should be rotated. I'm going to fix this properly.
+
+```bash
+# Option A: Create a new access key for the existing IAM user
+# Quick but perpetuates the static-key anti-pattern
+# 
+# Option B: Migrate to IRSA (IAM Roles for Service Accounts)
+# Correct long-term fix but takes longer
+#
+# Decision: Option A now (fix the cert), Option B this week 
+# (fix the architecture). Can't afford to debug IRSA while 
+# the clock is ticking.
+
+# Create new access key
+aws iam create-access-key --user-name cert-manager-dns01
+
+# Output:
+# {
+#   "AccessKey": {
+#     "UserName": "cert-manager-dns01",
+#     "AccessKeyId": "AKIA3NEWKEY5678",
+#     "Status": "Active",
+#     "SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+#   }
+# }
+```
+
+```bash
+# Update the Kubernetes secret
+kubectl create secret generic route53-credentials \
+  -n cert-manager \
+  --from-literal=secret-access-key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Update the ClusterIssuer with the new access key ID
+kubectl edit clusterissuer letsencrypt-prod
+# Change accessKeyID: AKIA3EXAMPLE1234 → AKIA3NEWKEY5678
+```
+
+Before I trigger renewal, verify the credentials actually work:
+
+```bash
+# Test: can cert-manager's credentials create a TXT record in Route53?
+aws route53 change-resource-record-sets \
+  --hosted-zone-id Z1234567890 \
+  --change-batch '{
+    "Changes": [{
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_acme-challenge.test.novamart.com",
+        "Type": "TXT",
+        "TTL": 60,
+        "ResourceRecords": [{"Value": "\"test-validation\""}]
+      }
+    }]
+  }' \
+  --profile cert-manager-dns01 2>&1
+```
+
+```bash
+# If that works, clean up the test record
+aws route53 change-resource-record-sets \
+  --hosted-zone-id Z1234567890 \
+  --change-batch '{
+    "Changes": [{
+      "Action": "DELETE",
+      "ResourceRecordSet": {
+        "Name": "_acme-challenge.test.novamart.com",
+        "Type": "TXT",
+        "TTL": 60,
+        "ResourceRecords": [{"Value": "\"test-validation\""}]
+      }
+    }]
+  }' \
+  --profile cert-manager-dns01
+```
+
+Actually — I'm using the IAM user credentials, not my own. Let me verify the IAM user's permissions are intact. The key was deactivated but the user and policy might have been modified too.
+
+```bash
+# Check the IAM user's policies
+aws iam list-attached-user-policies --user-name cert-manager-dns01
+aws iam list-user-policies --user-name cert-manager-dns01
+
+# Verify Route53 permissions
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::123456789012:user/cert-manager-dns01 \
+  --action-names route53:ChangeResourceRecordSets route53:GetChange \
+  --resource-arns "arn:aws:route53:::hostedzone/Z1234567890" \
+  --query 'EvaluationResults[].{Action:EvalActionName,Result:EvalDecision}'
+```
+
+### Step 2 — Check Rate Limit Status (2:12 PM)
+
+```bash
+# Let's Encrypt rate limits:
+# - Failed Authorizations: 5 per hour per account
+# - The last failure was Jan 10 (12 days ago)
+# - Rate limit window for failed auths is hourly, not weekly
+# - The "too many failed authorizations" from Dec 30 is long cleared
+# - We should be clean to attempt renewal
+
+# Check cert-manager logs for any recent attempts
+kubectl logs -n cert-manager -l app=cert-manager --since=24h | \
+  grep -i "novamart-tls-wildcard\|rate.limit\|acme" | tail -20
+```
+
+If cert-manager stopped trying after "RetryExhausted" 12 days ago, it won't automatically retry. I'll need to trigger it manually.
+
+### Step 3 — Trigger Renewal (2:15 PM)
+
+Once I've confirmed the new key works and Route53 permissions are valid:
+
+```bash
+# Delete the existing CertificateRequest and Order to force a fresh attempt
+kubectl get certificaterequest -n production | grep novamart-tls-wildcard
+kubectl get order -n production | grep novamart-tls-wildcard
+
+# Delete the failed objects so cert-manager creates fresh ones
+kubectl delete certificaterequest -n production -l cert-manager.io/certificate-name=novamart-tls-wildcard
+kubectl delete order -n production -l cert-manager.io/certificate-name=novamart-tls-wildcard
+
+# Force cert-manager to re-evaluate the certificate
+kubectl annotate certificate novamart-tls-wildcard -n production \
+  cert-manager.io/renew="true" --overwrite
+```
+
+Then watch it:
+
+```bash
+# Watch the renewal process
+kubectl get certificate novamart-tls-wildcard -n production -w
+
+# Watch cert-manager logs for this specific cert
+kubectl logs -n cert-manager -l app=cert-manager -f | \
+  grep -i "novamart-tls-wildcard"
+```
+
+The renewal process for DNS-01 should be:
+1. cert-manager creates an Order with Let's Encrypt
+2. Let's Encrypt responds with a DNS-01 challenge token
+3. cert-manager creates a TXT record at `_acme-challenge.novamart.com` in Route53
+4. cert-manager waits for DNS propagation (default: 60s check interval)
+5. cert-manager tells Let's Encrypt to validate
+6. Let's Encrypt checks the TXT record
+7. If valid, cert is issued
+8. cert-manager stores new cert in the Secret
+
+Total time: 2-5 minutes if everything works. The DNS propagation step is where it previously failed.
+
+```bash
+# Watch Route53 for the challenge record appearing
+watch -n 10 "aws route53 list-resource-record-sets \
+  --hosted-zone-id Z1234567890 \
+  --query \"ResourceRecordSets[?contains(Name, '_acme-challenge')]\" \
+  --output table"
+```
+
+### Comms While Renewal Runs (2:16 PM)
+
+**#incidents — Not Yet.** This isn't an incident — it's a 7-day warning. But it needs visibility.
+
+**#platform-engineering (2:16 PM):**
+
+> 🟡 **HEADS UP — TLS Certificate Renewal**
+>
+> The wildcard cert for `*.novamart.com` expires Jan 29 (7 days). Cert-manager renewal has been failing since Dec 30 — the IAM key it uses for DNS-01 challenge was deactivated by security automation on Dec 28 (correct key rotation hygiene, but nobody knew cert-manager depended on it).
+>
+> I've created a new IAM key and am triggering renewal now. Expecting fresh cert within 5 minutes if the fix works. Will confirm.
+>
+> If this cert expires, every `*.novamart.com` endpoint goes down. I'm treating this as high priority despite the 7-day window.
+>
+> Follow-up: migrating cert-manager from static IAM keys to IRSA this week so this can't happen again.
+
+**Aisha Rahman — DM (2:17 PM):**
+
+> Aisha — FYI, the `security-automation` IAM key rotation deactivated the cert-manager DNS-01 credentials on Dec 28. Correct action by the automation — the key was 6 months old. But it broke certificate renewal because the dependency wasn't documented.
+>
+> Two things:
+> 1. Can you check if `security-automation` has a whitelist/exclusion mechanism? The cert-manager IAM user should either be excluded from rotation (bad) or migrated to IRSA so there's no static key to rotate (good). I'm doing the IRSA migration this week.
+> 2. The security automation should probably alert when it deactivates a key that's actively being used. CloudTrail would show recent usage of the key before deactivation. If the automation checked last-used date before deactivating, it would have seen the key was used Oct 31 (cert renewal) and flagged it.
+
+**Marcus — DM (2:18 PM):**
+
+> Good work on the EC2 findings. Two immediate actions:
+>
+> 1. Legacy Jenkins `admin/admin` — that's a genuine security emergency. Anyone on the VPC can execute arbitrary code on that instance. Can you change the admin password RIGHT NOW and lock down the security group to platform team IPs only? Don't take it offline yet (in case someone's depending on the backup job), but remove the open access.
+> 2. Hold on Metabase changes until I talk to Aisha. It has real users and we need to handle it like we handled Tom's pipeline — contain, don't break.
+>
+> The unknown RDS instance (`reporting-db-prod`) is concerning. Can you check CloudTrail for who created it and what IAM user connects to it?
+
+**Derek — DM (2:20 PM):**
+
+> Deploy the CB to production. Here's my reasoning:
+>
+> Order-service budget is at 61.8%. The circuit breaker is specifically designed to prevent the kind of budget burn that got us here — inventory latency cascading into order failures. Every hour without it is an hour of exposure. And you tested it thoroughly in staging, including Nina's load test.
+>
+> Deploy conditions:
+> - Use Lisa's new canary template (volume + diversity gates)
+> - I want to see it in canary for 30 minutes, not 5
+> - Monitor the `orders_accepted_without_stock_verification_total` metric during canary
+> - If the CB doesn't trip during canary (which it shouldn't under normal conditions), that's expected — it's a safety net, not an active component
+> - Have your rollback ready
+>
+> Go ahead. Today is the right day for this.
+
+### Sarah — DM (2:22 PM)
+
+> On James's order-service budget question: I don't recommend a proactive velocity freeze. Here's why:
+>
+> 1. 61.8% with 8 days is tight but viable if we don't have another incident. Baseline consumption is ~0.5%/day, which puts us at ~57.8% at window end. Thin but not breached.
+> 2. The circuit breaker Derek is deploying today specifically protects order-service from the most likely failure mode (inventory latency cascading). That's a net risk reduction.
+> 3. A freeze would block Tom's onboarding work, which requires deploys to get Kafka off Docker Hub images. The onboarding work is reducing risk, not adding it.
+>
+> My recommendation: heightened deploy scrutiny (manual canary verification for any order-service change) but no freeze. If we hit 55%, revisit.
+>
+> Also — the AWS audit James wants by Wednesday: I'll have a scope document and initial findings by Wednesday morning. Marcus already surfaced two EC2 instances and an unknown RDS instance today. The scope is: EC2 instances, RDS instances, IAM users with database credentials, S3 buckets not in Terraform, ALBs not in Terraform. I'll use a combination of AWS Config, CloudTrail, and resource tagging queries.
+
+### Watch Renewal (2:25 PM)
+
+```bash
+kubectl get certificate novamart-tls-wildcard -n production
+```
+
+I'm waiting for this to show `Ready: True` with a new `notAfter` date. If it's working, I should see:
+
+```
+NAME                     READY   SECRET                    AGE
+novamart-tls-wildcard    True    novamart-tls-wildcard     267d
+```
+
+If it fails again, I need to check cert-manager logs immediately and have backup plans ready:
+
+**Plan B:** If DNS-01 keeps failing, switch to HTTP-01 challenge type. This uses an HTTP endpoint instead of DNS records. Requires a different solver configuration but avoids the Route53 dependency entirely. Downside: HTTP-01 can't issue wildcard certs — we'd need individual certs per subdomain.
+
+**Plan C:** If Let's Encrypt is rate-limiting the account (Carlos's account), create a new ACME account with a current NovaMart email. New account = clean rate limit history. Downside: need to re-register and update the ClusterIssuer.
+
+**Plan D — Nuclear Option:** If automated renewal can't be fixed in time, manually generate a cert through certbot on my laptop and upload it as a Kubernetes secret. Ugly, not automated, but the site stays up while we fix the automation.
+
+I have 7 days. Plan A should work. But I'm not assuming Plan A works.
+
+### Priority Stack (2:26 PM)
+
+```
+NOW:     Watch cert renewal (2-5 minutes)          ← waiting
+NEXT:    Marcus: lock down Jenkins admin/admin      ← urgent security
+2:30:    Confirm cert renewed, update #platform-eng
+2:45:    AWS audit scoping (James wants Wednesday)
+3:30:    Tom onboarding support (ECR migration)
+4:00:    EKS runbook (due today, mostly done)
+4:30:    IRSA migration plan for cert-manager (this week)
+5:00:    EOD notes
+
+IRSA MIGRATION NOTES (for later):
+  - Create IAM role with Route53 permissions
+  - Annotate cert-manager ServiceAccount with role ARN
+  - Remove static IAM user + access key
+  - Update ClusterIssuer to remove accessKeyID + secretRef
+  - Cert-manager v1.12+ supports IRSA natively
+  - Add to security automation exclusion until migration complete
+  - Test in staging first (create a test cert with DNS-01)
+```
+
+**That's incident 9 (cert renewal). One more to checkpoint at 10.**
+
+The pattern this week is painfully clear: Carlos Mendez left in September and took institutional knowledge of at least the search cluster, the Metabase instance, the cert-manager configuration, and probably more. Every one of these is a time bomb with a different fuse length. The search cluster blew Friday. The cert is burning now. The legacy Jenkins `admin/admin` is a fuse that hasn't been lit yet but is sitting in the open.
+
+The drift detection CronJob catches Kubernetes workloads. The AWS audit will catch EC2/RDS/S3. But the real fix is the same thing I've been saying all week: documentation, ownership, and making the managed path the easy path. No amount of scanning catches "Carlos knew how the certs work and nobody else did."
+
+---
+
+## MONDAY 2:26 PM — CERT RENEWAL ATTEMPT
+
+---
+
+### Terminal — Watching
+
+```
+$ kubectl logs -n cert-manager -l app=cert-manager -f | \
+    grep -i "novamart-tls-wildcard"
+
+14:25:33 I controller Successfully created Order "novamart-tls-wildcard-renewal-xxxxx"
+14:25:34 I controller Order pending: waiting for ACME authorization
+14:25:35 I controller Created Challenge for domain "*.novamart.com"
+14:25:36 I controller Presenting DNS-01 challenge for domain "*.novamart.com"
+14:25:37 I controller Creating TXT record in Route53 zone Z1234567890
+14:25:38 I controller TXT record created: _acme-challenge.novamart.com
+14:25:38 I controller Waiting for DNS propagation...
+14:26:08 I controller DNS propagation check: NXDOMAIN (attempt 1/12)
+14:26:38 I controller DNS propagation check: NXDOMAIN (attempt 2/12)
+14:27:08 I controller DNS propagation check: NXDOMAIN (attempt 3/12)
+14:27:38 I controller DNS propagation check: TXT found, verifying value...
+14:27:39 I controller DNS propagation confirmed
+14:27:39 I controller Requesting ACME server validation...
+14:27:42 I controller Authorization validated
+14:27:43 I controller Finalizing Order...
+14:27:45 I controller Certificate issued successfully
+14:27:45 I controller Stored new certificate in secret "novamart-tls-wildcard"
+```
+
+**Certificate renewed.** ✅
+
+```
+$ kubectl get certificate novamart-tls-wildcard -n production
+
+NAME                     READY   SECRET                    AGE     EXPIRY
+novamart-tls-wildcard    True    novamart-tls-wildcard     267d    2024-04-21T14:27:45Z
+```
+
+New expiry: **April 21, 2024.** 90-day Let's Encrypt cert. Next renewal attempt will be ~March 22 (30 days before expiry). The static key will work until then — but you're migrating to IRSA before that.
+
+```
+$ kubectl get secret novamart-tls-wildcard -n production \
+    -o jsonpath='{.metadata.annotations.cert-manager\.io/certificate-renewed}'
+
+2024-01-22T14:27:45Z
+```
+
+Fresh cert, live in the cluster. Any ingress controllers or service meshes referencing this secret will pick up the new cert on their next TLS handshake reload (typically seconds to minutes).
+
+```bash
+# Verify the new cert is being served
+echo | openssl s_client -connect store.novamart.com:443 -servername store.novamart.com 2>/dev/null | \
+  openssl x509 -noout -dates -subject
+
+notBefore=Jan 22 14:27:45 2024 GMT
+notAfter=Apr 21 14:27:45 2024 GMT
+subject=CN = *.novamart.com
+```
+
+Live. Serving the new cert. ✅
+
+---
+
+### #platform-engineering (2:30 PM)
+
+```
+✅ TLS certificate renewed. New expiry: April 21, 2024.
+
+Root cause: IAM access key for cert-manager DNS-01 challenge 
+was deactivated by security-automation on Dec 28 (correct 
+key rotation, undocumented dependency). Renewal failing since 
+Dec 30. 5 retries exhausted Jan 10. Nobody notified because 
+the cert expiry alert only fires at 7 days.
+
+Fix: new IAM access key created, cert-manager secret updated. 
+Renewal completed in 2 minutes.
+
+Follow-up:
+- IRSA migration to eliminate static keys (this week)
+- Cert-manager alert for renewal FAILURES, not just expiry
+- Document cert infrastructure ownership
+```
+
+---
+
+### 2:35 PM — Aisha Responds
+
+```
+Slack — DM from Aisha Rahman (2:35 PM)
+"The security-automation key rotation does check last-used 
+date. The policy is: deactivate if >180 days old AND 
+last used >90 days ago. 
+
+The cert-manager key was created June 15, last used 
+October 31 (cert renewal). By December 28, that's 58 days 
+since last use — under the 90-day threshold. BUT — the 
+policy was updated November 15 to reduce the last-used 
+threshold from 90 to 30 days. Under the new policy, 58 
+days of inactivity triggers deactivation.
+
+So the policy change in November is what caught the key 
+in December. Nobody audited existing keys against the 
+new threshold when the policy changed. That's the gap.
+
+I'm adding a pre-deactivation notification to the 
+automation — 7-day warning before any key is deactivated, 
+sent to the key owner and their manager. Won't help if 
+the owner left the company, but it's better than silent.
+
+Good catch on the IRSA migration. That's the real fix."
+```
+
+---
+
+### 2:40 PM — Marcus Security Fix
+
+```
+Slack — DM from Marcus Webb (2:40 PM)
+"Working on the Jenkins lockdown. Changed the admin password. 
+Restricting the security group now.
+
+But... I found something. Before I changed the password, I 
+checked the Jenkins audit log. There are login entries that 
+aren't from anyone I recognize.
+
+Last 30 days of Jenkins logins:
+
+Date              User        Source IP        Status
+Dec 3             admin       10.0.43.201     Success (localhost)
+Dec 5             admin       10.0.41.33      Success
+Dec 12            admin       10.0.42.88      Success  
+Jan 8             admin       10.0.41.33      Success
+Jan 8             admin       10.0.41.33      Success
+Jan 15            admin       172.31.4.89     Success
+Jan 15            admin       172.31.4.89     Success
+Jan 19            admin       172.31.4.89     Success
+Jan 22            admin       172.31.4.89     Success (TODAY, 9:14 AM)
+
+The 10.0.4x.xx IPs are our EKS nodes — those could be 
+anyone in the cluster using kubectl port-forward or a 
+pod with network access. That's concerning but at least 
+it's internal.
+
+The 172.31.4.89 IP — that's NOT in our VPC CIDR 
+(10.0.0.0/8). Our VPC is 10.0.0.0/16. 172.31.x.x is a 
+DEFAULT VPC range. 
+
+I checked and 172.31.4.89 belongs to... a VPC peering 
+connection? Let me look...
+
+There IS a VPC peering connection between our production 
+VPC and another VPC (vpc-0f8a3c...). The peering 
+connection was created August 2023. The peer VPC is in 
+the same AWS account but it's tagged 'legacy-staging.'
+
+Someone in the legacy-staging VPC has been logging into 
+our production Jenkins with admin/admin every few days 
+for the past week.
+
+And today. Nine AM today. Four hours ago.
+
+I'm... not sure what to do here. Do I need to call Aisha?"
+```
+
+---
+
+### 2:42 PM — Let That Sink In
+
+Someone from a peered VPC — `legacy-staging` — has been authenticating to the production legacy Jenkins with `admin/admin` credentials. **Four logins in the past week, including one four hours ago today.**
+
+What they have access to through Jenkins:
+- Arbitrary code execution on the Jenkins instance
+- The monthly-db-backup job, which has credentials to dump the production orders database
+- Anything the Jenkins instance's IAM role can do
+- Network access to everything the instance can reach (production RDS, internal services)
+- The build history and configuration of 14 jobs (some disabled, but configs still visible)
+
+What you DON'T know:
+- Who is at 172.31.4.89 (could be a person, a compromised instance, an automation)
+- What they did after logging in (Jenkins audit log shows logins but how detailed is the activity log?)
+- Whether they accessed the db-backup job credentials
+- Whether the `legacy-staging` VPC is even supposed to exist
+- Whether this is an employee doing something harmless or something worse
+
+This is no longer shadow infrastructure. **This might be an active security incident.**
+
+---
+
+```
+Slack — DM from Derek Huang (2:43 PM)
+"CB canary is at 5%. Looking clean so far. 10 minutes in, 
+no anomalies. Scaling to 25% at the 15-minute mark per 
+Lisa's template."
+```
+
+```
+Slack — DM from Tom Chen (2:44 PM)
+"ECR migration going well. Got kafka, zookeeper, and 
+kafka-connect images built and pushed to ECR. Want to do 
+a rolling restart of the StatefulSets to pull from ECR — 
+is now a good time?"
+```
+
+---
+
+**Current time: Monday 2:44 PM.**
+
+Marcus just found evidence of **repeated unauthorized access from an unknown source** to a production-accessible Jenkins instance with default credentials. The most recent login was **4 hours ago today.**
+
+You also have:
+- Derek's CB canary running (needs monitoring)
+- Tom ready to do ECR migration (needs approval + the namespace is under Legal hold)
+- The Jenkins password is now changed (Marcus did that before checking the audit log — so the attacker is locked out as of ~2:40 PM)
+- But you don't know what they did, what they accessed, or who they are
+
+**RULE 8: Ambiguous severity.** Is this someone from a legacy environment doing something innocent? Is it a compromised instance in the peered VPC running automated scans? Is it an actual attacker who's been in for weeks?
+
+**You don't have enough information to know. But you have enough to act.**
+
+**What do you do?**
+
