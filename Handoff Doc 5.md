@@ -1,4 +1,4 @@
-# UPDATED HANDOFF DOCUMENT
+# UPDATED HANDOFF DOCUMENT v3
 
 ---
 
@@ -124,7 +124,7 @@ MULTI-CLOUD:    Primary: AWS (us-east-1, us-west-2, eu-west-1)
 
 ---
 
-# 🔄 COMPLETE ROADMAP (APPROVED v2)
+# 🔄 COMPLETE ROADMAP (APPROVED v3)
 
 ```
 ══════════════════════════════════════════════════════════════════
@@ -150,11 +150,11 @@ MULTI-CLOUD:    Primary: AWS (us-east-1, us-west-2, eu-west-1)
   PART 3: AUTOMATION & TOOLING (Phase 9)
 ══════════════════════════════════════════════════════════════════
 
-  Phase 9: Production Automation & Internal Tooling  ░░░░░░░░░░░░░░░░░░░░  0%
-    → Lesson 1: Bash for DevOps                      (NOT STARTED)
-    → Lesson 2: Python for DevOps                    (NOT STARTED)
-    → Lesson 3: Go for DevOps                        (NOT STARTED)
-    → Lesson 4: Integration Patterns & Prod Tooling  (NOT STARTED)
+  Phase 9: Production Automation & Internal Tooling  ██████████████████░░  90%
+    → Lesson 1: Bash for DevOps                      ████████████████████ 100% ✅
+    → Lesson 2: Python for DevOps                    ████████████████████ 100% ✅
+    → Lesson 3: Go for DevOps                        ████████████████████ 100% ✅
+    → Lesson 4: Integration Patterns & Prod Tooling  ██████████████████░░ TAUGHT — AWAITING ANSWERS
 
 ══════════════════════════════════════════════════════════════════
   PART 4: ADVANCED TOPICS (Phase 10)
@@ -179,9 +179,10 @@ MULTI-CLOUD:    Primary: AWS (us-east-1, us-west-2, eu-west-1)
 
 ══════════════════════════════════════════════════════════════════
 
-  Overall Progress:  ████████████████░░░░ ~69%
-  Completed: 9 phases (Phases 0-8)
-  Remaining: 3 phases, 13 lessons (Phases 9-11)
+  Overall Progress:  ████████████████░░░░ ~76%
+  Completed: 9 phases + 3 lessons (Phases 0-8, Phase 9 L1-L3)
+  In Progress: Phase 9 Lesson 4 (taught, awaiting retention answers)
+  Remaining: 2.1 phases, 9 lessons (Phase 9 L4 grading, Phases 10-11)
 
 ══════════════════════════════════════════════════════════════════
 ```
@@ -697,6 +698,184 @@ Completed: Multi-week production simulation including:
 
 ---
 
+## PHASE 9: Production Automation & Internal Tooling (90% — In Progress)
+
+### Lesson 1: Bash for DevOps (100% ✅)
+```
+Topics: set -euo pipefail (when each flag helps/hurts),
+  trap (cleanup, signal handling, EXIT/ERR/INT/TERM),
+  shellcheck (SC2086, SC2046, SC2034 — top violations),
+  Logging framework (timestamp, level, function name),
+  Argument parsing (getopts, positional args, usage functions),
+  Lock files (flock) to prevent concurrent execution,
+  Retry logic with exponential backoff,
+  Dry-run mode (every destructive script needs this),
+  Idempotency patterns,
+  Text processing: awk (field extraction, pattern matching, BEGIN/END),
+  sed (in-place editing, regex groups, production gotchas),
+  jq (JSON: filter, map, select, reduce, @csv, --arg),
+  yq (YAML manipulation for K8s manifests and Helm values),
+  grep/egrep (regex patterns, -P for PCRE, -A/-B/-C context),
+  Process management in scripts (background, wait, parallel, exec "$@"),
+  PID files, signal forwarding in wrapper scripts,
+  Container entrypoint scripts (envsubst, config generation,
+    health check scripts, graceful shutdown handlers),
+  Makefiles & Task runners (GNU Make, Justfile, Taskfile.yml),
+  NovaMart scripts: EKS node drain wrapper, DB backup verification,
+    cert expiry checker, deployment rollback automation,
+    log collection for incidents, disk cleanup
+Failure modes: unquoted variable word splitting, missing set -e,
+  race conditions, trap not firing (subshell), locale-dependent behavior,
+  heredoc tab issues, bash beyond 200 lines
+```
+
+### Lesson 2: Python for DevOps (100% ✅)
+```
+Topics: Project structure (pyproject.toml, src layout, venv, pipx),
+  Dependency management (pip-compile, Poetry, PDM),
+  Type hints (mypy — expected at senior level),
+  boto3 deep dive (sessions, clients vs resources, paginators,
+    waiters, error handling, retry config, STS AssumeRole,
+    common services: EC2, S3, RDS, EKS, CloudWatch, SecretsManager, IAM),
+  HTTP/API automation (requests sessions, retries via urllib3.Retry + HTTPAdapter,
+    httpx async, rate limiting, pagination, API clients for PD/Jira/Slack),
+  CLI frameworks (Click, Typer, Rich tables/progress/panels),
+  Output formats (table, JSON, YAML — user choice),
+  Jinja2 templating (config generation, K8s manifests, Helm values,
+    template inheritance, custom filters),
+  Testing (pytest fixtures/parametrize/markers/conftest, moto for AWS mocking,
+    responses/httpretty for HTTP mocking, coverage + CI),
+  Async patterns (asyncio + aiohttp, semaphore concurrency limiting),
+  NovaMart tools: AWS cost reporter, EC2/EKS inventory tool,
+    incident auto-responder (PD webhook → Slack → Jira → diagnostics),
+    deployment orchestrator, secret rotation script,
+    compliance checker (IAM/SG/encryption audit), log analyzer
+Failure modes: no retry logic, credential leaks in logs,
+  silent failures (bare except:), memory issues with large responses,
+  timezone bugs (always UTC), missing pagination, boto3 region not set
+```
+
+### Lesson 3: Go for DevOps (100% ✅)
+```
+Topics: Why Go for DevOps (single binary, cross-compilation, concurrency,
+    K8s ecosystem native, static typing),
+  Project structure (cmd/, internal/, pkg/, go.mod/go.sum, go.work),
+  CLI tools with Cobra + Viper (command hierarchy, persistent flags,
+    flag binding, shell completions, man pages),
+  K8s client-go (clientset, dynamic client, discovery client,
+    informers/SharedInformerFactory, listers, contexts, cancellation,
+    in-cluster vs kubeconfig, watch + retry patterns),
+  Building K8s controllers/operators (Kubebuilder, reconciliation loop,
+    status subresource, finalizers, leader election, RBAC markers, envtest),
+  HTTP servers (net/http patterns, health endpoints, webhook receivers,
+    admission webhooks, promhttp metrics, graceful shutdown),
+  Concurrency (goroutines + channels, fan-out/fan-in, errgroup,
+    context.Context, sync.WaitGroup/Mutex/Once, worker pool pattern),
+  Error handling (errors.Is/As, wrapping with %w, custom types, sentinels),
+  Distribution (GoReleaser, distroless containers, Homebrew tap),
+  NovaMart tools: cluster audit CLI, deployment validator,
+    custom admission webhook, Slack bot for incidents,
+    K8s operator for NovaMartService CRD
+Failure modes: goroutine leaks, nil pointer dereference,
+  context misuse (Background mid-chain), race conditions (go test -race),
+  client-go informer cache stale reads, connection pool exhaustion,
+  binary size bloat (ldflags -s -w)
+```
+
+### Lesson 4: Integration Patterns & Production Tooling (TAUGHT — AWAITING ANSWERS)
+```
+Topics taught:
+  Pre-commit hooks ecosystem:
+    .pre-commit-config.yaml (full production config with 15+ hooks),
+    Hooks: trailing-whitespace, check-yaml, detect-secrets, shellcheck,
+      ruff (lint+format), mypy, golangci-lint, go-fmt, go-vet,
+      terraform_fmt/validate/tflint/tfsec/terraform_docs,
+      hadolint, yamllint, markdownlint, conventional-pre-commit,
+    .yamllint.yml (K8s-friendly config),
+    CI enforcement (pre-commit run --all-files in pipeline),
+    4 failure modes (hooks too slow → bypass, stale baseline,
+      not installed on new machines, version drift)
+
+  NovaMart Platform CLI (novactl):
+    Full command architecture (service, cluster, secrets, cost,
+      incident, compliance, completion subcommands),
+    Service scaffolding golden path (Cobra command, flags, validation),
+    Scaffold template engine (Go embed.FS, template.FuncMap,
+      conditional templates based on data layer, ServiceSpec model,
+      tier-based resource defaults),
+    Example deployment.yaml.tmpl with NovaMart standards
+
+  Webhook handler patterns:
+    Integration architecture diagram (Bitbucket, AlertManager, PagerDuty,
+      ArgoCD → novatools-webhook → Slack, Jira, K8s),
+    Idempotency via Redis SETNX deduplication,
+    Fail-open strategy on Redis errors,
+    Event fingerprinting per provider
+
+  ChatOps — Slack bot:
+    Socket Mode vs Events API (Socket Mode works behind VPN),
+    Full bot implementation (Go + slack-go/socketmode),
+    CommandRouter pattern (group:subcommand dispatch),
+    Handlers: deploy status, rollback (with prod approval flow),
+      oncall (PagerDuty query), runbook lookup, cluster nodes,
+      incident create (Slack channel + topic + Jira + context),
+    5 failure modes (no audit trail, no approval flow,
+      bot token too powerful, blocking handlers, no rate limiting)
+
+  K8s CronJobs for operational tasks:
+    5 production CronJob specs:
+      cert-expiry-scanner (daily), orphan-resource-cleaner (weekly),
+      compliance-audit (weekly), cost-report (daily),
+      backup-verify (daily),
+    All with: concurrencyPolicy:Forbid, activeDeadlineSeconds,
+      startingDeadlineSeconds, IRSA, resource limits, pinned images,
+    5 failure modes (missing concurrencyPolicy, no deadline,
+      no startingDeadlineSeconds, silent failures without monitoring,
+      :latest tag drift),
+    PrometheusRule for CronJob monitoring
+
+  Toil measurement and elimination:
+    Google SRE toil definition (manual, repetitive, automatable,
+      tactical, no enduring value, scales linearly),
+    Target: ≤50% engineering time on toil,
+    NovaMart toil tracking sheet (9 tasks, monthly hours),
+    Priority formula: Frequency × Time × Risk × (1 / Difficulty),
+    Scored priority table with automation decisions
+
+  When to use what — decision framework:
+    Language decision tree (Bash <100 lines/glue, Python APIs/data,
+      Go CLI/K8s/long-running, Terraform IaC),
+    Automation pattern decision matrix (8 trigger types mapped to
+      pattern, language, and example),
+    5 anti-patterns:
+      1. Mega Script (decompose into single-purpose tools)
+      2. Automate Everything Immediately (use priority score)
+      3. Internal Tool With No Tests (same rigor as product code)
+      4. ChatOps for Everything (convenience layer, not SPOF)
+      5. Webhook Does Too Much (ack + enqueue, process async)
+
+  Platform operations map:
+    Developer workflow (create → pre-commit → CI → PR → ArgoCD),
+    Day-2 operations (5 CronJobs),
+    Incident response flow (AlertManager → auto-remediate → PD → Slack),
+    Self-service goals (deploy, rotate, logs without platform team)
+
+  Platform maturity model:
+    Level 1: Everything manual (>80% toil)
+    Level 2: Basic automation (~60% toil)
+    Level 3: Platform team with tooling (~35% toil) ← NovaMart target
+    Level 4: Self-service platform (<25% toil)
+    Level 5: Fully autonomous operations (<15% toil)
+
+RETENTION QUESTIONS PENDING (4 questions):
+  Q1: Design novactl service deploy (7-step orchestration with rollback)
+  Q2: Debug a buggy webhook handler (find every bug in code)
+  Q3: Write webhook deduplicator + async processor (Go, with tests)
+  Q4: Toil analysis (priority scoring, automation decisions, savings projection)
+```
+
+---
+
 # 📊 RETENTION SCORE HISTORY
 
 ```
@@ -720,6 +899,10 @@ Phase 7 Lesson 3 (CI/CD):          Grade A
 Phase 7 Lesson 4 (App Onboard):    Grade A
 Phase 7 Lesson 5 (Ops Ready):      Grade A
 Phase 8 (Simulation):              Completed — demonstrated production readiness
+Phase 9 Lesson 1 (Bash):           Completed ✅
+Phase 9 Lesson 2 (Python):         Completed ✅
+Phase 9 Lesson 3 (Go):             Completed ✅
+Phase 9 Lesson 4 (Integration):    AWAITING RETENTION ANSWERS
 ```
 
 ---
@@ -740,6 +923,7 @@ Phase 8 (Simulation):              Completed — demonstrated production readine
 - Design decisions documents are professional-grade ADRs
 - Phase 8 simulation demonstrated ability to operate under pressure
 - Identified the automation gap in the roadmap (shows ownership of own learning)
+- **Phase 9 Lessons 1-3 completed: demonstrated Bash, Python, Go production automation skills**
 
 ### Gaps to Watch:
 - Occasionally misses "production gotcha" in favor of textbook answer
@@ -748,248 +932,24 @@ Phase 8 (Simulation):              Completed — demonstrated production readine
 - Tool-specific precision gaps (mechanism details vs concepts)
 - Uses working path vs optimal path sometimes (logs-first vs exemplar shortcut)
 - Phase 7 pattern: architecture solid, operational singleton/safety constraints missed initially
-- **Untested: Production automation code (Go, Python, Bash)** ← Phase 9 will reveal true gaps
+- **Phase 9 Lesson 4 retention answers pending — will reveal integration thinking quality**
 - **Untested: Interview articulation** ← Phase 11 will test ability to explain under pressure
 
 ---
 
 # 📋 PHASE-BY-PHASE LESSON PLAN (REMAINING)
 
-## Phase 9: Production Automation & Internal Tooling
+## Phase 9: Production Automation & Internal Tooling (Lesson 4 in progress)
 
-### Lesson 1: Bash for DevOps
+### Lesson 4: Integration Patterns & Production Tooling — RETENTION ANSWERS PENDING
 ```
-Topics:
-  Shell scripting production standards:
-    set -euo pipefail (and when each flag helps/hurts)
-    trap (cleanup, signal handling, EXIT/ERR/INT/TERM)
-    shellcheck (SC2086, SC2046, SC2034 — top violations)
-  Production script patterns:
-    Logging framework (timestamp, level, function name)
-    Argument parsing (getopts, positional args, usage functions)
-    Lock files (flock) to prevent concurrent execution
-    Retry logic with exponential backoff
-    Dry-run mode (every destructive script needs this)
-    Idempotency patterns
-  Text processing mastery:
-    awk (field extraction, pattern matching, BEGIN/END blocks)
-    sed (in-place editing, regex groups, production gotchas)
-    jq (JSON: filter, map, select, reduce, @csv, --arg)
-    yq (YAML manipulation for K8s manifests and Helm values)
-    grep/egrep (regex patterns, -P for PCRE, -A/-B/-C context)
-  Process management in scripts:
-    Background processes, wait, parallel execution
-    Signal forwarding in wrapper scripts (exec "$@")
-    PID files and process guarding
-  Container entrypoint scripts:
-    Environment variable substitution (envsubst)
-    Configuration file generation from env vars
-    Health check scripts, readiness gate scripts
-    Graceful shutdown handlers
-  Makefiles & Task runners:
-    GNU Make for DevOps workflows (.PHONY, variables, targets)
-    Justfile (modern alternative)
-    Taskfile.yml (Go-based, YAML syntax)
-    Common targets: lint, test, build, deploy, clean
-  Real NovaMart scripts:
-    EKS node drain wrapper (with PDB validation, Slack notification)
-    Database backup verification (RDS snapshot → restore → validate → cleanup)
-    Certificate expiry checker (scan all certs, alert on <30 days)
-    Deployment rollback automation (ArgoCD + Slack + Jira)
-    Log collection for incident response (multi-source, archive, S3 upload)
-    Disk cleanup (safe pruning with thresholds, logging, dry-run)
-  Anti-patterns:
-    Bash beyond 200 lines (rewrite in Python/Go)
-    No error handling, no logging, no dry-run
-    Parsing ls output, unquoted variables, eval usage
-    Hardcoded paths/credentials, missing shebang
-  Failure modes:
-    Unquoted variable word splitting causes data loss
-    Missing set -e allows silent failures
-    Race conditions in concurrent scripts
-    trap not firing (subshell context)
-    Locale-dependent sort/grep behavior (LC_ALL=C)
-    heredoc tab issues (<<- requires tabs not spaces)
-```
+4 retention questions asked:
+  Q1: Design novactl service deploy (end-to-end 7-step orchestration)
+  Q2: Debug buggy webhook handler (find every bug)
+  Q3: Write webhook deduplicator + async processor (Go + tests)
+  Q4: Toil analysis with priority scoring and automation recommendations
 
-### Lesson 2: Python for DevOps
-```
-Topics:
-  Project structure and packaging:
-    pyproject.toml (modern packaging), src layout
-    Virtual environments (venv, pipx for CLI tools)
-    Dependency management (pip-compile, Poetry, PDM)
-    Type hints (mypy) — expected at senior level
-  boto3 deep dive:
-    Sessions, clients vs resources (clients preferred)
-    Paginators (never manual next_token loops)
-    Waiters (built-in + custom), error handling (botocore.exceptions)
-    Retry configuration (adaptive mode)
-    STS AssumeRole for cross-account
-    Common services: EC2, S3, RDS, EKS, CloudWatch, SecretsManager,
-      IAM, STS, Route53, ELB, AutoScaling
-  HTTP/API automation:
-    requests (sessions, auth, retries via urllib3.Retry + HTTPAdapter)
-    httpx (async support)
-    Rate limiting (ratelimit library, token bucket)
-    Pagination handling for REST APIs
-    API clients for PagerDuty, Jira, Slack, Confluence
-  CLI frameworks:
-    Click (groups, commands, options, arguments, context)
-    Typer (modern, type-hint based)
-    Rich (tables, progress bars, panels, syntax highlighting)
-    Output formats (table, JSON, YAML — let user choose)
-  Jinja2 templating:
-    Config file generation (nginx, prometheus, alertmanager configs)
-    K8s manifest generation, Helm values generation
-    Template inheritance, custom filters
-  Testing:
-    pytest (fixtures, parametrize, markers, conftest.py)
-    moto (AWS service mocking — every boto3 call tested without AWS)
-    responses/httpretty (HTTP mocking)
-    Coverage targets and CI integration
-  Async patterns:
-    asyncio + aiohttp for concurrent API calls
-    Semaphore for concurrency limiting
-    When async helps vs overkill
-  Real NovaMart tools:
-    AWS cost reporter (CUR analysis, team allocation, anomaly detection)
-    EC2/EKS inventory tool (cross-account, cross-region, output table/JSON)
-    Incident auto-responder (PagerDuty webhook → create Slack channel →
-      assign commander → create Jira → gather initial diagnostics)
-    Deployment orchestrator (multi-service coordinated rollout)
-    Secret rotation script (Vault/ASM → verify → rotate → validate)
-    Compliance checker (IAM audit, SG audit, encryption audit)
-    Log analyzer (parse structured logs, extract error patterns, correlate)
-  Failure modes:
-    No retry logic (transient failures crash script)
-    Credential leaks in logs (always mask secrets)
-    Silent failures (bare except:, swallowed errors)
-    Memory issues with large API responses (use pagination + streaming)
-    Timezone bugs (always use UTC internally)
-    Missing pagination (only getting first page of results)
-    boto3 client not respecting region (explicit region_name)
-```
-
-### Lesson 3: Go for DevOps
-```
-Topics:
-  Why Go for DevOps:
-    Single binary distribution (no runtime dependencies)
-    Fast compilation, cross-compilation (GOOS/GOARCH)
-    Concurrency primitives (goroutines, channels)
-    K8s ecosystem is Go-native (client-go, controllers, operators)
-    Static typing catches bugs at compile time
-  Project structure:
-    cmd/ (entrypoints), internal/ (private), pkg/ (public)
-    go.mod/go.sum, Go workspace (go.work for monorepo)
-    Makefile targets (build, test, lint, release)
-  CLI tools with Cobra + Viper:
-    Command hierarchy, persistent flags, flag binding
-    Viper config (file, env, flags — priority order)
-    Shell completions generation
-    Man page generation
-  K8s client-go:
-    Clientset, dynamic client, discovery client
-    Informers (SharedInformerFactory, event handlers, resync)
-    Listers (cached reads from informer store)
-    Contexts and cancellation
-    In-cluster config vs kubeconfig
-    Watch + retry patterns
-  Building K8s controllers/operators:
-    Kubebuilder scaffolding
-    Reconciliation loop pattern
-    Status subresource updates
-    Finalizers in controllers
-    Leader election for HA
-    RBAC generation from markers
-    Testing controllers (envtest)
-  HTTP servers:
-    net/http patterns (handlers, middleware, mux)
-    Health endpoints (/healthz, /readyz, /metrics)
-    Webhook receivers (Bitbucket, PagerDuty, generic)
-    Admission webhooks (mutating + validating)
-    Prometheus metrics exposition (promhttp)
-    Graceful shutdown (context, signal handling)
-  Concurrency patterns:
-    goroutines + channels (fan-out/fan-in)
-    errgroup (bounded concurrency with error propagation)
-    context.Context (timeout, cancellation, value propagation)
-    sync.WaitGroup, sync.Mutex, sync.Once
-    Worker pool pattern
-  Error handling:
-    errors.Is, errors.As, error wrapping (fmt.Errorf %w)
-    Custom error types, sentinel errors
-    Don't panic — handle errors explicitly
-  Distribution:
-    GoReleaser (multi-arch, checksums, changelogs)
-    Distroless containers (gcr.io/distroless/static-debian12)
-    Homebrew tap generation
-  Real NovaMart tools:
-    Cluster audit CLI (resource usage, orphaned resources, policy violations)
-    Deployment validator (pre-deploy checks: images exist, secrets present,
-      quota available, PDB won't block)
-    Custom admission webhook (enforce NovaMart standards: labels, resource
-      limits, image registry, probe requirements)
-    Slack bot for incidents (slash commands: /incident create, /runbook,
-      /rollback, /oncall)
-    K8s operator for NovaMart CRD (NovaMartService — automates onboarding:
-      namespace, RBAC, quotas, network policies, monitoring)
-  Failure modes:
-    Goroutine leaks (missing context cancellation, channel not closed)
-    Nil pointer dereference (uninitialized pointers, interface nil check trap)
-    Context misuse (context.Background() mid-chain breaks cancellation)
-    Race conditions (go test -race, sync primitives)
-    Client-go informer cache stale reads vs direct API calls
-    Connection pool exhaustion (http.Client reuse, transport settings)
-    Binary size bloat (ldflags -s -w, UPX cautiously)
-```
-
-### Lesson 4: Integration Patterns & Production Tooling
-```
-Topics:
-  Pre-commit hooks ecosystem:
-    pre-commit framework (Python-based, .pre-commit-config.yaml)
-    Hooks: shellcheck, yamllint, terraform fmt/validate, golangci-lint,
-      detect-secrets, hadolint, markdownlint, commitlint
-    CI enforcement (pre-commit run --all-files in pipeline)
-  Building the NovaMart platform CLI:
-    novactl (Go + Cobra): unified developer interface
-    Commands: service create, service deploy, service status,
-      cluster info, secrets rotate, runbook show, incident create
-    Plugin architecture for extensibility
-  Webhook handlers:
-    Bitbucket → custom validation → Slack notification
-    PagerDuty → Slack channel creation → Jira ticket
-    ArgoCD → deployment tracking → metrics
-    Generic pattern: receiver → validate → transform → dispatch
-  ChatOps:
-    Slack bot architecture (Socket Mode vs Events API)
-    Command handlers: deploy, rollback, status, oncall, runbook
-    Approval workflows via Slack
-    Audit trail for all ChatOps actions
-  K8s CronJobs for operational tasks:
-    Certificate expiry scanner
-    Orphaned resource cleaner
-    Cost report generator
-    Compliance audit (weekly)
-    Backup verification
-  Toil measurement and elimination:
-    What is toil (manual, repetitive, automatable, no enduring value)
-    Toil taxonomy and tracking
-    Automation priority framework (frequency × time × risk)
-    Toil budget (≤50% per Google SRE book)
-  When to use what — decision framework:
-    Bash: <200 lines, text processing, glue, entrypoints, one-off
-    Python: API automation, data processing, complex logic, prototyping
-    Go: CLI tools, K8s integration, long-running services, performance-critical
-    Decision tree with examples
-  Failure modes:
-    Webhook security (no signature verification → anyone can trigger)
-    ChatOps without audit trail (no accountability)
-    CronJob overlap (concurrencyPolicy not set → parallel runs)
-    Platform CLI version drift (no auto-update mechanism)
-    Pre-commit hooks too slow (developers bypass with --no-verify)
+Status: Grade answers → complete Phase 9 → proceed to Phase 10
 ```
 
 ---
@@ -999,184 +959,49 @@ Topics:
 ### Lesson 1: Database Operations for DevOps
 ```
 Topics:
-  PostgreSQL operations:
-    EXPLAIN/EXPLAIN ANALYZE (reading query plans)
-    Vacuum (autovacuum tuning, bloat, dead tuples)
-    Locks (row-level, table-level, lock monitoring, deadlock detection)
-    Connection management (PgBouncer vs RDS Proxy, pool sizing math)
-    Replication (streaming, logical, replication lag monitoring)
-    Performance Insights (AWS), pg_stat_statements
-    Index management (unused indexes, missing indexes, pg_stat_user_indexes)
-  Schema migration strategies:
-    Expand-contract pattern (backward compatible deployments)
-    Blue-green schema migrations
-    Flyway/Liquibase in CI/CD pipelines
-    Migration rollback strategies
-    Zero-downtime migrations (add column, backfill, rename)
-    Large table migrations (pt-online-schema-change patterns)
-  Backup and recovery:
-    RDS automated backups, manual snapshots, PITR
-    Cross-region backup replication
-    Restore testing automation (weekly restore → validate → cleanup)
-    RTO/RPO validation
-  Redis operations:
-    Memory management (maxmemory, eviction policies)
-    Key patterns and anti-patterns (large keys, hot keys)
-    Cluster mode vs replication group
-    ElastiCache metrics that matter
-    Failover testing
-  Failure modes:
-    Connection pool exhaustion (symptoms, investigation, fix)
-    Long-running queries blocking vacuum
-    Replication lag during heavy writes
-    OOM on analytics queries
-    Split-brain in failover
-    Migration rollback failure (already dropped column)
-    Redis maxmemory reached, eviction cascade
+  PostgreSQL operations (EXPLAIN, vacuum, locks, connection pooling,
+    replication, Performance Insights, pg_stat_statements, index mgmt)
+  Schema migration strategies (expand-contract, blue-green, Flyway,
+    zero-downtime, large table migrations)
+  Backup and recovery (RDS automated, PITR, cross-region, restore testing)
+  Redis operations (memory mgmt, eviction, cluster mode, failover)
+  Failure modes (pool exhaustion, vacuum blocked, replication lag,
+    OOM on analytics, split-brain, migration rollback, Redis eviction)
 ```
 
 ### Lesson 2: FinOps & Cost Engineering
 ```
 Topics:
-  AWS cost model:
-    On-demand, Reserved Instances, Savings Plans, Spot
-    When to use each (decision framework)
-    Compute Savings Plans vs EC2 Savings Plans vs RIs
-  Cost visibility:
-    Cost Explorer, CUR (Cost and Usage Report)
-    Cost allocation tags (aws:eks:cluster-name, team, environment, service)
-    Kubecost / OpenCost for K8s cost attribution
-    Cost anomaly detection and alerting (AWS + custom)
-  Right-sizing methodology:
-    VPA recommendations → CloudWatch metrics → action
-    Instance type comparison (Graviton ARM vs x86, cost savings)
-    EBS optimization (GP3 vs GP2 vs IO2, IOPS/throughput provisioning)
-    RDS instance right-sizing
-  Spot strategies:
-    Karpenter consolidation and spot diversification
-    Spot interruption handling (2-minute warning, rebalancing)
-    Spot capacity pools, allocation strategy
-    Mixed instance policies
-  Storage optimization:
-    S3 lifecycle policies (Standard → IA → Glacier → Deep Archive)
-    S3 Intelligent-Tiering
-    EBS snapshot lifecycle (DLM policies)
-    ECR image lifecycle policies
-  Data transfer costs (the hidden killer):
-    NAT Gateway processing ($0.045/GB — often largest bill item)
-    Cross-AZ traffic ($0.01/GB each way)
-    VPC endpoints to eliminate NAT costs
-    CloudFront vs direct S3
-    Data transfer between regions
-  FinOps practices:
-    Showback/chargeback per team
-    Monthly cost review cadence
-    Budget alerts and anomaly detection
-    Reserved capacity planning
-    Waste detection (idle resources, unattached EBS, unused EIPs)
-  NovaMart exercise:
-    Build cost dashboard (Kubecost + CUR + CloudWatch)
-    Identify $X/month savings opportunities
-    Propose Savings Plan strategy
-    Implement cost allocation tags across infrastructure
-  Failure modes:
-    Savings Plan over-commitment (locked in, can't reduce)
-    Spot interruption during deployment
-    Cost tags not propagated (invisible spend)
-    NAT Gateway costs explode (missing VPC endpoint)
-    S3 lifecycle deletes data still needed
-    Dev environments running 24/7 at production size
+  AWS cost model (On-demand, RI, Savings Plans, Spot, decision framework)
+  Cost visibility (Cost Explorer, CUR, cost allocation tags, Kubecost/OpenCost)
+  Right-sizing (VPA recommendations, Graviton, EBS optimization, RDS)
+  Spot strategies (Karpenter, interruption handling, diversification)
+  Storage optimization (S3 lifecycle, Intelligent-Tiering, EBS DLM, ECR lifecycle)
+  Data transfer costs (NAT Gateway, cross-AZ, VPC endpoints, CloudFront)
+  FinOps practices (showback/chargeback, budgets, anomaly detection, waste detection)
+  NovaMart exercise (cost dashboard, savings opportunities, SP strategy, tags)
 ```
 
 ### Lesson 3: Chaos Engineering & DR
 ```
 Topics:
-  Chaos engineering methodology:
-    Steady-state hypothesis (define "normal" with metrics)
-    Experiment design (what, blast radius, abort conditions)
-    Run, observe, analyze, improve
-    Chaos maturity model (from manual to automated)
-  Tools:
-    Litmus Chaos (K8s native, ChaosEngine, ChaosExperiment CRDs)
-    AWS Fault Injection Simulator (FIS — managed, IAM controlled)
-    Chaos Mesh (K8s native, fine-grained network/IO/stress)
-    Gremlin (SaaS, enterprise, easy to start)
-  GameDay planning and execution:
-    Stakeholder alignment, scope definition
-    Communication plan (who knows, who doesn't)
-    Runbook validation through chaos
-    Post-GameDay analysis and improvements
-    NovaMart: design and execute 3 GameDays:
-      1. AZ failure (cordon all nodes in one AZ)
-      2. Database failover (RDS Multi-AZ forced failover)
-      3. Service mesh failure (kill Linkerd control plane)
-  DR patterns:
-    Active-active (multi-region, Route53 latency routing)
-    Active-passive (standby region, failover routing)
-    Pilot light (minimal infra in DR, scale on failover)
-    Warm standby (scaled-down but running)
-    DR pattern selection (RTO/RPO requirements → pattern)
-  DR exercises:
-    RDS failover test (measure actual RTO)
-    Region failover simulation
-    AZ failure simulation (NACLs to simulate AZ loss)
-    Backup restore validation
-    DNS failover testing
-  RTO/RPO:
-    Definitions, calculation methodology
-    Testing and validation cadence
-    Documentation and reporting
-  Failure modes:
-    Chaos experiment escapes blast radius
-    GameDay reveals missing runbooks
-    DR failover works but failback doesn't
-    RDS Multi-AZ failover takes longer than expected
-    Data loss during region failover (replication lag)
-    DNS TTL prevents quick failover
-    DR environment configuration drift from production
+  Chaos methodology (steady-state hypothesis, experiment design, maturity model)
+  Tools (Litmus Chaos, AWS FIS, Chaos Mesh, Gremlin)
+  GameDay planning (3 NovaMart GameDays: AZ failure, DB failover, mesh failure)
+  DR patterns (active-active, active-passive, pilot light, warm standby)
+  DR exercises (RDS failover, region failover, AZ failure, backup restore, DNS failover)
+  RTO/RPO (definitions, calculation, testing, documentation)
 ```
 
 ### Lesson 4: Platform Engineering & Developer Experience
 ```
 Topics:
-  Internal Developer Platforms (IDP):
-    What, why, maturity model (ad-hoc → self-service → product)
-    Build vs buy decision framework
-    Platform as product (users = developers)
-  Backstage / Port:
-    Service catalog (ownership, dependencies, documentation)
-    Software templates (scaffolding new services)
-    TechDocs (docs-as-code in Backstage)
-    Plugins ecosystem
-  Golden paths:
-    Opinionated defaults vs escape hatches
-    NovaMart golden path: service template → CI/CD → observability →
-      security → deployment → all automated
-    Measuring golden path adoption
-  DORA metrics:
-    Deployment frequency
-    Lead time for changes
-    Change failure rate
-    Mean time to recovery (MTTR)
-    How to measure each in NovaMart stack
-    Targets by performance tier (elite, high, medium, low)
-  Developer experience:
-    Developer surveys and feedback loops
-    Friction logs (identify pain points)
-    Time-to-first-deploy metric
-    Self-service infrastructure
-    Documentation standards
-  Multi-tenancy in K8s:
-    Namespace-per-team, cluster-per-team (tradeoffs)
-    Resource quotas, limit ranges, network policies
-    RBAC per team, audit logging
-    Hierarchical namespaces (HNC)
-  Failure modes:
-    Platform team becomes bottleneck (no self-service)
-    Golden path too rigid (developers bypass it)
-    DORA metrics gamed (small PRs, no real improvement)
-    Backstage adoption stalls (stale catalog, no ownership)
-    Multi-tenancy noisy neighbor (resource contention)
+  Internal Developer Platforms (IDP maturity model, build vs buy)
+  Backstage/Port (service catalog, software templates, TechDocs, plugins)
+  Golden paths (opinionated defaults, escape hatches, adoption metrics)
+  DORA metrics (4 metrics, how to measure in NovaMart, performance tiers)
+  Developer experience (surveys, friction logs, time-to-first-deploy, self-service)
+  Multi-tenancy in K8s (namespace-per-team, quotas, RBAC, HNC)
 ```
 
 ---
@@ -1188,72 +1013,38 @@ Topics:
 Topics:
   Framework: requirements → constraints → architecture →
     tradeoffs → scaling → failure modes → monitoring
-  Practice problems:
-    Design a CI/CD platform for 500 microservices
-    Design a multi-region deployment strategy
-    Design an observability platform at scale
-    Design a secrets management system
-    Design a cost optimization platform
-    Design a Kubernetes multi-tenant platform
-  Whiteboard/diagramming practice
-  Communication during design (narrate tradeoffs)
-  Time management (45 min structure)
+  Practice problems (6 infrastructure design problems)
+  Whiteboard/diagramming, communication, time management
 ```
 
 ### Lesson 2: Live Troubleshooting
 ```
 Topics:
-  Timed incident scenarios (15-30 min):
-    "Your K8s cluster is down" — systematic investigation
-    "Latency spiked 10x" — investigation methodology
-    "Deployment broke production" — rollback + RCA
-    "Database connections exhausted" — diagnose + fix
-    "Disk full on nodes" — prioritize + fix + prevent
-  Communication during troubleshooting:
-    Narrate your thinking out loud
-    Ask clarifying questions (what changed recently?)
-    State assumptions explicitly
-    Prioritize (impact first, root cause second)
+  Timed incident scenarios (15-30 min each, 5 scenarios)
+  Communication during troubleshooting (narrate thinking, ask clarifying questions)
 ```
 
 ### Lesson 3: Coding Challenges
 ```
 Topics:
-  Write a deployment CLI tool (Go, 45 min)
-  Write an AWS cleanup script (Python, 30 min)
-  Write a log parser / metric extractor (Bash/Python)
-  Debug a broken Terraform module (find the bugs)
-  Debug a broken K8s manifest (find the misconfigs)
-  Code review exercises (evaluate someone else's PR)
+  Timed coding exercises (Go CLI, Python cleanup, Bash parser)
+  Debug broken Terraform/K8s manifests
+  Code review exercises
   Focus: clean code, error handling, edge cases, testability
 ```
 
 ### Lesson 4: Behavioral & Leadership
 ```
 Topics:
-  STAR format mastery (Situation, Task, Action, Result)
-  Amazon Leadership Principles mapped to DevOps scenarios
-  Google "Googleyness" and collaboration signals
-  Meta infrastructure culture
-  Story bank:
-    Incident you led (SEV1, communication, resolution)
-    System you designed (tradeoffs, scale)
-    Conflict you resolved (technical disagreement)
-    Mistake you made (what you learned)
-    Process you improved (before/after metrics)
-  Questions to ask interviewers (infrastructure-specific)
-  Negotiation basics (levels, comp structure, competing offers)
+  STAR format, Amazon LPs, Google Googleyness, Meta infra culture
+  Story bank (5 story types), questions for interviewers, negotiation basics
 ```
 
 ### Lesson 5: Mock Interviews (Full Loops)
 ```
 Topics:
-  Mock phone screen (45 min — mix of technical + behavioral)
-  Mock system design (60 min — full whiteboard exercise)
-  Mock coding (45 min — build a tool under pressure)
-  Mock behavioral (45 min — STAR stories, follow-ups)
-  Feedback and iteration after each mock
-  Interviewer calibration (what they're actually scoring)
+  Mock phone screen, system design, coding, behavioral (45-60 min each)
+  Feedback, iteration, interviewer calibration
 ```
 
 ---
@@ -1262,13 +1053,13 @@ Topics:
 
 ```
 ╔═══════════════════════════════════════════════════════════════╗
-║  CURRENT POSITION: Phase 9, Lesson 1 — Bash for DevOps      ║
-║  STATUS: NOT STARTED                                         ║
+║  CURRENT POSITION: Phase 9, Lesson 4 — Integration Patterns  ║
+║  STATUS: TAUGHT — AWAITING RETENTION ANSWERS                 ║
 ║                                                              ║
-║  Action: Begin Phase 9, Lesson 1 teaching                    ║
+║  Action: Grade retention answers for Q1-Q4 when submitted    ║
+║          → Complete Phase 9 → Begin Phase 10, Lesson 1       ║
 ║                                                              ║
-║  Remaining lessons: 13                                       ║
-║    Phase 9:  4 lessons (Bash, Python, Go, Integration)       ║
+║  Remaining after grading: 9 lessons                          ║
 ║    Phase 10: 4 lessons (DB Ops, FinOps, Chaos/DR, Platform)  ║
 ║    Phase 11: 5 lessons (SysDesign, Troubleshoot, Code,       ║
 ║              Behavioral, Mocks)                              ║
@@ -1277,4 +1068,4 @@ Topics:
 
 ---
 
-**END OF HANDOFF DOCUMENT v2 — APPROVED ROADMAP**
+**END OF HANDOFF DOCUMENT v3 — Phase 9 Lessons 1-3 Complete, Lesson 4 Awaiting Grading**
