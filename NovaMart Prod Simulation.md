@@ -23934,3 +23934,4591 @@ Quick message to Aisha:
 
 *This is what on-call looks like. Not the incidents you expect. The ones that find you.*
 
+## TUESDAY 8:30 AM — JAMES SYNC
+
+---
+
+Zoom. James's camera is on. Tie, jacket, office door closed. Sarah is next to him — they're in the same room. Aisha is on from home. Rachel joins ten seconds late, already scrolling through her draft.
+
+James doesn't do preamble.
+
+**James:** "I read Aisha's email from last night and her 6 AM update. I've had twelve hours to process this. I have questions, but first — Aisha, give me the CrowdStrike bottom line."
+
+**Aisha:** "Single actor. Four-month campaign starting October 8, one month after Carlos Mendez's departure. Deliberate targeting — EU customers, high-value customers, support tickets. Data exfiltrated to a public file sharing service called transfer.sh. Confirmed via NAT gateway metrics and bash history. The actor had access to at least three production databases through a staging Metabase instance and a legacy Jenkins server, both using Carlos's SSH keys and default credentials."
+
+She pauses. "CrowdStrike's assessment: 'Consistent with a former employee or contractor with pre-existing system knowledge. Data collection pattern suggests potential sale or competitive use.' They stopped short of naming Carlos directly — that's an attribution question for law enforcement, not forensics."
+
+**James is still.** "How many customers?"
+
+**You:** "284,847 confirmed from the S3 backup dumps. We're still cataloging the reporting database — a shadow RDS instance the actor was also querying. That number may go above 300,000."
+
+**James:** "EU?"
+
+**You:** "168,442 confirmed EU. 41,207 UK. 58,934 US."
+
+**James closes his eyes for exactly two seconds.**
+
+**James:** "Rachel. Walk me through what we owe and when."
+
+**Rachel:** "Three obligations. First: GDPR Article 33 — supervisory authority notification. Draft is complete, technical review done this morning. Filing at noon today. We're within the 72-hour window. Second: GDPR Article 34 — notification to affected individuals. 'Without undue delay.' I'm recommending Thursday. That gives us today and tomorrow to prepare the communication, brief customer support, and set up a response page. Third: UK ICO — separate notification required under UK GDPR. Same timeline. I'll file both Thursday if James approves, or I can stagger them."
+
+**James:** "What does the customer email say?"
+
+**Rachel:** "In plain language: 'We identified unauthorized access to our systems by a former employee. Your personal information — name, email, phone, address, and purchase history — may have been accessed and downloaded. We have contained the breach, engaged forensic investigators, and reported to data protection authorities. Here's what we recommend you do.' Then we give them a link to a dedicated response page with FAQ, credit monitoring information if we're offering it, and a contact channel."
+
+**James:** "Are we offering credit monitoring?"
+
+**Rachel:** "I'd recommend yes. It's not legally required in all jurisdictions, but it's become standard practice and the cost of not offering it — in regulatory goodwill and customer trust — is higher than the cost of providing it. Twelve months of monitoring for EU and UK customers, coordinated through a provider. US customers get the same. Budget estimate: $2-4 per customer, so roughly $600K to $1.2M."
+
+James doesn't flinch at the number. **"Approved in principle. Get me a specific vendor and cost by end of day. Sarah, loop in finance."**
+
+Sarah nods, making notes.
+
+---
+
+### 8:38 AM — James Turns to You
+
+**James:** "I want to understand how this was invisible for four months. Not to assign blame — to understand the system failure. Walk me through it."
+
+This is the question Rachel prepped you for yesterday.
+
+**You:** "Three layers of failure, all systemic. First: employee offboarding didn't include infrastructure decommissioning. When Carlos left in September, his corporate accounts were disabled, but his AWS infrastructure — EC2 instances, RDS databases, S3 buckets, VPC configurations, SSH keys — were not inventoried or decommissioned. Nobody owned that step in the offboarding process."
+
+"Second: we had no visibility into what existed. There was no AWS-level infrastructure inventory, no drift detection, no way to know that unmanaged resources existed. The Kubernetes cluster had a similar gap — that's what the shadow Kafka discovery exposed two weeks ago. We built drift detection for Kubernetes and deployed it last Monday. But we didn't generalize the threat model to AWS resources fast enough. There's a seven-day gap between finding the Kubernetes shadow infrastructure and starting the AWS-level audit."
+
+"Third: default credentials. The Jenkins server had admin/admin for two years. The security group allowed access from the entire VPC. Nobody was monitoring login attempts. Each of these individually is a known anti-pattern. Together, they created an open door."
+
+**James:** "The seven-day gap. Is that the gap Rachel mentioned — the one the supervisory authority will ask about?"
+
+**You:** "Yes. Between January 15 when we found the Kubernetes shadow infrastructure and January 22 when Marcus found the EC2 instances, we were focused on the Kubernetes audit scope. We should have immediately asked: what else might a departed employee have created outside the cluster? We didn't ask that question fast enough."
+
+**James looks at you directly.** "Would asking that question earlier have changed the outcome? Would we have found this a week sooner?"
+
+**You:** "If we'd started an AWS resource audit on January 15 or 16, we would have found the EC2 instances and the Jenkins server within hours. Marcus found them in half a day once he started looking. Whether that would have prevented the January 19 data access — the actor's last download — depends on how fast we moved from discovery to containment. It's plausible. I can't guarantee it."
+
+**James nods slowly.** "That's an honest answer. Put it in the post-incident review. Don't soften it."
+
+---
+
+### 8:44 AM — The Board Question
+
+**James:** "I'm presenting to the board Thursday afternoon. Same session where I was going to present the remediation timeline from the Atlas finding. Now I'm presenting a confirmed data breach affecting 285,000 customers. Those are very different conversations."
+
+He looks at Rachel. "Are we disclosing publicly beyond the regulatory filings and customer notification?"
+
+**Rachel:** "Not proactively. We notify regulators, we notify affected individuals, and we prepare a holding statement for press inquiries. We don't issue a press release or blog post unless the story breaks independently. If it does, we have the statement ready."
+
+**James:** "Draft the holding statement today. Sarah, coordinate with marketing. I want it reviewed by 5 PM."
+
+Sarah: "On it."
+
+**James turns back to the room.** "What's the worst-case scenario from here? What could CrowdStrike still find that makes this worse?"
+
+**Aisha:** "Three things that would escalate severity. One: evidence that the data was sold or published. transfer.sh links expire after 14 days, so we may never know if the January uploads were accessed by third parties. Two: discovery that the actor accessed payment card data. The orders database contains partial payment information — last four digits, card type — but not full card numbers. If reporting-db-prod or any other source contains full payment data, we're in PCI breach territory, not just GDPR. Three: evidence of a second actor. CrowdStrike currently assesses single actor, but if the transfer.sh links were shared, someone else may have the data."
+
+**James:** "Is there full payment card data anywhere in our systems?"
+
+You and Aisha exchange a look.
+
+**You:** "The orders database stores last-four and card type only. Payment processing goes through Stripe — we never see full card numbers in our systems. The payment service stores transaction IDs and amounts, not card details. However — I haven't examined reporting-db-prod yet. We don't know what's in all 14 of its tables. If Carlos built an ETL that pulled from Stripe's reporting API or stored webhook payloads with extended card data, that's possible but unlikely."
+
+**James:** "Find out today. That's the difference between a GDPR incident and a GDPR-plus-PCI incident. If there's card data in that reporting database, I need to know by 2 PM."
+
+**You:** "Understood."
+
+---
+
+### 8:52 AM — Decisions
+
+**James:** "Here's what I'm approving and directing. Stop me if anything is wrong."
+
+```
+1. GDPR Art. 33 filing: today at noon. Rachel owns.
+2. Customer notification: Thursday. Rachel drafts, marketing 
+   coordinates, customer support briefed by Wednesday EOD.
+3. UK ICO notification: Thursday, same timeline as Art. 34.
+4. Credit monitoring: approved in principle. Sarah gets vendor 
+   + cost by EOD today.
+5. Press holding statement: drafted today, reviewed by 5 PM.
+6. Board presentation Thursday: I'm restructuring. First half 
+   is the breach. Second half is the remediation program — 
+   including everything from the Atlas finding. I need updated 
+   materials from this team by Wednesday 5 PM.
+7. reporting-db-prod: determine if payment card data exists. 
+   Answer by 2 PM today.
+8. Law enforcement: Rachel, do we involve police?
+```
+
+**Rachel:** "On law enforcement — yes, I recommend we file a report. If this is Carlos, the NDA breach alone is actionable. The unauthorized computer access is criminal in most jurisdictions. Filing a police report also strengthens our position with the supervisory authority — it shows we're treating this seriously. I'll coordinate with outside counsel today."
+
+**James:** "Do it."
+
+**James pauses.** "One more thing. The AWS audit — the comprehensive one. I asked for it by Wednesday. That timeline still holds. I want a complete inventory of every resource in our AWS account that isn't in Terraform or ArgoCD. Every EC2 instance, every RDS database, every S3 bucket, every IAM user, every security group. If there are more skeletons, I want to find them before the supervisory authority does."
+
+**You:** "Marcus is running it. We have tooling for most of this — AWS Config, CloudTrail, resource tagging. The drift detection we built for Kubernetes, we can adapt the methodology for AWS. Wednesday is tight but doable for a first-pass inventory."
+
+**James:** "First pass is fine. I don't need it perfect. I need it honest."
+
+---
+
+### 8:58 AM — Wrapping
+
+**James stands up.** "I'm canceling my 9:30 and 10:00. Sarah and I are going to restructure the board presentation. Rachel, filing at noon — don't wait for me. Aisha, you're IR lead, you have everything you need from me. Platform team — the 2 PM answer on payment card data is the single most important deliverable today. Everything else is important, but that one changes the shape of everything."
+
+He pauses at the door. Turns back.
+
+**James:** "The containment work has been exceptional. Same-day forensics engagement, every credential rotated, every network path cut. Aisha's overnight work on the master password and that IAM key — if she hadn't caught and deactivated that key at midnight, and the actor had found it on their next login, we'd be dealing with full AWS account compromise right now. Make sure that's in the post-incident review."
+
+He looks at you. "And the drift detection system you delivered Monday — that's the only reason we had a systematic way to find the Kubernetes layer. The gap is the AWS layer. Close it."
+
+He leaves.
+
+---
+
+**Sarah lingers on Zoom for 10 seconds after James disconnects.**
+
+**Sarah:** "That went as well as it could. He's angry but not at anyone in this room. He's angry at the system."
+
+She pauses. "Two things from me. One: Tom's ECR restart — you cleared it this morning. Marcus can execute after 9. Keep me posted. Two: Derek's circuit breaker canary — I saw it was at 5% yesterday at 2:43. What's the status? Did anyone check it overnight?"
+
+---
+
+**That's a good question.** Derek's CB canary was running when the security investigation took over your afternoon. You haven't checked it since.
+
+**Sarah:** "Also — Priya pinged me at 7:30 saying she's triaging a search latency alert and drafting an ILM policy. She seems solid. Good delegation."
+
+She disconnects.
+
+---
+
+### 9:01 AM — Post-Sync
+
+Your inbox and Slack are stacked:
+
+```
+SLACK:
+
+Marcus (8:55 AM):
+  "In the office. Reading overnight CrowdStrike. 
+   Starting AWS inventory sweep. Also: the inventory-db-prod 
+   connection in Metabase — I checked. It's pointing to 
+   the SAME RDS instance our inventory service uses. 
+   Not a shadow DB. Same endpoint: inventory-db-prod.c9xk2m4h7pqr.
+   
+   That means the actor was running Metabase queries against 
+   our live inventory database too. Product catalog, stock 
+   levels, supplier information, warehouse data. Not PII 
+   per se, but commercially sensitive.
+   
+   The Metabase connection uses a user called 'metabase_reader' 
+   which I've never seen in our Terraform. Checking if it 
+   still exists."
+
+Priya (8:48 AM):
+  "Search update: still GREEN, heap stabilized at 79% after 
+   morning traffic ramp. p99 came down to 1.4s. Below alert 
+   threshold. I'll keep monitoring.
+   
+   ILM policy draft started. Quick question: do we have any 
+   compliance or legal retention requirements for search 
+   indices? I don't want to delete data that legal needs."
+
+Derek (8:51 AM):
+  "CB canary update: I monitored until 6 PM yesterday, then 
+   checked again at 7 AM this morning. 
+   
+   5% canary ran for 16 hours overnight. Results:
+     Error rate: 0.02% (baseline: 0.03%)
+     p99 latency: 412ms (baseline: 438ms)  
+     Circuit breaker opened 0 times
+     Fallback triggered 0 times
+   
+   This is CLEAN. Cleaner than baseline actually — the CB's 
+   timeout protection is cutting tail latency slightly.
+   
+   Ready to scale to 25% whenever you approve. Given the 
+   budget situation on order-service (61.8%), I want your 
+   explicit green light before each scaling step."
+
+Tom (9:00 AM):
+  "Morning! Ready for ECR restart whenever Marcus is free. 
+   I prepped the rolling restart procedure last night:
+   
+   1. Kafka brokers one at a time, wait for ISR sync
+   2. ZooKeeper one at a time, wait for quorum
+   3. Kafka Connect last (stateless, quick)
+   
+   Estimated time: 45-60 min for all components.
+   
+   Also: mesh prep is going well. I've got the Linkerd 
+   inject annotations drafted. No namespace access needed 
+   for that — just YAML files. Priya and I synced on the 
+   search cluster, no conflicts."
+
+Rachel (9:02 AM):
+  "Technical review incorporated. Thank you — all three 
+   corrections were exactly right. Filing at noon.
+   
+   One new issue: the supervisory authority responded to 
+   SA-2024-0119-NM (the Atlas filing from last Friday) 
+   overnight. Email came in at 3:47 AM CET.
+   
+   They acknowledged receipt and are requesting:
+     1. Technical description of the 'drift detection' 
+        system referenced in the filing
+     2. Evidence that the system has been tested and is 
+        operational
+     3. A list of ALL personal data processing activities 
+        involving external or unmanaged infrastructure
+     4. Timeline for completion of all remediation items
+   
+   Response due within 14 days (February 5).
+   
+   Item 3 is the one that concerns me. They're asking for 
+   a COMPLETE list — not just what we've found so far. If 
+   we file the Jenkins breach notification today and then 
+   discover MORE unmanaged infrastructure in the AWS audit 
+   this week, the supervisory authority will compare our 
+   'complete list' against reality.
+   
+   I need the AWS audit results before I can respond to 
+   item 3. Can Marcus have a first-pass inventory by 
+   Thursday? That gives me the weekend to draft the response."
+
+EMAIL:
+
+From: HR (Diane Foster)
+Subject: RE: Carlos Mendez — Departure Records
+Time: 8:15 AM
+
+  "Pulling the file now. Initial notes:
+   - Departure: voluntary resignation, effective Sep 15, 2023
+   - Reason: accepted position at [REDACTED — competitor]
+   - Exit interview: conducted by former manager (Wei Liu)
+   - NDA: standard 2-year non-compete + perpetual confidentiality
+   - IT offboarding checklist: corporate laptop returned, 
+     Okta account disabled, email forwarded for 30 days then 
+     disabled. No mention of AWS access, SSH keys, or 
+     infrastructure audit.
+   - No performance issues on file. Left on good terms.
+   
+   Wei Liu conducted the exit interview. He may have 
+   additional context.
+   
+   Full file will be ready by noon. Do you need me on any 
+   calls today?"
+```
+
+---
+
+### Current State: Tuesday 9:03 AM
+
+**Immediate priorities:**
+1. **reporting-db-prod payment card data check** — James wants answer by 2 PM. You rotated the master password last night. You have the new password in the evidence bucket. You need to connect and check all 14 tables.
+2. **Derek CB canary** — 16 hours clean at 5%. Ready for 25%. Budget-sensitive decision.
+3. **Tom ECR restart** — cleared, Marcus to execute.
+4. **Rachel's SA-2024-0119-NM response** — supervisory authority wants "complete list" of unmanaged data processing. AWS audit dependency.
+5. **Marcus AWS inventory** — running, James wants Wednesday, Rachel needs Thursday.
+6. **Marcus: metabase_reader user** — unknown DB user on inventory-db-prod.
+7. **Priya: ILM retention question** — legal/compliance check needed.
+8. **HR: Wei conducted Carlos's exit interview** — context needed?
+9. **Rachel filing at noon** — on track, no blockers.
+
+**Background:**
+- CrowdStrike full report being cataloged (94 pages)
+- Credit monitoring vendor search (Sarah + finance)
+- Press holding statement (Sarah + marketing)
+- Board materials update (James + Sarah, you by Wed 5 PM)
+- Law enforcement filing (Rachel + outside counsel)
+
+**The supervisory authority's request for a "complete list of ALL personal data processing involving external or unmanaged infrastructure" is a trap if we respond before the AWS audit is done. Rachel knows this. The AWS audit needs to be thorough before that response goes out.**
+
+**It's 9:03 AM. The noon filing is seven hours away. The 2 PM payment card answer is five hours away. Go.**
+
+*9:03 AM. Prioritize by consequence, not by arrival order.*
+
+The payment card data check is the highest-stakes deliverable. If reporting-db-prod has full PANs, James needs to know by 2 PM because it changes the noon filing, the board presentation, the customer notification, and triggers PCI-DSS incident response. But Rachel is filing at noon — if there's card data, she needs to know BEFORE noon, not at 2 PM.
+
+**Which means this is actually a 11:30 AM deliverable, not a 2 PM.**
+
+---
+
+**Thread 1 — reporting-db-prod card data check (RIGHT NOW, 9:04 AM)**
+
+```bash
+# Get the rotated password from evidence bucket
+aws s3 cp s3://novamart-security-evidence/SEC-2024-0122-001/credential-rotations.log - --sse aws:kms
+
+# Connect to reporting-db-prod
+psql -h reporting-db-prod.c9xk2m4h7pqr.us-east-1.rds.amazonaws.com \
+  -U reporting_admin -d reporting
+```
+
+First — what's in this database:
+
+```sql
+-- List all tables
+\dt
+
+-- For each table, get the schema
+\d+ <table_name>
+
+-- Quick scan: any column names suggesting card data
+SELECT table_name, column_name 
+FROM information_schema.columns 
+WHERE table_schema = 'public'
+AND (
+  column_name ILIKE '%card%' 
+  OR column_name ILIKE '%pan%'
+  OR column_name ILIKE '%cvv%'
+  OR column_name ILIKE '%cvc%'
+  OR column_name ILIKE '%account_number%'
+  OR column_name ILIKE '%card_number%'
+  OR column_name ILIKE '%stripe%'
+  OR column_name ILIKE '%token%'
+);
+
+-- Also: how big is each table and what PII fields exist
+SELECT 
+  t.table_name,
+  (SELECT count(*) FROM information_schema.columns c 
+   WHERE c.table_name = t.table_name AND c.table_schema = 'public') as column_count,
+  pg_size_pretty(pg_total_relation_size(quote_ident(t.table_name))) as total_size
+FROM information_schema.tables t
+WHERE t.table_schema = 'public'
+ORDER BY pg_total_relation_size(quote_ident(t.table_name)) DESC;
+```
+
+*While those queries run, handle the parallel threads that don't require my full attention:*
+
+---
+
+**Thread 2 — Derek CB canary (9:05 AM, 30 seconds)**
+
+Slack DM to Derek:
+
+> 16 hours at 5% with those numbers is textbook clean. Approve scaling to 25%. Same protocol: 10 minutes at 25%, if error rate stays below 0.5% and no anomalies, proceed to 50%. You have blanket approval to scale through 50% today without checking with me at each step. Page me at 75% for final sign-off before 100%.
+>
+> One caveat: order-service budget is 61.8%. If the CB itself trips during the rollout and you see degraded-mode responses in production, that's actually the system working correctly — but hold at that percentage and ping me. We need to understand what triggered it before we decide if it's safe to continue.
+>
+> Good work monitoring overnight. This is a clean deploy.
+
+---
+
+**Thread 3 — Tom ECR restart (9:06 AM, 30 seconds)**
+
+Slack DM to Marcus:
+
+> When you have 10 minutes, Tom needs someone with write access to do the Kafka ECR rolling restart. His procedure is solid — one broker at a time, wait for ISR, then ZK, then Connect. 45-60 min. Can you kick this off after 9:30? Tom will guide the sequence.
+>
+> One constraint: we're in a security investigation on the AWS side. The K8s namespace operations are fine — the ECR restart is a security improvement (off Docker Hub). Just don't let it get tangled with the AWS audit work. Prioritize the audit.
+
+---
+
+**Thread 4 — Priya ILM retention (9:07 AM, 30 seconds)**
+
+Slack DM to Priya:
+
+> Good question on retention. Given the active security investigation and Rachel's filings, check with Rachel before setting any deletion policies. Short answer: don't delete anything right now. Draft the ILM policy with the hot/warm tiers but set the delete phase to a safe default (180 days) and mark it as "pending legal review." We can tighten it later. The immediate value is getting old indices off the hot tier to reduce heap pressure — deletion can wait.
+
+---
+
+**Thread 5 — metabase_reader user (9:08 AM)**
+
+Slack DM to Marcus:
+
+> On the metabase_reader user on inventory-db-prod — check if it exists, what grants it has, and rotate the password + set CONNECTION LIMIT 0. Same playbook as backup_admin and analytics_reader. If the actor had Metabase access, they had the stored credentials for every database connection in Metabase — which means metabase_reader credentials are compromised too.
+>
+> Actually — enumerate ALL database connections in the Metabase H2 database or application config. Every connection = a compromised credential that needs rotation. CrowdStrike's report should have this but we should verify independently.
+
+---
+
+**Thread 6 — HR / Wei exit interview (9:09 AM)**
+
+This is sensitive. Wei conducted Carlos's exit interview. Wei is also the person who managed Tom, knew about the shadow pipeline, and has been cooperative but clearly carries some institutional knowledge about how the data team operated. I'm not going to interrogate Wei, but Aisha or HR should know about this connection.
+
+Slack DM to Aisha:
+
+> FYI from HR: Wei Liu conducted Carlos's exit interview. The IT offboarding checklist had no mention of AWS access, SSH keys, or infrastructure audit. Carlos left for a competitor (name redacted in HR file). Standard 2-year non-compete + perpetual confidentiality NDA.
+>
+> I'm not suggesting Wei is involved — he's been cooperative and honest throughout. But Aisha, you or HR should talk to Wei about the exit interview context. What did Carlos say about ongoing projects? Did he mention the staging infrastructure? Did he offer to hand anything off? Wei may have context that helps with attribution.
+>
+> I don't think I should be the one to have that conversation — it's an HR/security matter, not a platform engineering one. Your call on how to handle.
+
+---
+
+**Thread 7 — Rachel's supervisory authority response (9:11 AM)**
+
+Slack DM to Rachel:
+
+> On the SA-2024-0119-NM response — agreed, we cannot answer item 3 ("complete list of ALL personal data processing involving external or unmanaged infrastructure") until the AWS audit is done. Marcus will have first-pass inventory by Wednesday. I'll have it in a format you can use by Thursday.
+>
+> Recommendation: when you file the Jenkins breach notification at noon today, include a proactive note that a comprehensive infrastructure audit is underway and that the controller will provide a consolidated inventory of all data processing activities as part of the SA-2024-0119-NM response (due Feb 5). This signals to the supervisory authority that we're connecting the dots between the two incidents and auditing comprehensively, rather than filing notifications in isolation.
+>
+> This also buys us time — if the AWS audit surfaces more findings this week, they're covered under "audit in progress" rather than looking like things we missed after claiming we had a complete list.
+
+---
+
+**Back to Thread 1 — reporting-db-prod results should be coming back (9:15 AM)**
+
+*What do the queries return?*
+
+While I wait, I also run:
+
+```sql
+-- Check for any Stripe webhook payloads or raw API responses
+-- These are the most likely places full card data could hide
+SELECT table_name, column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'public'
+AND (
+  data_type IN ('json', 'jsonb', 'text')
+  AND (
+    column_name ILIKE '%payload%'
+    OR column_name ILIKE '%response%'
+    OR column_name ILIKE '%webhook%'
+    OR column_name ILIKE '%raw%'
+    OR column_name ILIKE '%body%'
+    OR column_name ILIKE '%data%'
+  )
+);
+```
+
+*If Carlos was storing raw Stripe webhook payloads, card data could be embedded in JSON blobs even if there's no dedicated card column. That's the sneaky case I need to rule out.*
+
+---
+
+**Quick status check on everything in motion (9:16 AM):**
+
+```
+ACTIVE RIGHT NOW:
+  ⏳ reporting-db-prod schema analysis (me, running)
+  ⏳ AWS inventory reconciliation (Marcus)
+  ⏳ ECR rolling restart (Marcus + Tom, after 9:30)
+  ⏳ Art. 33 filing prep (Rachel, noon)
+  ⏳ CB canary scaling (Derek, autonomous)
+  ⏳ Search cluster monitoring (Priya)
+  ⏳ CrowdStrike H2 query cataloging (David Park)
+  ⏳ Credit monitoring vendor (Sarah + finance)
+  ⏳ Press statement (Sarah + marketing)
+  ⏳ HR file pull (Diane, noon)
+  ⏳ metabase_reader rotation (Marcus, when free)
+  ✅ Union customer count (completed overnight — 284,847)
+  ✅ VPC flow logs enabled (last night)
+  ✅ All known credentials rotated
+  ✅ All known network paths severed
+
+DUE TODAY:
+  11:30 AM  reporting-db-prod card data answer (for Rachel before filing)
+  12:00 PM  GDPR Art. 33 #2 filing (Rachel)
+  2:00 PM   reporting-db-prod card data answer (for James, formal)
+  5:00 PM   Press holding statement review
+  5:00 PM   Credit monitoring vendor + cost
+  EOD       Board materials progress
+```
+
+*Waiting on the database queries. This is the answer that determines whether today stays on its current trajectory or pivots into PCI-DSS incident response territory. Every other thread is running autonomously with good people. This one is mine.*
+
+
+## TUESDAY 9:17 AM — REPORTING-DB-PROD RESULTS
+
+---
+
+The first query comes back:
+
+```
+             List of relations
+ Schema |          Name              | Type  
+--------+----------------------------+-------
+ public | customer_profiles          | table
+ public | customer_orders_summary    | table
+ public | customer_support_tickets   | table
+ public | daily_revenue              | table
+ public | inventory_snapshots        | table
+ public | monthly_cohort_analysis    | table
+ public | order_items_denormalized   | table
+ public | payment_transactions       | table
+ public | product_performance        | table
+ public | product_reviews            | table
+ public | refund_history             | table
+ public | shipping_events            | table
+ public | stripe_webhook_events      | table
+ public | supplier_catalog           | table
+(14 rows)
+```
+
+Your eyes lock on two tables. `payment_transactions` and `stripe_webhook_events`.
+
+The column name scan returns:
+
+```
+    table_name         |   column_name    
+-----------------------+------------------
+ payment_transactions  | card_brand
+ payment_transactions  | card_last4
+ payment_transactions  | card_exp_month
+ payment_transactions  | card_exp_year
+ payment_transactions  | card_funding
+ payment_transactions  | card_country
+ stripe_webhook_events | stripe_event_id
+ stripe_webhook_events | stripe_object_type
+```
+
+No `card_number`, no `pan`, no `cvv`. The `payment_transactions` table has Stripe's card metadata — last four digits, brand, expiry, funding type, country. That's what Stripe returns in webhook and API responses. **Not full card numbers.**
+
+But the second query — the JSON/text column scan — is the one you're waiting for:
+
+```
+    table_name         |  column_name  | data_type
+-----------------------+---------------+-----------
+ stripe_webhook_events | event_payload | jsonb
+ customer_support_tickets | description | text
+ customer_support_tickets | resolution  | text
+ product_reviews       | review_body   | text
+ shipping_events       | raw_response  | jsonb
+ order_items_denormalized | item_metadata | jsonb
+```
+
+`stripe_webhook_events.event_payload` — **jsonb**. That's the one that could contain anything.
+
+```sql
+-- How many webhook events?
+SELECT count(*) FROM stripe_webhook_events;
+```
+
+```
+  count
+--------
+ 147,283
+```
+
+147K stored webhook payloads. You need to know what's in them.
+
+```sql
+-- Sample a few payloads - what Stripe objects are stored?
+SELECT DISTINCT stripe_object_type, count(*) 
+FROM stripe_webhook_events 
+GROUP BY stripe_object_type 
+ORDER BY count(*) DESC;
+```
+
+```
+ stripe_object_type    | count
+-----------------------+-------
+ payment_intent        | 58,291
+ charge                | 42,847
+ refund                | 12,384
+ customer              |  9,847
+ invoice               |  8,291
+ payment_method        |  7,104
+ dispute               |  4,219
+ payout                |  4,300
+```
+
+`payment_method` — 7,104 events. That's the one. Stripe payment_method objects contain card details.
+
+```sql
+-- Sample a payment_method webhook payload
+SELECT event_payload 
+FROM stripe_webhook_events 
+WHERE stripe_object_type = 'payment_method' 
+LIMIT 1;
+```
+
+```json
+{
+  "id": "evt_1N...",
+  "type": "payment_method.attached",
+  "data": {
+    "object": {
+      "id": "pm_1N...",
+      "type": "card",
+      "card": {
+        "brand": "visa",
+        "country": "DE",
+        "exp_month": 12,
+        "exp_year": 2025,
+        "funding": "credit",
+        "last4": "4242",
+        "fingerprint": "abc123...",
+        "networks": {
+          "available": ["visa"]
+        }
+      },
+      "billing_details": {
+        "name": "Max Mustermann",
+        "email": "max.m@example.de",
+        "phone": "+49...",
+        "address": {
+          "city": "Berlin",
+          "country": "DE",
+          "line1": "Friedrichstraße 123",
+          "postal_code": "10117"
+        }
+      },
+      "customer": "cus_N..."
+    }
+  }
+}
+```
+
+You exhale. **No full card number.** Stripe never sends the full PAN in webhook payloads — by design. What's here is `last4`, `fingerprint`, `brand`, `exp_month`, `exp_year`. That's Stripe's standard card object. The full number never leaves Stripe's PCI-compliant vault.
+
+But — `billing_details`. Full name, email, phone, **physical address** including street. This is PII that **isn't in the orders database.** The orders DB has shipping addresses, but billing details are a separate Stripe object. And there's a `customer` reference linking back to the Stripe customer ID.
+
+```sql
+-- Check the charge payloads too — do they include billing?
+SELECT event_payload->'data'->'object'->'billing_details' IS NOT NULL as has_billing,
+       count(*)
+FROM stripe_webhook_events 
+WHERE stripe_object_type = 'charge'
+GROUP BY 1;
+```
+
+```
+ has_billing | count
+-------------+-------
+ t           | 42,847
+ f           |     0
+```
+
+All 42,847 charge events also have billing details.
+
+```sql
+-- How many UNIQUE customers have billing details in webhooks?
+SELECT count(DISTINCT event_payload->'data'->'object'->'customer')
+FROM stripe_webhook_events
+WHERE stripe_object_type IN ('payment_method', 'charge')
+AND event_payload->'data'->'object'->'billing_details' IS NOT NULL;
+```
+
+```
+ count
+-------
+ 31,847
+```
+
+31,847 unique Stripe customers with full billing details — name, email, phone, physical address — stored in raw webhook payloads. Some of these may overlap with the 284,847 from the orders database. Some may not.
+
+---
+
+Now the critical question: **did the actor access this table?**
+
+You check the CrowdStrike H2 query catalog from last night's report:
+
+```
+Q-227: SELECT * FROM stripe_webhook_events 
+       WHERE stripe_object_type = 'payment_method' 
+       LIMIT 100
+       Created: Jan 14, 2024. Run 1 time.
+
+Q-229: SELECT count(*) FROM stripe_webhook_events
+       Created: Jan 14, 2024. Run 1 time.
+```
+
+**The actor queried this table on January 14.** One day before the database dump downloads. They looked at 100 payment method records — which means they saw the billing details, card metadata, and Stripe customer IDs.
+
+But there's no evidence they **exported** this data. No pg_dump of reporting-db-prod in the bash history. No CSV export. The S3 exfiltration was limited to the orders database dumps and the two earlier CSV files. The actor *looked* at the webhook data but apparently didn't take it.
+
+---
+
+**One more check (9:28 AM):**
+
+```sql
+-- The customer_profiles table - what's in it?
+\d+ customer_profiles
+```
+
+```
+                     Table "public.customer_profiles"
+    Column         |           Type           | Description
+-------------------+--------------------------+-------------
+ customer_id       | integer                  |
+ email             | varchar(255)             |
+ first_name        | varchar(100)             |
+ last_name         | varchar(100)             |
+ phone             | varchar(50)              |
+ country           | varchar(2)               |
+ city              | varchar(100)             |
+ signup_date       | timestamp                |
+ lifetime_value    | numeric(10,2)            |
+ total_orders      | integer                  |
+ last_order_date   | timestamp                |
+ segment           | varchar(50)              |  
+ marketing_consent | boolean                  |
+ stripe_customer_id| varchar(50)              |
+
+SELECT count(*) FROM customer_profiles;
+```
+
+```
+  count
+--------
+ 271,384
+```
+
+271K customer profiles. This is a denormalized customer table — looks like Carlos built it as an analytics-friendly version of the customers table from orders-db-prod, enriched with lifetime value and segmentation data. The data is probably a subset of the orders DB (271K vs 284K in November — likely reflects the last ETL run date).
+
+```sql
+-- When was this last updated?
+SELECT max(last_order_date) FROM customer_profiles;
+```
+
+```
+         max
+---------------------
+ 2023-11-28 14:33:17
+```
+
+Last ETL run was late November. The table is stale — which makes sense, the pipeline was breaking after Carlos left.
+
+---
+
+### 9:32 AM — Assessment Complete
+
+You have your answer. Time to structure it.
+
+```
+REPORTING-DB-PROD — PAYMENT CARD DATA ASSESSMENT
+═══════════════════════════════════════════════════
+
+BOTTOM LINE: NO FULL CARD NUMBERS (PANs) ANYWHERE.
+PCI-DSS INCIDENT: NO.
+
+DETAILS:
+  payment_transactions table:
+    ✅ Contains: last4, brand, exp_month, exp_year, 
+       funding, country
+    ❌ Does NOT contain: full card number, CVV, 
+       magnetic stripe data
+    These are Stripe card metadata fields. Standard 
+    in any Stripe integration. NOT considered cardholder 
+    data under PCI-DSS (last4 + expiry without PAN is 
+    explicitly excluded from PCI scope).
+
+  stripe_webhook_events table:
+    ✅ Contains: 147,283 raw Stripe webhook payloads (jsonb)
+    ✅ Payloads include: last4, brand, fingerprint, 
+       exp_month, exp_year (card metadata only)
+    ✅ Payloads ALSO include: billing_details with full 
+       name, email, phone, and PHYSICAL ADDRESS
+    ❌ Does NOT contain: full card numbers (Stripe never 
+       sends PANs in webhooks by design)
+    
+    PII EXPANSION: 31,847 unique Stripe customers have 
+    billing details (physical addresses) in webhook payloads. 
+    Some overlap with orders DB customers. Net new PII: 
+    physical billing addresses not in orders DB.
+
+  ACTOR ACCESS:
+    Q-227 (Jan 14): SELECT * FROM stripe_webhook_events 
+    WHERE type = 'payment_method' LIMIT 100
+    
+    Actor VIEWED this data. No evidence of EXPORT. 
+    No pg_dump, no CSV, no S3 upload for this table.
+
+OTHER PII IN REPORTING-DB-PROD:
+  customer_profiles: 271,384 records (denormalized, stale Nov 28)
+  customer_support_tickets: PII in free-text description/resolution
+  product_reviews: PII in review_body (customer names, potentially)
+  shipping_events: raw_response jsonb (carrier API responses, addresses)
+
+CUSTOMER COUNT IMPACT:
+  The 271K in customer_profiles are likely a subset of 
+  the 284,847 already counted. Net new customers from 
+  reporting-db-prod: likely minimal. The billing address 
+  data from webhook payloads is the new PII field, not 
+  new customers.
+
+RECOMMENDATION:
+  ✅ NO change to PCI posture — no cardholder data exposed
+  ✅ UPDATE Art. 33 to note billing addresses as additional 
+     PII category (Rachel)
+  ✅ UPDATE customer notification to include "billing address" 
+     in the list of potentially affected data
+  ⚠️ The actor VIEWED payment-related data but apparently 
+     did not export it. CrowdStrike should confirm via 
+     bash history and S3 access logs.
+```
+
+---
+
+**Messages out (9:35 AM):**
+
+DM to Rachel:
+
+> Rachel — GOOD NEWS on the biggest question. No full card numbers anywhere in reporting-db-prod. Stripe never sends PANs in webhook payloads. We have last4, expiry, brand — which are explicitly excluded from PCI-DSS cardholder data scope. This is NOT a PCI incident.
+>
+> However: the stripe_webhook_events table contains 147K raw webhook payloads with billing_details — full name, email, phone, and physical billing address for 31,847 unique customers. This is PII that expands the data category list. The actor queried this table on January 14 (Q-227 in CrowdStrike report) but there's no evidence they exported the data.
+>
+> For the noon filing: add "billing address" to the categories of personal data. The customer count doesn't change materially — these are existing customers with an additional data field exposed, not new individuals.
+>
+> Full assessment in #security-incidents. Do you need anything else before noon?
+
+DM to James (via Sarah — he's in board prep):
+
+> Sarah — for James: reporting-db-prod does NOT contain full payment card numbers. No PCI incident. Stripe webhook payloads contain card metadata (last4, brand) which is explicitly out of PCI scope. There is additional PII (billing addresses in webhook payloads) that expands the data category list but not the customer count. Rachel has been updated for the noon filing.
+> 
+> TLDR: The worst-case scenario is off the table. This remains a GDPR data breach, not a GDPR + PCI data breach.
+
+DM to Aisha:
+
+> Reporting-db-prod assessment complete. No PANs. Not PCI. Full write-up in #security-incidents.
+>
+> One item for David Park: Q-227 shows the actor queried stripe_webhook_events on Jan 14. They saw 100 payment_method records including billing details. Please have CrowdStrike confirm no export path for this data — it's not in the bash history we have, but the H2 database might show if they ran a larger query or used Metabase's export feature to download results.
+>
+> Also: metabase_reader credential rotation — Marcus is handling. Every database connection stored in the Metabase H2 config is a compromised credential. We need a full list and rotation for all of them.
+
+Post to #security-incidents:
+
+```
+[User] (9:36 AM):
+REPORTING-DB-PROD ASSESSMENT COMPLETE
+
+NO FULL CARD NUMBERS. NOT A PCI INCIDENT.
+
+Details:
+  - Stripe webhook payloads contain last4/brand/expiry only
+  - Stripe by design never sends PANs in webhooks
+  - 31,847 customers have billing address PII in payloads
+  - Actor queried this table Jan 14 (Q-227) but no evidence 
+    of export
+  - Rachel updating Art. 33 to include billing addresses as 
+    additional PII category
+  - Filing at noon remains on track
+
+Full assessment uploaded to evidence bucket:
+SEC-2024-0122-001/reporting-db-prod-assessment.txt
+```
+
+---
+
+**9:38 AM. Biggest deliverable of the day done early. No PCI. The filing is clean.**
+
+Now — the AWS audit. Marcus is running the inventory. This feeds into Rachel's supervisory authority response (due Feb 5) and James's Wednesday deadline. Let me make sure Marcus has what he needs.
+
+DM to Marcus:
+
+> Good find on inventory-db-prod being the same instance (not shadow). That's actually good news — one fewer unknown.
+>
+> For the AWS audit, here's the scope James wants by Wednesday:
+>
+> ```
+> EC2: All running instances. Flag any not in Terraform.
+> RDS: All instances. Flag any not in Terraform.
+> S3:  All buckets. Flag any not in Terraform.
+> IAM: All users + roles. Flag any with static access keys.
+>      Flag any with admin-level policies.
+> VPC: All VPCs, peering connections, NAT gateways, IGWs.
+> EC2 Key Pairs: All. Flag any associated with departed employees.
+> Security Groups: Flag any with 0.0.0.0/0 inbound rules.
+> Lambda: Any functions. Flag unmanaged.
+> ```
+>
+> Use AWS Config if it's enabled. If not, the CLI commands are straightforward — I can send you a script.
+>
+> The output format should be a table Rachel can put in front of the supervisory authority: Resource, Type, Created By, Created Date, In Terraform (Y/N), Contains PII (Y/N/Unknown), Status.
+>
+> After the ECR restart with Tom, this is your priority for the day.
+
+---
+
+**9:41 AM. Checking on parallel threads:**
+
+Derek should be scaling to 25% by now. Tom and Marcus will start the ECR restart after 9:30. Priya is monitoring search. Rachel is finalizing the filing. Aisha is coordinating CrowdStrike and HR.
+
+I have a window. Two things I should do with it:
+
+**1. Board materials contribution (due Wed 5 PM)**
+
+James said he's restructuring: first half breach, second half remediation. The remediation half is largely what I already delivered for Rachel's table — the committed timeline. But it needs updating with the security incident additions. I'll draft the platform engineering section of the board materials this afternoon.
+
+**2. Tom's reply**
+
+Already answered this morning. He's cleared. Good.
+
+**3. The thing I keep not getting to: the EKS runbook**
+
+It was due yesterday. Priya has it mostly done. I need to review and finalize. But honestly — EKS upgrade is the lowest priority item right now. Nothing is broken. The cluster is stable. The security incident, the GDPR filings, and the AWS audit all take precedence.
+
+DM to Priya:
+
+> Priya — the EKS runbook review is slipping. I know it was due yesterday. Given everything happening with the security incident, I'm pushing it to Thursday review at the earliest. The upgrade itself isn't happening until the security investigation winds down anyway — we're not making infrastructure changes in the middle of a forensics engagement. Keep the runbook ready and I'll review when we have a calmer day. Thank you for your patience.
+
+---
+
+**9:44 AM.**
+
+Slack notification:
+
+```
+Rachel (9:42 AM):
+"Perfect. No PCI is the best news I've had in 24 hours. 
+Adding billing addresses to the data categories. Filing 
+at noon is clean.
+
+On the SA-2024-0119-NM response — your suggestion to 
+reference the ongoing audit in today's filing is smart. 
+I'm adding a paragraph: 'The controller notes that the 
+infrastructure audit referenced in SA-2024-0119-NM has 
+been expanded to encompass all AWS-level resources, and 
+that the present notification arose from that expanded 
+audit. A comprehensive inventory of all data processing 
+activities will be provided in the controller's response 
+to the supervisory authority's request dated January 22.'
+
+This connects the two filings and frames today's 
+notification as evidence that the audit is working, 
+not evidence that we're finding new problems every week."
+
+Good framing.
+
+One more: UK ICO. I'm filing a separate notification 
+under UK GDPR. Same timeline — Thursday, with the 
+customer notification. 41,207 UK data subjects. The 
+ICO has its own 72-hour clock, which started when we 
+confirmed UK residents were affected — effectively 
+yesterday when we got the union count. We're within 
+the window if we file Thursday. Tight but legal.
+
+Outside counsel engaged for law enforcement referral. 
+They're drafting the police report today."
+```
+
+---
+
+**9:45 AM. Status check.**
+
+```
+✅ reporting-db-prod: NO PCI. Assessment delivered to all stakeholders.
+✅ Derek CB: scaling to 25%, autonomous
+✅ Tom ECR: cleared, Marcus executing after 9:30
+✅ Priya search: stable, ILM draft in progress
+✅ Rachel Art. 33: filing at noon, clean
+✅ Rachel UK ICO: filing Thursday
+✅ Marcus AWS audit: in progress, due Wednesday
+✅ Aisha: CrowdStrike coordination, HR/Wei interview planning
+⏳ Board materials: drafting this afternoon
+⏳ EKS runbook review: pushed to Thursday
+⏳ metabase_reader rotation: Marcus, today
+⏳ Credit monitoring vendor: Sarah, today
+⏳ Press statement: Sarah, today by 5 PM
+
+REMAINING RISKS:
+  - CrowdStrike may find actor exported webhook data via 
+    Metabase's built-in export (not bash history)
+  - AWS audit may surface additional shadow infrastructure
+  - Supervisory authority may respond aggressively to 
+    second notification in one week
+  - Carlos attribution — HR/legal thread, not mine
+  - Transfer.sh Jan 19 link may still be live (~10 days left)
+```
+
+*That transfer.sh link. The January 19 upload. It expires around February 2. If anyone downloaded it before expiration, they have the November database dump — 284,391 customers.*
+
+*We can't do anything about that. We can't contact transfer.sh to take it down (they don't respond to takedown requests for expired links). We can't determine who accessed it. It's out there or it isn't.*
+
+*Document it. Move on. Focus on what we can control.*
+
+---
+
+*It's 9:45 AM on Day 9 of on-call. The noon filing is on track. The payment card question is answered. Every credential is rotated. CrowdStrike is working. The team is executing.*
+
+*For the first time in 36 hours, I have 15 minutes without something on fire. I'm going to get a second coffee and eat something, because the board materials aren't going to write themselves and I need to be functional until 6 PM.*
+
+---
+
+## TUESDAY 10:02 AM — COFFEE INTERRUPTED
+
+---
+
+You're halfway through a bagel when Slack lights up.
+
+```
+Marcus (10:01 AM):
+"ECR restart kicked off with Tom. Broker 0 rolling now. 
+Tom is guiding — he's good at this. ISR check looks clean.
+
+But I need to flag something from the AWS inventory. 
+I'm cross-referencing IAM users against active employees 
+and I found this:
+
+IAM user: carlos.mendez
+  Status: ACTIVE
+  Access keys: 1 active key (AKIA...)
+    Key created: June 15, 2023
+    Last used: January 19, 2024
+  MFA: not configured
+  Attached policies: 
+    - AmazonS3ReadOnlyAccess
+    - AmazonRDSReadOnlyAccess
+  Groups: analytics-team
+  Console access: disabled (password deleted)
+  
+His IAM USER was never deactivated. His Okta and email 
+were disabled in September, and console password was 
+removed, but the IAM user with its access key is still 
+active. The key was last used January 19 — same day as 
+the last data download.
+
+I checked CloudTrail for this key:
+
+  Jan 15 14:30  s3:ListBucket (novamart-db-backups)
+                Source: 172.31.4.89
+  Jan 15 14:31  s3:GetObject (novamart-db-backups/orders/20231101.dump)
+                Source: 172.31.4.89
+  [continues — matches the timeline we already have]
+
+This is the key the actor used on January 15 and 19. 
+Not the Jenkins IAM role. Not the Metabase instance 
+profile. Carlos's own IAM access key, from the staging 
+Metabase.
+
+The instance profile gave them S3ReadOnly to all buckets. 
+But Carlos's personal IAM key ALSO gives S3ReadOnly + 
+RDSReadOnly. They had two paths to the same data.
+
+I haven't deactivated it yet because I want Aisha's 
+sign-off on evidence chain. But this needs to die 
+immediately."
+```
+
+---
+
+You put down the bagel.
+
+This changes the attribution picture. The actor wasn't just using Carlos's *infrastructure*. They were using Carlos's *personal IAM access key* — a credential that was only ever issued to Carlos, that would require either Carlos himself or someone who obtained his key file.
+
+```
+Slack DM to Aisha (10:03 AM):
+
+Aisha — Marcus found Carlos's personal IAM user is still 
+active with an access key that was last used January 19 
+from 172.31.4.89. CloudTrail confirms this key was used 
+for the S3 data downloads.
+
+This is Carlos's own credential, not an instance profile. 
+Whoever used it either IS Carlos or has his ~/.aws/credentials 
+file.
+
+Two actions needed:
+1. Deactivate the key NOW (same as jenkins-deployer — 
+   evidence is already in CloudTrail)
+2. Flag for CrowdStrike and Rachel — this significantly 
+   strengthens the attribution case. Personal IAM key + 
+   personal SSH key + personal infrastructure + system 
+   knowledge = strong circumstantial evidence.
+
+Also: the offboarding gap just got worse. Not only were 
+SSH keys missed — his IAM user was never deactivated. 
+Okta was disabled, console password was removed, but 
+nobody deactivated the IAM user or its access keys. 
+The security automation that caught the cert-manager 
+key (90→30 day threshold) — did it not flag THIS key?
+```
+
+*Wait. That's a good question. Aisha's security automation deactivated the cert-manager key because it hadn't been used in 58 days. Carlos's key was used January 19 — three days ago. It would never trigger the "last used" threshold because the actor was using it regularly enough to keep it fresh. The automation worked exactly as designed. The actor inadvertently kept the key alive by using it.*
+
+**Rule 2 in action again.** The security automation that caught one stale key couldn't catch this one because the attacker's own activity reset the "last used" timer.
+
+I add to my message to Aisha:
+
+> Actually — I just realized why the security automation didn't 
+> catch this. Your policy deactivates keys not used within 30 
+> days. Carlos's key was used January 19 — 3 days ago. The 
+> actor's own activity kept the key fresh. The automation 
+> worked as designed but couldn't detect an actively-used 
+> compromised key. 
+>
+> That's a design gap worth noting for post-incident: the 
+> automation catches abandoned keys but not stolen ones. We 
+> need a different control for "key belongs to deactivated 
+> employee" — cross-reference IAM users against HR/Okta 
+> active employee list, regardless of last-used date.
+
+---
+
+```
+Aisha (10:07 AM):
+"Deactivating now.
+
+...Done. Key deactivated. IAM user left in place for 
+evidence trail.
+
+You're right about the automation gap. The security 
+automation checks key AGE and key LAST-USED. It doesn't 
+check whether the key OWNER is still employed. That's 
+because IAM users don't have a direct link to our HR 
+system — the mapping is by naming convention only.
+
+This is going in the post-incident remediation plan: 
+IAM user lifecycle must be part of the offboarding 
+checklist, AND we need automated cross-referencing 
+between IAM users and Okta active directory.
+
+On attribution: I'm updating Rachel and outside counsel. 
+Personal IAM key + personal SSH key + personal 
+infrastructure + departed to a competitor + targeted 
+EU customer data extraction = this is almost certainly 
+Carlos. The police report is going to be specific.
+
+David Park at CrowdStrike already noted this in his 
+6 AM report — page 47, finding CF-2024-0122-031: 
+'AWS credentials file found in /home/ubuntu/.aws/credentials 
+on staging Metabase instance. Contains access key AKIA... 
+matching IAM user carlos.mendez. Profile name: default.'
+
+It was in the forensic report. We should have caught it 
+at 6 AM. CrowdStrike buried it on page 47 because from 
+their perspective it was 'expected — personal credentials 
+on personal infrastructure.' From OUR perspective it's 
+'active credential belonging to terminated employee, 
+still in use four months later.' Different lens.
+
+Good catch by Marcus."
+```
+
+---
+
+```
+Marcus (10:09 AM):
+"Key deactivated by Aisha. ✅
+
+Continuing AWS inventory. Updated shadow tally — 
+adding Carlos's IAM user as a finding. Also found 
+2 more IAM users that don't map to current employees:
+
+  carlos.mendez — DEACTIVATED just now
+  former.devops — console disabled, no access keys 
+    (this is the Jenkins launcher, already known)
+  intern.analytics — ACTIVE, 0 access keys, console 
+    access enabled with password
+    Created: May 2023
+    Last console login: August 3, 2023
+    Groups: analytics-team-readonly
+    
+intern.analytics appears to be a summer intern account. 
+Console password still works (presumably). No access keys 
+so limited risk, but it should be disabled.
+
+Also: I found 2 Lambda functions not in Terraform:
+  - novamart-etl-trigger (Carlos, Jun 2023) — triggers 
+    on S3 PutObject in analytics-datalake bucket
+  - novamart-report-generator (Carlos, Aug 2023) — 
+    scheduled daily, writes to reporting-db-prod
+
+The report-generator Lambda is probably what built the 
+reporting-db-prod tables. It's the ETL that populated 
+customer_profiles, payment_transactions, etc. It has 
+an execution role with RDS connect + S3 read permissions.
+
+Last invocation: November 29, 2023. It stopped running 
+when... actually I don't know why it stopped. Maybe it 
+hit an error when something changed. Checking CloudWatch 
+logs."
+```
+
+---
+
+```
+Tom (10:11 AM):
+"Broker 0 restart complete. ISR fully caught up. Moving 
+to broker 1. No consumer lag detected. Clean so far.
+
+Side note: Marcus and I make a good team. He does the 
+kubectl, I tell him what to watch for. Like pair 
+programming but for infrastructure."
+```
+
+---
+
+```
+Derek (10:14 AM):
+"CB at 25%. 12 minutes in. Still pristine.
+
+  Error rate: 0.01%
+  p99: 408ms
+  CB opened: 0 times
+  Degraded-mode responses: 0
+
+Moving to 50% in 3 minutes per our protocol."
+```
+
+---
+
+```
+Priya (10:16 AM):
+"Search cluster update: heap down to 76% on es-data-2 
+after morning peak passed. p99 at 1.1s. Comfortable.
+
+ILM draft ready for your review when you have time:
+  - hot: 30 days (current indices)
+  - warm: 90 days (read-only, force merge)  
+  - delete: 180 days (pending legal confirmation)
+  
+I checked with Ryan — search team doesn't need data 
+older than 90 days for any current use case. The 180 
+day delete is conservative.
+
+Also: I did some math. Current index size is growing 
+~2.1 GB/day. With ILM, hot tier stays at ~63 GB. Without 
+it, we'll hit ephemeral storage limits again in approximately 
+18 days (based on Friday's incident, growth rate, and 
+current headroom). So ILM is not just cleanup — it's 
+preventing Incident 7 from recurring.
+
+Want me to test in staging? We don't have a staging ES 
+cluster, but I could create a minimal one in the staging 
+namespace — 1 master, 1 data, throwaway."
+```
+
+---
+
+```
+Rachel (10:18 AM):
+"Filing is final. Going to the supervisory authority 
+at noon CET — which is actually 6 AM our time tomorrow. 
+Wait — no, noon Eastern today is 6 PM CET today. We're 
+within business hours for the EU authority. Good.
+
+The Carlos IAM key finding — I'm adding a line to the 
+filing: 'Forensic investigation has identified the 
+former employee's personal AWS access credentials in 
+active use on the staging infrastructure, strengthening 
+attribution to the departed individual. Law enforcement 
+referral is in progress.'
+
+Outside counsel confirms: we're filing the police report 
+this afternoon. Jurisdiction is where our corporate 
+offices are. FBI CFAA referral will follow if the 
+supervisory authority or counsel recommends it.
+
+One question: should I mention in the filing that the 
+former employee departed to a competitor? It's relevant 
+to motive (potential commercial use of customer data) 
+but it's also potentially inflammatory. Counsel is 
+split on this."
+```
+
+---
+
+**10:20 AM.** You have several threads running simultaneously. The containment is solid. The filings are on track. But new findings keep emerging from the AWS audit.
+
+**Active items needing your input:**
+
+1. **Rachel's question**: mention competitor in filing? (Legal judgment call with your input)
+2. **Marcus**: Lambda functions, intern account, report-generator ETL (AWS audit expanding)
+3. **Priya**: ILM staging test request + 18-day recurrence window (Incident 7 prevention)
+4. **Tom + Marcus**: ECR restart in progress (running well, no input needed)
+5. **Derek**: CB at 50% soon (running well, needs 75% sign-off later)
+
+**The Marcus findings are the most operationally significant.** The Lambda report-generator explains how reporting-db-prod got populated — and it might explain why it stopped (November 29 last invocation). If the Lambda's execution role has the same credentials or network path the actor used, it could be another compromised component.
+
+**But the queue is manageable for the first time in days.** No one is blocked. No one is on fire. The team is executing.
+
+**What do you do?**
+
+---
+
+*Current time: Tuesday 10:20 AM. Day 9 of on-call. GDPR filing in 100 minutes. Board presentation Thursday. AWS audit due Wednesday. Security investigation ongoing. ECR restart in progress. CB rolling out. And somewhere in the back of your mind, you're wondering: is this the last skeleton, or is there another one behind it?*
+
+*10:20 AM. The queue is manageable. Nobody's blocked. Handle each thread in priority order and get back to the bagel.*
+
+---
+
+**Thread 1 — Rachel's competitor question (10:21 AM, highest consequence)**
+
+DM to Rachel:
+
+> Don't mention the competitor in the Art. 33 filing. Three reasons:
+>
+> 1. The filing's purpose is to describe the breach, not assign motive. Motive is for the police report and any civil action, not the regulatory notification.
+> 2. If we're wrong about the attribution — even slightly — naming a competitor creates legal exposure for us, not them.
+> 3. The supervisory authority will draw their own conclusions from "former employee" + "deliberate targeting of EU customers for potential sale or competitive use" (CrowdStrike's language). Let them ask for details in follow-up if they want them. Volunteering it looks like we're trying to redirect blame.
+>
+> Save the competitor detail for the police report and the FBI referral, where motive is directly relevant and the standard of evidence is different.
+>
+> If counsel is split, that's usually a sign to take the conservative path on the regulatory filing and the aggressive path on the law enforcement filing. Different audiences, different standards, different purposes.
+
+---
+
+**Thread 2 — Marcus: Lambda + intern account (10:23 AM)**
+
+DM to Marcus:
+
+> Intern account: disable console access immediately. No access keys means low risk, but an active console login with a password from May 2023 is exactly the kind of thing the supervisory authority will flag. One command:
+>
+> ```
+> aws iam delete-login-profile --user-name intern.analytics
+> ```
+>
+> Add it to the audit findings table.
+>
+> Lambda functions: good find. The report-generator is how reporting-db-prod got populated — that answers a question we've had since yesterday. Check its execution role:
+>
+> ```
+> aws lambda get-function --function-name novamart-report-generator \
+>   --query 'Configuration.{Role:Role,LastModified:LastModified,Runtime:Runtime,Timeout:Timeout}'
+> ```
+>
+> Then check the role's policies. If it has RDS connect permissions, it has credentials embedded somewhere — environment variables, Secrets Manager reference, or hardcoded in the function code. We need to know which, because those are potentially compromised credentials too.
+>
+> For the etl-trigger Lambda: same treatment. Check the execution role, check what it can access, check if it has credentials baked in.
+>
+> Neither Lambda needs to be disabled right now — the report-generator hasn't run since November and the etl-trigger only fires on S3 puts to the datalake bucket. But both go on the AWS audit table as unmanaged resources.
+>
+> Priority is the overall inventory, not deep-diving each Lambda. Breadth first, depth second. James wants the full picture by Wednesday.
+
+---
+
+**Thread 3 — Priya: ILM staging test (10:26 AM)**
+
+DM to Priya:
+
+> Good analysis on the 18-day recurrence window. That makes ILM urgent, not just important. But I don't want you building a staging ES cluster today — that's half a day of work for a throwaway environment.
+>
+> Alternative approach: apply the ILM policy to production with the hot and warm tiers only. No delete phase. Set it up so existing indices older than 30 days move to warm (read-only, force merge). This is low-risk because:
+> - Moving indices to warm doesn't delete data
+> - Force merge reduces segment count which helps heap
+> - Read-only prevents accidental writes to old indices
+> - We can add the delete phase later after legal confirms
+>
+> The immediate win is getting old indices off the hot tier to reduce JVM heap pressure. That's what prevents Incident 7 from recurring.
+>
+> Draft it as a PR. I'll review this afternoon. If it's clean, we can apply tomorrow during low traffic. Don't wait for a staging test — the risk of applying hot/warm-only ILM is much lower than the risk of another node eviction in 18 days.
+>
+> One thing: check the index naming pattern. ILM policies attach to index templates, and we need to make sure the template matches whatever Carlos's Helm chart is producing. Look at the existing indices:
+> ```
+> kubectl -n search exec es-master-0 -- \
+>   curl -s localhost:9200/_cat/indices?v&s=index
+> ```
+
+---
+
+**Thread 4 — Derek CB: preemptive 75% sign-off (10:28 AM)**
+
+DM to Derek:
+
+> I see you're at 50% imminently. You're approved through 75%. Same criteria: error rate below 0.5%, no circuit breaker opens, no degraded-mode responses. If 75% is clean after 10 minutes, hold there and ping me for final 100% sign-off.
+>
+> Actually — given how clean this has been, you're approved to 100% if 75% holds for 15 minutes with the same criteria. Don't wait for me. Post the metrics at each step in #platform-engineering so Lisa can track budget impact. If anything trips at any stage, hold and ping me.
+>
+> This is the smoothest deploy we've had in two weeks. Let's get it done.
+
+---
+
+**Thread 5 — Tom's message (10:29 AM, brief)**
+
+Slack in #platform-engineering:
+
+> Tom + Marcus pair on the ECR restart is great to hear. Tom — once the restart is done, grab Marcus for 10 minutes to walk him through your Grafana dashboards. When we deploy them later this week, he'll be the one reviewing them for platform standards. Head start.
+
+---
+
+**10:30 AM. All threads answered. Back to the bagel.**
+
+Actually — one more thing. The Lambda report-generator stopped running November 29. The analytics_reader password hasn't been rotated until last night. The Lambda was connecting to production databases. If its execution role uses analytics_reader credentials...
+
+*No. Stop. The Lambda execution role probably uses IAM authentication to RDS, or has credentials in environment variables. Marcus is checking. I just told him to check. Don't duplicate his work.*
+
+*The pattern I need to watch for: I'm starting to chase every thread myself instead of trusting the people I just delegated to. Marcus is checking the Lambda. Priya is drafting ILM. Derek is rolling out the CB. Tom and Marcus are doing the restart. Aisha is coordinating CrowdStrike and HR. Rachel is filing at noon.*
+
+*Everyone is executing. My job right now is to be available for decisions and blockers, not to do their work.*
+
+---
+
+**10:32 AM. Actual break.**
+
+Finish the bagel. Refill coffee. Check the board materials outline in my head:
+
+```
+BOARD MATERIALS — PLATFORM ENGINEERING SECTION (draft outline)
+
+1. INCIDENT SUMMARY
+   - Timeline: Oct 8, 2023 → Jan 22, 2024
+   - Discovery method: infrastructure audit (self-identified)
+   - Containment: same-day, all vectors closed within 4 hours
+   - Forensics: CrowdStrike engaged Day 1
+
+2. DATA IMPACT
+   - 284,847 customers (168K EU, 41K UK, 59K US)
+   - PII: names, emails, phones, addresses, purchase history,
+     billing addresses, support tickets
+   - NO payment card data
+   - Exfiltration confirmed to public file sharing service
+
+3. ROOT CAUSE
+   - Systemic: incomplete employee offboarding
+   - No infrastructure decommissioning process
+   - No AWS resource inventory or drift detection
+   - Default credentials on legacy systems
+
+4. CONTAINMENT ACTIONS (14 items with timestamps)
+
+5. REMEDIATION PROGRAM
+   - Drift detection (deployed, operational)
+   - AWS infrastructure audit (in progress, Wed)
+   - Employee offboarding: infrastructure checklist
+   - IAM lifecycle automation (cross-ref Okta)
+   - Image admission controller (warn Jan 26, enforce Feb 2)
+   - Default-deny NetworkPolicy (mid-Feb)
+   - SSH key management through identity provider
+   - Self-service data pipeline template (mid-Feb)
+   - Egress gateway (end Q1)
+
+6. REGULATORY STATUS
+   - GDPR Art. 33 #1 (Atlas): filed, SA acknowledged
+   - GDPR Art. 33 #2 (Jenkins/exfiltration): filing today
+   - GDPR Art. 34 (customer notification): Thursday
+   - UK ICO: Thursday
+   - Law enforcement: police report today, FBI referral pending
+   - Credit monitoring: approved, vendor selection today
+
+7. WHAT WENT RIGHT
+   - Self-identified through systematic audit
+   - Same-day containment and forensic engagement
+   - Regulatory filing within 72 hours
+   - No PCI breach
+   - AdministratorAccess IAM key found and deactivated before use
+
+8. WHAT FAILED
+   - Employee offboarding didn't cover infrastructure
+   - No AWS resource inventory existed
+   - Default credentials persisted for 2 years
+   - Seven-day gap between K8s audit and AWS audit
+   - Security automation couldn't detect actively-used stolen credentials
+```
+
+*That's the skeleton. I'll write it up properly this afternoon once the noon filing is submitted and the CB is at 100%. James needs it by Wednesday 5 PM. Plenty of time if nothing else catches fire.*
+
+---
+
+**10:38 AM.** Slack is quiet. ECR restart in progress. CB rolling out. Filing on track.
+
+*I open the CrowdStrike report PDF — the full 94 pages. I've only read the executive summary and Aisha's overnight highlights. Pages 47+ have findings I haven't reviewed. If there's another skeleton, it's in there.*
+
+*Read the report. That's the best use of this quiet window. Because the next interruption is coming — it always does — and I want to have the full forensic picture in my head before it arrives.*
+
+---
+
+## TUESDAY 10:38 AM — 12:15 PM
+
+---
+
+### The CrowdStrike Report (10:38-11:20 AM)
+
+You work through the 94 pages methodically. Most of it confirms what you already know from Aisha's overnight summaries. But several findings stand out:
+
+**Page 34 — CF-2024-0122-019: SSH Access Log**
+
+```
+The staging Metabase instance /var/log/auth.log shows 
+SSH sessions from the following source IPs:
+
+  Oct 8-18, 2023:  203.0.113.47 (7 sessions)
+  Oct 10-15:       172.31.4.89 (localhost, 3 sessions — internal)
+  Nov 11-12:       203.0.113.47 (2 sessions)
+  Jan 8:           203.0.113.47 (1 session)
+  Jan 14-15:       203.0.113.47 (3 sessions)
+  Jan 19:          203.0.113.47 (1 session)
+  Jan 22:          No SSH sessions recorded
+
+  All sessions authenticated using key 'carlos-dev-key'.
+  
+  203.0.113.47 is a public IP address. Reverse DNS resolves 
+  to a residential ISP in [CITY REDACTED]. This is consistent 
+  with a home network connection, not a corporate environment.
+
+  The actor SSH'd into the staging Metabase through the NAT 
+  gateway's public IP (elastic IP on the NAT gateway allows 
+  inbound? No — checking...)
+
+  CORRECTION: The staging Metabase security group allowed 
+  SSH from 172.31.0.0/16 only. The 203.0.113.47 connections 
+  entered through a DIFFERENT path.
+
+  Investigation found: the staging Metabase has a secondary 
+  network interface (eni-0b2c3d4e) attached to a PUBLIC 
+  subnet in the legacy-staging VPC. This interface has an 
+  Elastic IP (52.xx.xx.xx) and a security group allowing 
+  SSH from 0.0.0.0/0.
+
+  The actor's access path was:
+    Home IP (203.0.113.47) → Elastic IP → Public subnet ENI → 
+    Staging Metabase → VPC peering → Production resources
+```
+
+Your stomach tightens. **A public-facing SSH port.** The staging Metabase had a second network interface with a public IP and SSH open to the world. You locked down the primary security group last night, but you didn't know about the second ENI. If the actor has access from a home IP...
+
+You check immediately:
+
+```bash
+aws ec2 describe-instances \
+  --instance-ids i-0c4d5e6f... \
+  --query 'Reservations[].Instances[].NetworkInterfaces[]'
+```
+
+```json
+[
+  {
+    "NetworkInterfaceId": "eni-0a1b2c3d",
+    "SubnetId": "subnet-0d4e5f...",
+    "PrivateIpAddress": "172.31.4.89",
+    "Groups": [{"GroupId": "sg-0a1b2c...", "GroupName": "metabase-staging-sg"}]
+  },
+  {
+    "NetworkInterfaceId": "eni-0b2c3d4e",
+    "SubnetId": "subnet-0e5f6g...",
+    "PrivateIpAddress": "172.31.1.45",
+    "Association": {
+      "PublicIp": "52.87.xxx.xxx"
+    },
+    "Groups": [{"GroupId": "sg-0f9e8d...", "GroupName": "metabase-public-ssh"}]
+  }
+]
+```
+
+```bash
+aws ec2 describe-security-groups \
+  --group-ids sg-0f9e8d... \
+  --query 'SecurityGroups[0].IpPermissions'
+```
+
+```json
+[
+  {
+    "IpProtocol": "tcp",
+    "FromPort": 22,
+    "ToPort": 22,
+    "IpRanges": [{"CidrIp": "0.0.0.0/0"}]
+  }
+]
+```
+
+**SSH from anywhere on a public IP.** You locked down the primary interface's security group last night, but the second interface was untouched. The VPC peering is deleted so the actor can't reach production anymore, but they could still SSH into the staging Metabase right now from their home IP.
+
+The instance is SG-locked on its primary interface (no inbound), but the secondary interface is wide open on SSH.
+
+```bash
+# Lock it down NOW
+aws ec2 revoke-security-group-ingress \
+  --group-id sg-0f9e8d... \
+  --ip-permissions \
+    'IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=0.0.0.0/0}]'
+```
+
+✅ Done. 10:44 AM.
+
+Post to #security-incidents:
+
+```
+[User] (10:44 AM):
+MISSED ATTACK PATH — now closed.
+
+CrowdStrike report page 34: the staging Metabase had a 
+SECOND network interface (eni-0b2c3d4e) in a public subnet 
+with an Elastic IP and SSH open to 0.0.0.0/0.
+
+The actor's primary access path was SSH from a residential 
+IP (203.0.113.47) through this public interface. When we 
+locked down the primary SG last night, we didn't catch 
+the secondary ENI.
+
+I've revoked the SG rule. The public SSH path is now closed.
+
+VPC peering was already deleted, so the actor couldn't reach 
+production through this path since yesterday at 3:24 PM. But 
+they could have SSH'd into the staging Metabase itself between 
+our lockdown last night and now — approximately 16 hours.
+
+Aisha — can we check VPC Flow Logs (enabled last night at 
+5:41 PM) for any SSH connections to the Elastic IP since 
+then? If the actor connected overnight and realized we're 
+investigating, they know we're onto them.
+```
+
+```
+Aisha (10:47 AM):
+"Checking flow logs now. Stand by.
+
+...
+
+No SSH connections to the Elastic IP since flow logs were 
+enabled at 5:41 PM yesterday. The last connection in the 
+auth.log (from CrowdStrike report) was January 22 — but 
+that was earlier in the day, before our containment actions.
+
+We got lucky. The actor didn't connect overnight. But this 
+is exactly the kind of thing that makes me want to just 
+terminate both staging instances. We keep finding new paths.
+
+David Park's recommendation: create EBS snapshots of all 
+volumes on all three instances, then STOP the instances. 
+He has everything he needs from the live disks. Stopping 
+them eliminates any remaining access paths we haven't found.
+
+I agree. Can you stop both staging instances?"
+```
+
+*She's right. Every hour these instances run is another hour where we might have missed a path. CrowdStrike has the snapshots. Stop them.*
+
+```bash
+# Stop staging Metabase
+aws ec2 stop-instances --instance-ids i-0c4d5e6f...
+
+# Stop legacy Jenkins  
+aws ec2 stop-instances --instance-ids i-0e8g3f...
+
+# Don't stop production Metabase yet — David still needs 
+# to image it. But verify its SG is locked.
+```
+
+```
+[User] (10:51 AM):
+Staging Metabase: STOPPED ✅
+Legacy Jenkins: STOPPED ✅
+Both instances halted. EBS volumes preserved for forensics.
+All remaining access paths eliminated.
+
+Production Metabase (analytics-metabase): still running, 
+SG locked to platform IPs only. David Park — do you still 
+need this one live for imaging?
+```
+
+```
+Aisha (10:53 AM):
+"David snapshotted all three last night. Production Metabase 
+can be stopped too. He's working from snapshots, not live 
+instances."
+```
+
+```bash
+aws ec2 stop-instances --instance-ids i-0d7f2e...
+```
+
+```
+[User] (10:54 AM):
+Production Metabase: STOPPED ✅
+
+All three forensic target instances are now stopped.
+Evidence preserved via EBS snapshots + stopped instances.
+Zero live attack surface remaining from Carlos infrastructure.
+```
+
+---
+
+### Page 52 — CF-2024-0122-034: Metabase Query Export History
+
+```
+The Metabase H2 database maintains an activity log that 
+includes "export" actions — when a user downloads query 
+results via Metabase's built-in CSV/JSON/XLSX export.
+
+Export events found (post-departure):
+
+  Oct 10  Q-198 (customer_profiles, full table) → CSV, 271384 rows
+  Oct 14  Q-201 (EU customers) → CSV, 168442 rows  
+  Nov 8   Q-215 (high-value customers) → CSV, 12847 rows
+  Nov 11  Q-220 (support tickets since Sep) → CSV, 4291 rows
+  Jan 14  Q-227 (stripe webhook payment_methods) → CSV, 7104 rows
+  Jan 14  Q-229 (stripe webhook count) — no export
+  Jan 14  Q-234 (product reviews) → CSV, 18934 rows
+
+  Total export events: 7 (6 with data downloads)
+
+ASSESSMENT: The actor used Metabase's export feature to 
+download query results as CSV files before escalating to 
+full database dumps in January. The October and November 
+CSV exports through Metabase predate the bash_history 
+pg_dump commands, suggesting the actor started with the 
+GUI tool and moved to command-line when they wanted 
+larger datasets.
+
+This confirms the actor accessed stripe webhook payment 
+method data (7,104 records) and exported it via CSV on 
+January 14. The earlier assessment that webhook data was 
+"viewed but not exported" is INCORRECT.
+```
+
+You read that last line twice.
+
+**The actor DID export the webhook payment method data.** Your assessment from 9:35 AM — "no evidence of export" — was wrong. The evidence was in the H2 database, not in bash history. Metabase exports go through the browser, not the command line.
+
+**Rule 4: You will be wrong.** And you told Rachel and James there was no evidence of export. Time to correct.
+
+DM to Rachel (11:01 AM):
+
+> Rachel — CORRECTION to my 9:35 AM assessment. CrowdStrike full report (page 52) shows the actor DID export stripe webhook payment method data via Metabase's CSV export feature on January 14. 7,104 records containing billing details (name, email, phone, physical address + card last4/expiry).
+>
+> My earlier assessment said "no evidence of export" — I was looking at bash history only. Metabase has its own export mechanism that goes through the browser, not the command line.
+>
+> This doesn't change the PCI assessment — still no full card numbers. But it DOES add 7,104 records of billing detail PII to the confirmed exfiltration scope. These overlap with existing customers but include billing-specific fields (physical billing address) that may differ from shipping addresses.
+>
+> Also from the same report section: the actor exported EU customer data (168,442 rows), high-value customer data (12,847 rows), support tickets (4,291 rows), and product reviews (18,934 rows) via Metabase CSV exports between October and January.
+>
+> The full export list is more extensive than what we tracked through bash history and S3. Recommend updating the filing to note: "Data was accessed and exported through multiple methods including database query tools, command-line utilities, and cloud storage APIs."
+>
+> Sorry for the correction. Better to catch it before noon than after.
+
+```
+Rachel (11:04 AM):
+"Better a correction at 11 AM than an amendment next week.
+Updated. The filing now references 'multiple access methods 
+including database management interfaces, command-line 
+database utilities, and cloud storage APIs.'
+
+The additional Metabase exports don't change the customer 
+count (they're subsets of the 284,847) but they sharpen 
+the intent picture — the actor specifically targeted EU 
+customers, high-value customers, and support tickets. 
+That's going in the filing.
+
+Still on track for noon."
+```
+
+DM to Aisha:
+
+> CrowdStrike page 52 — Metabase export history confirms the actor exported webhook payment data on Jan 14 via CSV download. My 9:35 AM assessment was wrong about "no evidence of export." The H2 export log caught what bash history missed. Corrected Rachel already.
+>
+> Also: the full Metabase export list shows systematic targeting — EU customers first, then high-value customers, then support tickets, then payment data. This is a structured collection campaign, not browsing. Worth noting in the law enforcement filing.
+
+---
+
+### 11:15 AM — Marcus Updates
+
+```
+Marcus (11:15 AM):
+"ECR restart complete. All Kafka brokers, ZooKeeper nodes, 
+and Kafka Connect running on ECR images. Tom verified 
+consumer lag is zero, ISR is fully caught up, S3 sink 
+connector is RUNNING.
+
+Docker Hub images: completely gone from the namespace.
+
+Tom is happy. Direct quote: 'First time these pods have 
+been on approved infrastructure. Feels good.'
+
+Starting Lambda investigation now. Report-generator role:
+
+  Role: novamart-report-generator-role
+  Policies:
+    - AmazonRDSDataFullAccess
+    - AmazonS3ReadOnlyAccess
+  
+  Environment variables in function config:
+    ORDERS_DB_HOST: orders-db-prod.c9xk2m4h7pqr...
+    ORDERS_DB_USER: etl_processor
+    ORDERS_DB_PASS: [REDACTED — it's in plaintext]
+    REPORTING_DB_HOST: reporting-db-prod.c9xk2m4h7pqr...
+    REPORTING_DB_USER: reporting_admin
+    REPORTING_DB_PASS: [REDACTED — same as the old master password you rotated last night]
+    
+  Two more credentials to rotate:
+    - etl_processor (orders-db-prod)
+    - reporting_admin password was already rotated, but the 
+      Lambda still has the old one. So the Lambda is broken 
+      now (which is fine — it hasn't run since November).
+
+  The etl_processor user on orders-db-prod — I haven't 
+  seen this one before. Checking its privileges.
+
+  intern.analytics console access: DISABLED ✅"
+```
+
+Another database user nobody knew about. You respond:
+
+```
+DM to Marcus (11:18 AM):
+
+Check etl_processor privileges:
+  SELECT rolname, rolsuper, rolcanlogin, rolconnlimit 
+  FROM pg_roles WHERE rolname = 'etl_processor';
+  
+  \dp  -- check table grants
+
+Then rotate the password and set CONNECTION LIMIT 0. 
+Same playbook as all the others. This Lambda hasn't run 
+since November, nothing breaks.
+
+Add both Lambdas and all discovered credentials to the 
+AWS audit table. Running tally of credentials we've 
+rotated during this investigation:
+
+  ✅ backup_admin (orders-db-prod) 
+  ✅ analytics_reader (orders-db-prod)
+  ✅ reporting_admin (reporting-db-prod)
+  ✅ orders-db-prod master/root
+  ✅ jenkins-deployer IAM key
+  ✅ carlos.mendez IAM key
+  ⏳ etl_processor (orders-db-prod) — rotating now
+  ⏳ metabase_reader (inventory-db-prod) — pending
+  
+Every one of these was either in a Jenkins config, a 
+Lambda env var, or a Metabase connection — all accessible 
+to the actor. Assume all compromised.
+```
+
+---
+
+### 11:45 AM — Pre-Filing Check
+
+```
+Derek (11:40 AM):
+"CB at 100%. Full production rollout. 
+
+Final metrics across the full canary:
+  Error rate: 0.018% (baseline 0.03% — improvement)
+  p99 latency: 395ms (baseline 438ms — improvement)
+  CB opened: 0 times
+  Degraded-mode responses: 0
+  orders_accepted_without_stock_verification_total: 0
+
+Clean deploy. Posting to #platform-engineering."
+```
+
+```
+DM to Derek:
+Textbook. Best deploy of the quarter. Update PLAT-915 
+to DONE and post the final metrics in the ticket. 
+Lisa should update the error budget tracking — the CB 
+actually IMPROVED our p99, which means we're burning 
+budget slightly slower now.
+
+stockCache PR (PLAT-923) — whenever you're ready this 
+week. No rush given everything else going on.
+```
+
+---
+
+```
+Rachel (11:55 AM):
+"Final draft locked. Filing in 5 minutes. No changes 
+needed from you — all technical corrections incorporated.
+
+Summary of what the supervisory authority will receive:
+
+  Reference: SA-2024-0122-NM-002
+  Type: Art. 33 personal data breach notification
+  Affected individuals: 284,847 (168,442 EU)
+  Data categories: 12 categories listed
+  Breach period: Oct 8, 2023 — Jan 22, 2024
+  Discovery: Jan 22, 2024
+  Containment: Jan 22, 2024 (same day)
+  Root cause: Former employee unauthorized access via 
+    undecommissioned infrastructure
+  Exfiltration: Confirmed (public file sharing service)
+  Forensics: CrowdStrike engaged, investigation ongoing
+  Law enforcement: Referral in progress
+  Cross-reference: SA-2024-0119-NM (related incident)
+  
+  Remediation: 11 controls listed with owners and dates
+  Customer notification: Planned Thursday Jan 25
+
+Filing now."
+```
+
+```
+Rachel (12:03 PM):
+"Filed. SA-2024-0122-NM-002. Confirmation received from 
+the portal. 72-hour clock: met with 26 hours to spare.
+
+Now working on Art. 34 customer notification draft + 
+UK ICO filing. Both for Thursday.
+
+Police report: outside counsel filing this afternoon.
+
+Thank you all."
+```
+
+---
+
+### 12:15 PM — Midday Status
+
+```
+#security-incidents (12:10 PM):
+Aisha: "Status update for the record:
+
+SECURITY INCIDENT SEC-2024-0122-001 — Status: ACTIVE (Investigation)
+
+Phase 1 (Containment): COMPLETE ✅
+  All attack paths closed
+  All credentials rotated
+  All forensic targets stopped + snapshotted
+  
+Phase 2 (Investigation): IN PROGRESS
+  CrowdStrike: Full report delivered. Supplementary findings ongoing.
+  Attribution: Strong circumstantial evidence → former employee
+  AWS audit: In progress (Marcus), due Wednesday
+  
+Phase 3 (Notification): IN PROGRESS  
+  GDPR Art. 33: FILED ✅ (SA-2024-0122-NM-002)
+  GDPR Art. 34: Thursday
+  UK ICO: Thursday
+  Law enforcement: Today (outside counsel)
+  Customer communication: Thursday
+  Credit monitoring: Vendor selection today (Sarah)
+  
+Phase 4 (Remediation): PLANNING
+  Offboarding checklist revision
+  IAM lifecycle automation
+  AWS resource inventory (permanent)
+  SSH key management through IdP
+
+Next update: EOD today or on significant finding."
+```
+
+---
+
+You look at the time. 12:15 PM. The filing is done. The CB is deployed. The ECR restart is complete. The forensic instances are stopped. You've corrected your assessment error. Every credential is rotated or being rotated.
+
+```
+SCORECARD — TUESDAY 12:15 PM:
+
+✅ GDPR Art. 33 #2: FILED (26 hours ahead of deadline)
+✅ Payment card data: NO PCI (James's #1 question answered)
+✅ Circuit breaker: 100% production, clean metrics
+✅ ECR restart: Complete, Docker Hub eliminated
+✅ Forensic instances: All stopped, snapshots preserved
+✅ Secondary ENI: Caught and closed (CrowdStrike report)
+✅ Carlos IAM key: Deactivated
+✅ Intern account: Disabled
+✅ Lambda credentials: Being rotated
+
+⏳ AWS audit: Marcus working, due Wednesday
+⏳ Art. 34 customer notification: Thursday
+⏳ UK ICO: Thursday
+⏳ Board materials: Due Wednesday 5 PM
+⏳ Law enforcement filing: Today (Rachel/counsel)
+⏳ Credit monitoring vendor: Today (Sarah)
+⏳ Press statement: Today by 5 PM (Sarah)
+⏳ ILM policy PR: Priya drafting
+⏳ metabase_reader + etl_processor rotation: Marcus
+⏳ CrowdStrike supplementary findings: Ongoing
+⏳ Supervisory authority response to SA-2024-0119-NM: Due Feb 5
+
+INCIDENTS RESOLVED: 9 of 10
+INCIDENTS ACTIVE: 1 (SEC-2024-0122-001 — investigation phase)
+```
+
+The acute emergency phase of the security incident is over. You're in investigation and notification mode now — important but not minute-by-minute crisis management.
+
+**For the first time in two days, you have a window to do planned work.** The board materials are due Wednesday 5 PM. The ILM PR needs review. The AWS audit needs oversight but not hands-on work. The supervisory authority response needs planning.
+
+You have an afternoon ahead of you without anything on fire.
+
+**How do you want to spend it?**
+
+
+*12:15 PM. First real window in two days. Don't waste it on reactive work — everyone is executing. Use this for the deliverable that only I can produce.*
+
+**Board materials. Due tomorrow 5 PM. I have the skeleton from this morning. Time to write.**
+
+---
+
+**12:15-12:30 PM — Lunch at desk while organizing**
+
+I pull up the outline from this morning and restructure it based on everything that's happened since. James said "first half breach, second half remediation." Rachel's filing gives me the factual backbone. CrowdStrike gives me the forensic detail. My incident tracker gives me the remediation program.
+
+The board doesn't want 94 pages. They want: *What happened. How bad is it. Is it contained. What are we doing about it. What does it cost. Can it happen again.*
+
+---
+
+**12:30-2:30 PM — Board Materials Draft**
+
+```
+BOARD BRIEFING: DATA SECURITY INCIDENT
+Prepared for: Board of Directors
+Presented by: James Morrison, VP Engineering
+Date: Thursday, January 25, 2024
+Classification: CONFIDENTIAL
+
+═══════════════════════════════════════════════════════
+PART 1: INCIDENT SUMMARY
+═══════════════════════════════════════════════════════
+
+WHAT HAPPENED
+
+On January 22, 2024, our platform engineering team 
+discovered that a former employee had been accessing 
+company infrastructure and extracting customer data 
+since October 2023 — approximately one month after 
+their departure.
+
+The former employee used infrastructure they had 
+created during their employment that was not identified 
+or decommissioned during the offboarding process. This 
+included cloud computing instances, database connections, 
+and access credentials that remained active after their 
+corporate accounts were disabled.
+
+TIMELINE
+                                        
+  Sep 15, 2023  Employee departs. Corporate accounts 
+                disabled. Cloud infrastructure NOT 
+                decommissioned.
+  Oct 8         First unauthorized infrastructure activity
+  Oct 10-15     Customer data accessed and extracted (targeted)
+  Nov 11-12     Additional customer data extracted
+  Jan 14-15     Escalation: full database backups downloaded
+                and uploaded to public file sharing service
+  Jan 19        Additional data download
+  Jan 22 9:14a  Last unauthorized login
+  Jan 22 2:40p  Unauthorized access discovered by 
+                platform engineering during routine 
+                infrastructure investigation
+  Jan 22 2:50p  Security incident declared
+  Jan 22 3:24p  All known access paths severed
+  Jan 22 6:00p  CrowdStrike forensic investigation begins
+  Jan 22 6:58p  All known credentials rotated
+  Jan 23 12:00p GDPR Art. 33 filed with supervisory authority
+
+  Time from discovery to containment: 44 minutes
+  Time from discovery to forensics: 3 hours 20 minutes
+  Time from discovery to regulatory filing: 21.5 hours
+
+HOW IT WAS DISCOVERED
+
+The discovery chain began with a Kubernetes infrastructure 
+audit initiated January 15 in response to an unrelated 
+finding of unauthorized workloads in the cluster. The 
+platform team built and deployed an automated drift 
+detection system that identified all unmanaged cluster 
+resources.
+
+On January 22, during investigation of a database 
+performance incident, the team discovered legacy EC2 
+instances and an unmanaged RDS database created by the 
+same former employee. Investigation of these resources 
+revealed unauthorized login activity from outside our 
+network, leading to the security incident declaration.
+
+The incident was entirely self-discovered. No external 
+report, customer complaint, or regulatory inquiry prompted 
+the investigation.
+
+═══════════════════════════════════════════════════════
+PART 2: IMPACT ASSESSMENT
+═══════════════════════════════════════════════════════
+
+CUSTOMER DATA AFFECTED
+
+  Total unique customers: 284,847
+    EU member states:     168,442 (59.1%)
+    United Kingdom:        41,207 (14.5%)
+    United States:         58,934 (20.7%)
+    Other:                 16,264 (5.7%)
+
+DATA CATEGORIES EXPOSED
+
+  ✅ Confirmed accessed and exported:
+     - Full names, email addresses, phone numbers
+     - Physical addresses (shipping and billing)
+     - Order history and purchase amounts
+     - Customer support ticket contents
+     - Product reviews
+     - Customer segmentation and lifetime value data
+
+  ✅ Confirmed NOT exposed:
+     - Payment card numbers (full PANs)
+     - CVV/CVC codes
+     - Bank account information
+     - Authentication credentials (passwords/tokens)
+
+  This is NOT a PCI-DSS incident. Our payment processor 
+  (Stripe) handles all cardholder data. Only card metadata 
+  (last four digits, card brand) was present in affected 
+  systems.
+
+EXFILTRATION ASSESSMENT
+
+  Data was confirmed exfiltrated from our AWS environment 
+  to a public file sharing service. Network metrics 
+  corroborate data transfer volumes matching known file 
+  sizes on four dates. The data should be considered 
+  publicly compromised.
+
+FINANCIAL EXPOSURE (ESTIMATED)
+
+  Credit monitoring (12 months):        $600K - $1.2M
+  CrowdStrike forensic investigation:   $150K - $250K
+  Legal fees (regulatory + enforcement): $200K - $400K
+  Customer support surge:                $50K - $100K
+  Regulatory fines (potential):          TBD — dependent on 
+    supervisory authority assessment of our controls and 
+    response. Cooperation and self-reporting are mitigating 
+    factors under GDPR Art. 83(2).
+  
+  Estimated total (excl. fines):        $1.0M - $1.95M
+
+  [NOTE TO JAMES: Sarah/finance should validate these 
+   estimates. I'm extrapolating from industry benchmarks. 
+   The credit monitoring number is based on Rachel's 
+   $2-4/customer estimate.]
+
+═══════════════════════════════════════════════════════
+PART 3: CONTAINMENT & RESPONSE
+═══════════════════════════════════════════════════════
+
+CONTAINMENT ACTIONS (14 actions, all completed Day 1)
+
+  #   Time    Action
+  1   14:40   Jenkins password changed
+  2   15:01   Backup database credentials rotated + locked
+  3   15:22   SSH key deleted from cloud provider
+  4   15:24   Network path between staging and production 
+              permanently severed
+  5   15:26   All staging instance access restricted to 
+              platform team only
+  6   17:41   Network monitoring enabled on staging environment
+  7   18:47   Production analytics instance locked down
+  8   18:55   Analytics database password rotated + restricted
+  9   18:58   Reporting database password rotated
+  10  22:14   Production database master password rotated
+  11  22:18   Production database analytics user rotated
+  12  22:22   Administrative cloud access key deactivated
+  13  22:24   Former employee's personal access key deactivated
+  14  10:44+1 Secondary network interface access revoked
+              (discovered in forensic report review)
+  
+  All forensic target instances subsequently stopped.
+  All evidence preserved via disk snapshots.
+
+FORENSIC INVESTIGATION
+
+  CrowdStrike engaged January 22, 6:00 PM.
+  Full disk imaging completed overnight.
+  94-page preliminary report delivered January 23, 6:00 AM.
+  
+  Key findings:
+  - Single actor with former employee profile
+  - Deliberate targeting of EU and high-value customers
+  - Escalating access pattern over four months
+  - Data uploaded to public file sharing service
+  - Actor used multiple access methods (GUI, CLI, API)
+  - Actor left extensive forensic traces
+  - One critical credential (administrative cloud access)
+    was present in legacy systems but was NOT used by actor
+
+REGULATORY STATUS
+
+  GDPR Art. 33 (supervisory authority):
+    Filed January 23. Reference: SA-2024-0122-NM-002.
+    Related filing: SA-2024-0119-NM (prior unmanaged 
+    infrastructure finding, filed January 19).
+    
+  GDPR Art. 34 (customer notification):
+    Planned January 25 (Thursday).
+    284,847 customers will receive email notification.
+    Dedicated response page and FAQ prepared.
+    
+  UK ICO:
+    Filing January 25, concurrent with customer notification.
+    41,207 UK data subjects.
+    
+  Law enforcement:
+    Police report filed January 23 (today).
+    FBI CFAA referral under review with outside counsel.
+
+═══════════════════════════════════════════════════════
+PART 4: ROOT CAUSE & REMEDIATION
+═══════════════════════════════════════════════════════
+
+ROOT CAUSE
+
+The breach resulted from three systemic failures:
+
+1. INCOMPLETE EMPLOYEE OFFBOARDING
+   When the employee departed, corporate accounts (email,
+   SSO) were disabled but cloud infrastructure was not 
+   inventoried or decommissioned. SSH keys, IAM credentials,
+   and all infrastructure the employee created remained 
+   active. The IT offboarding checklist did not include 
+   cloud infrastructure review.
+
+2. NO INFRASTRUCTURE INVENTORY
+   No system existed to detect cloud resources created 
+   outside our infrastructure-as-code tooling. Unmanaged 
+   computing instances, databases, and storage could exist 
+   indefinitely without detection.
+
+3. INADEQUATE ACCESS CONTROLS ON LEGACY SYSTEMS
+   A legacy CI/CD server retained default administrative 
+   credentials for over two years. Security groups allowed 
+   broad network access. No monitoring of authentication 
+   events on legacy infrastructure.
+
+REMEDIATION PROGRAM
+
+  COMPLETED:
+  ┌────────────────────────────────────────┬──────────┐
+  │ Kubernetes drift detection (automated) │ Jan 22 ✅│
+  │ All compromised credentials rotated    │ Jan 22 ✅│
+  │ All unauthorized network paths severed │ Jan 22 ✅│
+  │ Legacy instances stopped               │ Jan 23 ✅│
+  │ Forensic investigation initiated       │ Jan 22 ✅│
+  │ Kafka pipeline secured (ECR migration) │ Jan 23 ✅│
+  └────────────────────────────────────────┴──────────┘
+
+  IN PROGRESS:
+  ┌────────────────────────────────────────┬──────────┐
+  │ AWS-level infrastructure audit         │ Jan 24   │
+  │ Customer notification + credit monitor │ Jan 25   │
+  │ Image admission control (warn mode)    │ Jan 26   │
+  │ Kafka pipeline fully onboarded         │ Feb 9    │
+  │ Image admission control (enforce mode) │ Feb 2    │
+  └────────────────────────────────────────┴──────────┘
+
+  PLANNED:
+  ┌────────────────────────────────────────┬──────────┐
+  │ IAM lifecycle automation (Okta sync)   │ Feb      │
+  │ Employee offboarding checklist revision│ Feb      │
+  │ Default-deny network policies          │ Mid-Feb  │
+  │ Self-service data pipeline template    │ Mid-Feb  │
+  │ SSH key mgmt through identity provider │ End Feb  │
+  │ Egress gateway (network-level control) │ End Q1   │
+  │ AWS resource tagging enforcement       │ End Q1   │
+  └────────────────────────────────────────┴──────────┘
+
+WHAT WENT RIGHT
+
+  1. Self-discovered through systematic infrastructure audit
+  2. Contained within 44 minutes of discovery
+  3. Forensic investigation engaged same day
+  4. Regulatory filing within 72 hours (26 hours ahead)
+  5. No payment card data exposure (PCI not triggered)
+  6. Critical administrative credential found and deactivated 
+     before attacker used it
+  7. All production services maintained throughout incident
+
+WHAT WE'RE CHANGING
+
+  The core failure was that infrastructure could be created 
+  by any engineer and persist invisibly after they leave. 
+  Our remediation program addresses this at three levels:
+  
+  PREVENT: Image admission, default-deny networking, IAM 
+  lifecycle automation, offboarding checklist.
+  
+  DETECT: Drift detection (K8s, operational), AWS resource 
+  inventory (building), authentication monitoring.
+  
+  RESPOND: Incident response procedures tested and proven 
+  effective during this incident. CrowdStrike retainer 
+  recommended for ongoing forensic readiness.
+
+═══════════════════════════════════════════════════════
+
+  [END OF PLATFORM ENGINEERING SECTION]
+  
+  James — this covers the technical substance. You'll want 
+  to add:
+  - Opening framing / executive summary (your voice)
+  - Financial impact detail (Sarah/finance)
+  - Legal exposure assessment (Rachel)
+  - Customer impact / brand risk assessment (marketing)
+  - Q&A preparation (I can draft anticipated questions)
+  
+  Happy to revise. Target: final by Wednesday 5 PM.
+```
+
+---
+
+**2:35 PM. Draft done.** I send it to Sarah and James:
+
+> Board materials — platform engineering section. Attached. 10 pages. Covers incident summary, impact, containment, root cause, and remediation program. Flagged the sections that need input from finance, legal, and marketing. Happy to revise based on James's feedback. 
+> 
+> The financial estimates are my extrapolations — Sarah should validate with finance and Rachel before Thursday.
+
+---
+
+**2:38 PM — Check on parallel threads**
+
+DM to Marcus:
+
+> Status check on the AWS audit? How's the inventory shaping up for Wednesday?
+
+```
+Marcus (2:41 PM):
+"Good progress. Here's where I am:
+
+EC2: 47 instances total. 39 in Terraform. 8 unmanaged.
+  - 3 we already knew (Jenkins, staging Metabase, prod Metabase) — STOPPED
+  - 1 terminated (Oct instance) — already documented
+  - 2 are NAT gateways that should be in Terraform but aren't (drift, not shadow)
+  - 1 is a Prometheus node exporter test instance (Lisa, Nov — she confirmed, will terminate)
+  - 1 is... I'm still investigating. Tagged 'load-test-runner', 
+    launched July 2023 by carlos.mendez. t3.micro. 
+    No security group violations. Probably benign but I'm checking.
+
+RDS: 4 instances. 3 in Terraform (orders, payment, inventory). 
+  1 unmanaged: reporting-db-prod (known). All accounted for.
+
+S3: 23 buckets. 18 in Terraform. 5 unmanaged:
+  - novamart-db-backups (legacy, contains the dumps)
+  - novamart-data-exports (known, hardened)
+  - novamart-analytics-datalake (known, hardened)
+  - carlos-dev-scratch (known, evidence hold)
+  - novamart-temp-uploads (created Apr 2023, empty, 
+    no access in 9 months)
+
+IAM: 31 users. 24 map to current employees. 7 don't:
+  - carlos.mendez (DEACTIVATED)
+  - former.devops (console disabled, no keys)
+  - intern.analytics (DISABLED today)
+  - cert-manager-dns01 (service account — known, IRSA migration pending)
+  - jenkins-deployer (key DEACTIVATED)
+  - 2 more I'm still researching
+
+Lambda: 2 unmanaged (both Carlos, both documented)
+
+VPC: 3 VPCs. Production (Terraform), legacy-staging 
+  (Carlos, peering deleted), default VPC (unused).
+
+Security Groups with 0.0.0.0/0: 4 found
+  - metabase-public-ssh (REVOKED today)
+  - default VPC default SG (unused, low risk)
+  - 2 ALB security groups (legitimate — public-facing ALBs)
+
+Key Pairs: 8 total. 2 Carlos (known). 1 former-devops.
+  5 active employees.
+
+I'll have the full table formatted for Rachel by 
+tomorrow morning. Want me to keep digging on the 
+2 unknown IAM users and the load-test-runner?"
+```
+
+DM to Marcus:
+
+> Yes — identify the 2 unknown IAM users and the load-test-runner. Those are exactly the kinds of findings the supervisory authority will expect us to have resolved. But you're in great shape for Wednesday. This is thorough work.
+>
+> One thing: the novamart-db-backups bucket. That's where the database dumps are — the ones the actor downloaded. What's its access policy? Is it encrypted? Does it have server access logging? That bucket is the single most sensitive S3 resource we have and I'd bet it's not in Terraform, not encrypted, and not logged. If so, add it to the immediate hardening list alongside the evidence bucket.
+>
+> And etl_processor + metabase_reader credential rotations — did those get done?
+
+```
+Marcus (2:48 PM):
+"etl_processor rotated + CONNECTION LIMIT 0. ✅
+metabase_reader rotated + CONNECTION LIMIT 0. ✅
+
+novamart-db-backups:
+  Encryption: AES-256 (S3 managed, not KMS)
+  Versioning: enabled
+  Logging: NOT enabled
+  Lifecycle: 0 rules (dumps kept forever)
+  Bucket policy: none
+  Public access: blocked (account-level setting)
+  
+  Not terrible but not great. S3 managed encryption 
+  means we don't control the key. Should be KMS/CMK 
+  like the other buckets. And no access logging means 
+  we're relying entirely on CloudTrail for access history.
+
+  Want me to harden it now? Same treatment as the 
+  data-exports buckets?"
+```
+
+> Yes. KMS/CMK encryption, access logging, add to the Terraform import list. But DON'T delete any objects — those dumps are evidence. And don't enable versioning lifecycle rules that would expire old versions. Everything in that bucket is under legal hold until Rachel says otherwise.
+> 
+> Actually — check with Aisha before modifying the bucket at all. If CrowdStrike is using CloudTrail records for the S3 access timeline, we don't want our hardening actions to muddy the audit trail. Wait until Aisha confirms it's safe to modify.
+
+---
+
+**2:55 PM — Priya's ILM PR**
+
+```
+Priya (2:50 PM):
+"ILM PR ready for review: platform-infra#352
+
+Hot/warm only, no delete phase. 
+  - Hot: 30 days, default rollover at 50GB or 30 days
+  - Warm: read-only, force merge to 1 segment per shard
+  - No delete phase (pending legal)
+
+Applied to index template 'novamart-search-*' which 
+matches all existing search indices.
+
+I tested the policy logic against the existing indices:
+  - 47 indices total (some going back 7 months!)
+  - 34 would immediately move to warm tier
+  - 13 stay in hot (last 30 days)
+  - Estimated heap reduction: ~30-35% once warm indices 
+    are force-merged (fewer segments = less heap overhead)
+
+That should bring es-data-2 from 81% heap to ~53%. 
+Safely out of GC pressure territory.
+
+Ready to apply tomorrow during low-traffic window 
+(2-4 AM) if you approve. Or during business hours — 
+the warm transition is safe and non-disruptive."
+```
+
+*This is solid. Exactly what I asked for. Review the PR.*
+
+I pull up platform-infra#352. Clean YAML, well-commented. The index template match pattern is correct. The rollover conditions are sensible. Force merge to 1 segment per shard is textbook for warm indices. No delete phase — good, as I specified.
+
+One thing I'd adjust:
+
+```
+DM to Priya:
+PR looks great. One change: add an explicit 
+min_age: 0s to the hot phase so the policy is 
+self-documenting about when rollover starts. And add 
+a comment block at the top explaining why there's no 
+delete phase (legal hold pending, security investigation 
+active, will revisit after Feb 5 supervisory response).
+
+With that change: approved. Apply during business hours 
+tomorrow — the warm transition is non-disruptive and I'd 
+rather have you awake and monitoring than doing it at 
+2 AM. Target 10 AM Wednesday when you can watch the 
+force merges.
+
+This prevents Incident 7 recurrence. Good work.
+```
+
+---
+
+**3:00 PM — Quick scan of everything**
+
+```
+✅ Board materials draft: sent to James/Sarah
+✅ GDPR Art. 33 #2: filed
+✅ CB: 100% production, clean
+✅ ECR restart: complete
+✅ All forensic instances: stopped
+✅ All known credentials: rotated
+✅ AWS audit: on track for Wednesday
+✅ ILM PR: reviewed, approved for Wednesday
+✅ Union count: delivered to Rachel
+✅ reporting-db-prod: assessed, no PCI
+✅ CrowdStrike report: fully read, corrections issued
+
+⏳ Art. 34 customer notification: Thursday (Rachel)
+⏳ UK ICO: Thursday (Rachel)
+⏳ Law enforcement: today (Rachel/counsel)
+⏳ Credit monitoring vendor: today (Sarah)
+⏳ Press statement: today 5 PM (Sarah)
+⏳ Board materials revision: after James feedback
+⏳ AWS audit final table: Marcus, tomorrow AM
+⏳ SA-2024-0119-NM response: due Feb 5 (Rachel, depends on AWS audit)
+⏳ 2 unknown IAM users: Marcus investigating
+⏳ load-test-runner EC2: Marcus investigating
+⏳ novamart-db-backups hardening: pending Aisha clearance
+⏳ Priya ILM deploy: Wednesday 10 AM
+```
+
+*3:00 PM on Day 9. For the first time since this started, I'm ahead of the deliverable curve instead of behind it. Board materials drafted a day early. Filing done. CB deployed. Forensic scope complete.*
+
+*The AWS audit will produce more findings — Marcus has already found the load-test-runner and two unknown IAM users. But we're finding them systematically now, not stumbling into them during unrelated incidents. That's the difference between reactive and proactive.*
+
+*I have the rest of the afternoon for oversight, review, and whatever comes next. Because something always comes next.*
+
+Post to #platform-engineering:
+
+```
+[User] (3:02 PM):
+Afternoon status — things are stabilizing.
+
+✅ Circuit breaker at 100% production — clean deploy
+✅ ECR migration complete — Kafka off Docker Hub
+✅ GDPR Art. 33 filed — SA-2024-0122-NM-002
+✅ ILM policy PR ready — applying Wednesday AM
+✅ AWS audit on track — Marcus, first pass by tomorrow
+
+Security investigation is in forensic/notification phase. 
+Containment is complete. CrowdStrike continuing analysis.
+
+Customer notification is Thursday. Marketing and support 
+briefing will happen tomorrow — Sarah coordinating.
+
+Normal sprint work can resume for anyone not directly 
+involved in the security response. Tom: mesh injection 
+is clear to proceed. Derek: stockCache PR whenever ready. 
+Jake: GP3 migration planning can restart.
+
+It's been a tough couple of days. Thank you all for the 
+focus and the execution. The response to this incident 
+has been genuinely exceptional — same-day containment, 
+same-day forensics, regulatory filing ahead of deadline. 
+That's the team, not one person.
+```
+
+*Now I'm going to actually finish the bagel.*
+
+
+---
+
+## TUESDAY 3:15 PM — THE AFTERNOON
+
+---
+
+For twenty minutes, nothing happens. You finish the bagel. You refill coffee. You read two pages of the EKS upgrade runbook Priya has been maintaining. It's good — thorough, well-structured, clearly influenced by the Linkerd dry-run experience.
+
+Then Slack.
+
+```
+Sarah (3:18 PM):
+"James read the board materials. His words: 'This is 
+the document I needed. Three changes.'
+
+1. He wants a slide at the front: 'Could this have been 
+   prevented with existing controls?' Answer: no, because 
+   the controls didn't exist. He wants that stated clearly 
+   so the board understands this is a systemic gap, not 
+   an execution failure.
+
+2. The financial estimates — he's comfortable with the 
+   ranges but wants Rachel to confirm the regulatory fine 
+   exposure. Apparently one board member will ask about 
+   GDPR fine caps (4% of annual global turnover).
+
+3. He wants a 'Day 1 vs. Day 2' comparison. What our 
+   detection and response capabilities looked like before 
+   the Atlas finding vs. what they look like now. He 
+   wants the board to see the investment the team has 
+   made in 9 days.
+
+He said — and I'm quoting directly — 'Tell [User] this 
+is the clearest technical-to-executive translation I've 
+seen from our engineering org. I'm presenting it close 
+to as-is.'
+
+That's a big deal coming from James. He rewrites everything.
+
+Can you do the three changes by tomorrow noon? That gives 
+me the afternoon to format and add the finance/marketing 
+sections."
+```
+
+---
+
+```
+DM to Sarah:
+
+Thank him for me. Changes by tomorrow noon — easy.
+
+On #1: I'll add a "Controls Assessment" slide. The 
+honest answer is: no existing control would have caught 
+this because the controls assumed managed infrastructure. 
+The employee created infrastructure outside all management 
+tooling, and the offboarding process didn't audit for it. 
+I'll frame it as "the gap was in the control framework 
+itself, not in execution of existing controls."
+
+On #2: Rachel can speak to fine exposure better than I can. 
+I'll flag her. The short version: GDPR fines are up to 
+4% of annual global turnover OR €20M, whichever is higher. 
+In practice, first offenses with demonstrated cooperation, 
+self-reporting, and swift remediation get significantly 
+lower fines. Our response timeline and transparency are 
+strong mitigating factors.
+
+On #3: The Day 1 vs Day 2 comparison is a great framing. 
+I'll build it as a before/after table:
+
+  Before (Jan 15):
+    - No K8s drift detection
+    - No AWS resource inventory
+    - No unmanaged workload visibility
+    - 11 shadow infrastructure items (unknown)
+    - 0 departed-employee infra audited
+    - Offboarding: Okta + email only
+    
+  After (Jan 24):
+    - K8s drift detection (automated, running daily)
+    - AWS resource inventory (first pass complete Wed)
+    - Full shadow infra tally (11 items found, documented)
+    - All compromised credentials rotated
+    - Image admission controller (warn mode Fri)
+    - Forensic response tested and proven
+    - Offboarding checklist: infrastructure review added
+
+That tells the story he wants: the team built the 
+detection capability in real-time while responding 
+to active incidents.
+
+I'll have all three changes in your inbox by 10 AM 
+tomorrow. That gives you a full afternoon.
+```
+
+---
+
+```
+Rachel (3:25 PM):
+"Police report filed. Outside counsel handled it cleanly. 
+Jurisdiction: [REDACTED]. Case number assigned. FBI 
+referral being prepared separately — counsel says the 
+CFAA threshold is clearly met (unauthorized access to 
+computer systems, exceeding authorized access, data 
+theft). FBI referral goes out by Friday.
+
+On the board fine question: I'd frame it as follows.
+
+Theoretical maximum: 4% of annual turnover or €20M.
+Practical reality: supervisory authorities consider 
+cooperation, self-reporting, and remediation heavily. 
+Our mitigating factors are strong:
+  - Self-discovered (no external report)
+  - Self-reported within 72 hours
+  - Engaged forensics same day
+  - Comprehensive remediation plan with dates
+  - Credit monitoring being offered
+
+Aggravating factors:
+  - Duration (4 months undetected)
+  - Volume (284K customers)
+  - Inadequate offboarding controls
+  - Two related filings in one week
+
+My estimate for the board: €500K - €2M in regulatory 
+fines. Possibly lower if the supervisory authority 
+credits our response quality. Possibly higher if they 
+view the two incidents as a pattern of systemic failure.
+
+I'll write this up for the board materials."
+```
+
+---
+
+```
+Marcus (3:31 PM):
+"Final unknowns resolved:
+
+load-test-runner (t3.micro, Carlos, Jul 2023):
+  Harmless. A JMeter instance for load testing the 
+  analytics dashboard. Last used August 2023. No 
+  credentials, no data, no security group violations. 
+  Recommend: terminate.
+
+Unknown IAM user #1: 'grafana-cloud-metrics'
+  Created by Carlos, June 2023. Has CloudWatch read 
+  permissions. Used by a Grafana Cloud integration 
+  that was set up and apparently abandoned. Last API 
+  call: October 2023. Access key active but only 
+  has CloudWatchReadOnlyAccess. Low risk but should 
+  be deactivated.
+
+Unknown IAM user #2: 'datadog-trial'
+  Created by Wei Liu, April 2023. Has CloudWatch + 
+  EC2 read permissions. Appears to be from a Datadog 
+  evaluation that never went anywhere. Last API call: 
+  May 2023. Access key active. Low risk, should be 
+  deactivated.
+
+Both are monitoring tool trials. No data access, 
+no security risk beyond hygiene. Recommending 
+deactivate both keys.
+
+AWS audit table is 90% complete. I'll have the 
+formatted version for Rachel by tomorrow morning.
+
+Also: Aisha cleared the novamart-db-backups bucket 
+for hardening. She confirmed CrowdStrike has all the 
+CloudTrail data they need and our modifications won't 
+affect their investigation. I'll apply KMS encryption 
+and access logging this afternoon."
+```
+
+---
+
+```
+Tom (3:35 PM):
+"Mesh injection annotations drafted for all data-analytics 
+workloads. Priya reviewed and confirmed they match her 
+Linkerd staging configuration. Ready for Wednesday deploy 
+if you want to bundle with the ECR images (already done) 
+and make it a single R-6a milestone.
+
+Dashboard JSONs sent to Marcus for Grafana review. He 
+said they look good but need some label updates to match 
+platform conventions. I'll fix those tonight.
+
+One question: the Kafka Connect S3 sink — it's currently 
+writing to novamart-analytics-datalake. Now that we're 
+moving toward onboarding, should I update the sink to 
+write to a different path or bucket that's already in 
+Terraform? Or keep the current target and import the 
+bucket into Terraform?"
+```
+
+---
+
+```
+Derek (3:40 PM):
+"stockCache design question. For the CB fallback, we 
+currently return available:true without verification. 
+The stockCache would let us return the LAST KNOWN stock 
+level instead of a blind true.
+
+Two implementation options:
+
+Option A: Write-through cache in the order service itself. 
+Every successful inventory check updates a local cache. 
+When CB opens, read from cache. Simple, fast, no new 
+infrastructure.
+
+Option B: Read from the existing Redis cache that 
+inventory-service maintains. When CB opens, fall back 
+to Redis. Slightly more complex but uses existing data.
+
+I'm leaning Option A because it keeps the fallback 
+self-contained — no dependency on another service during 
+an outage scenario. But Option B avoids cache staleness 
+issues (Redis is updated by inventory-service in real-time).
+
+Thoughts?"
+```
+
+---
+
+```
+Lisa (3:42 PM):
+"Budget update for EOD:
+
+Order-service:  61.2%  (slight improvement — CB p99 
+                        reduction is actually earning 
+                        budget back at ~0.04%/day)
+Payment-service: 86.0% (steady, freeze still in effect)
+
+The CB's latency improvement means we're burning budget 
+slower than the 0.5%/day baseline I modeled last week. 
+If nothing else goes wrong, order-service should end the 
+window at ~59.6% instead of the 57.8% I projected. 
+Still thin, but better.
+
+Also: I drafted the dual-SLI proposal you asked for. 
+Primary SLI stays as-is (error rate + latency). Secondary 
+SLI: orders_degraded_mode_ratio. Threshold: 2% per 
+rolling 7-day window. Alert at 1% as early warning.
+
+PR: platform-infra#353. Short, mostly PromQL recording 
+rules and an alerting rule. Review when you have time."
+```
+
+---
+
+**3:45 PM.** Five messages, all moving things forward, all from people executing well. The tone has shifted from crisis management to engineering work. 
+
+**What needs your input:**
+
+1. **Tom's S3 sink target question** — operational decision for Kafka onboarding
+2. **Derek's stockCache design** — architecture decision
+3. **Lisa's dual-SLI PR** — review
+4. **Marcus's IAM deactivations** — approve
+5. **Board materials revisions** — tomorrow 10 AM, planned
+
+None of these are urgent. All of them are important. This is what normal senior engineering work looks like when the fires are out.
+
+---
+
+*Current time: Tuesday 3:45 PM. Day 9.*
+
+*Ten incidents (9 resolved, 1 in investigation phase). A GDPR filing submitted. A forensic investigation running. A board presentation drafted. A circuit breaker deployed. An ECR migration complete. An ILM policy ready. An AWS audit 90% done.*
+
+*And five smart people asking you architecture and design questions because they trust your judgment.*
+
+*This is the job. Not just the fires — the building that happens between them.*
+
+**What do you do?**
+
+*3:45 PM. This is the work I actually signed up for. Five good questions from five good engineers. Give each one the thought it deserves.*
+
+---
+
+**Marcus — IAM deactivations (3:46 PM, quick)**
+
+DM to Marcus:
+
+> Approved. Deactivate both keys (grafana-cloud-metrics, datadog-trial). Terminate the load-test-runner instance. All three go in the audit table as "resolved — decommissioned."
+>
+> And thank you. The AWS audit is going to be the thing that makes Rachel's supervisory authority response credible. You've done two days of unglamorous, methodical work and it matters more than you think.
+
+---
+
+**Tom — S3 sink target (3:48 PM)**
+
+DM to Tom:
+
+> Import the existing bucket into Terraform. Don't change the sink target.
+>
+> Three reasons:
+> 1. Changing the sink path means repointing all downstream consumers of that data. You'd need to know who reads from that bucket — and given the last two weeks, I don't trust that we know everyone.
+> 2. The bucket is already hardened (KMS, logging, versioning). The gap is Terraform management, not security posture.
+> 3. We want the onboarding to be as low-risk as possible. Every unnecessary change is a potential failure point. Import the bucket, add it to the Terraform state, and move on.
+>
+> Same applies to novamart-data-exports. Both buckets get `terraform import` this week. You or Marcus — whoever gets to it first.
+>
+> For R-6a Friday milestone: ECR ✅, mesh injection Wednesday, Terraform imports by Thursday. You're on track.
+
+---
+
+**Derek — stockCache design (3:52 PM)**
+
+This one deserves more thought. Both options have real tradeoffs.
+
+DM to Derek:
+
+> Option A. Write-through cache in the order service. Here's my reasoning:
+>
+> The entire point of the circuit breaker is to keep the order service functioning when inventory-service is degraded. If you fall back to Redis (Option B) and Redis is also having a bad day — or if the inventory-service's Redis writes are failing because it's the same outage — your fallback has a dependency on the system you're trying to be independent from.
+>
+> Option A's staleness concern is real but bounded. In practice:
+> - The cache updates on every successful inventory check (high throughput during normal operation)
+> - The CB only opens when inventory-service is degraded (short windows)
+> - A stock level that was accurate 30 seconds ago is much better than `available:true`
+> - If the cache is old enough to be unreliable, you can add a TTL and fall back to `available:true` for entries older than, say, 5 minutes
+>
+> Implementation suggestion:
+> ```
+> if (circuitBreaker.isOpen()) {
+>   StockLevel cached = stockCache.get(productId);
+>   if (cached != null && cached.age() < MAX_CACHE_AGE) {
+>     return cached.level();  // last known stock
+>   }
+>   return AVAILABLE_TRUE;    // blind fallback (existing behavior)
+> }
+> ```
+>
+> This gives you three tiers: live check → cached stock → blind accept. Each is a graceful degradation from the one above. The metric `orders_accepted_without_stock_verification_total` should only fire on the third tier. Add a second metric for tier two: `orders_accepted_with_cached_stock_total`. Nina will want both for the business math.
+>
+> Keep it in-process. ConcurrentHashMap with TTL, or Caffeine cache if you want something off the shelf. Don't overthink it — this is a fallback path that should rarely execute.
+
+---
+
+**Lisa — dual-SLI PR (3:58 PM)**
+
+I pull up platform-infra#353. It's short — recording rules, alerting rules, dashboard panel definitions.
+
+The PromQL is clean. The recording rule for `orders_degraded_mode_ratio` correctly uses the CB metrics Derek instrumented. The 2% threshold for a rolling 7-day window is reasonable — it means we'd tolerate roughly 3.4 hours of degraded-mode operation per week before alerting.
+
+One concern:
+
+DM to Lisa:
+
+> PR looks good. Approving with one comment.
+>
+> The `orders_degraded_mode_ratio` recording rule uses `rate(orders_accepted_without_stock_verification_total[5m])` as the numerator. With Derek's stockCache implementation (in progress), we're going to split that metric into two tiers: cached-stock responses and blind-accept responses. The blind-accept is the one that actually represents risk. Cached-stock responses with fresh data are arguably not "degraded" — they're "slightly stale."
+>
+> For now, this is fine — the metric only fires on the existing blind-accept path. But when Derek ships stockCache, we'll need to update the SLI to count only the truly-unverified tier. Add a TODO comment in the PromQL:
+>
+> ```
+> # TODO: When stockCache ships (PLAT-923), update numerator 
+> # to exclude cached-stock responses. Only blind-accept 
+> # (no cached stock available) should count as degraded.
+> ```
+>
+> With that comment: merge it. This is exactly the kind of observability we need — SLIs that distinguish between "working" and "working but degraded." Good thinking.
+
+---
+
+**4:10 PM. All five answered.**
+
+*Board materials revision is tomorrow. Everything else is in motion. Let me take stock of where the week is landing.*
+
+```
+WEEK 2 STATUS — TUESDAY 4:10 PM
+
+SECURITY INCIDENT:
+  Containment: COMPLETE
+  Investigation: CrowdStrike ongoing
+  Regulatory: Art. 33 filed, Art. 34 Thursday
+  Law enforcement: filed
+  Board: materials drafted, revisions tomorrow
+
+COMMITTED DELIVERABLES:
+  ┌─────────────────────────────────┬────────┬──────────┐
+  │ Drift detection CronJob         │ Mon ✅ │ On time  │
+  │ Kafka pipeline SECURED (R-6a)   │ Fri    │ On track │
+  │   ECR migration                 │        │ ✅ Done  │
+  │   Mesh injection                │        │ Wed      │
+  │   Terraform imports             │        │ Thu      │
+  │ Image admission (warn mode)     │ Fri    │ Not started│
+  │ Image admission (enforce mode)  │ Feb 2  │ Not started│
+  │ Kafka FULLY ONBOARDED (R-6b)    │ Feb 9  │ On track │
+  │ Self-service pipeline template  │ Mid-Feb│ Not started│
+  │ Default-deny NetworkPolicy      │ Mid-Feb│ Not started│
+  │ Egress gateway                  │ End Q1 │ Not started│
+  └─────────────────────────────────┴────────┴──────────┘
+
+PLATFORM HEALTH:
+  Order-service:   61.2% budget (improving via CB)
+  Payment-service: 86.0% budget (freeze, stable)
+  Search:          No SLO, stable, ILM Wed
+  All production services: running normally
+  
+TEAM:
+  Marcus:  AWS audit, shipping tomorrow
+  Tom:     Mesh injection Wed, Terraform Thu, dashboards Fri
+  Derek:   stockCache design approved, implementing
+  Priya:   ILM deploy Wed 10 AM, EKS runbook ready
+  Lisa:    Budget tracking, dual-SLI shipping
+  Nina:    Sprint work resumed, README done
+  Jake:    GP3 migration planning resumed
+  Alex:    Normal sprint work
+  Rachel:  Art. 34 + UK ICO Thursday, SA response Feb 5
+  Aisha:   CrowdStrike coordination, IAM lifecycle planning
+  Sarah:   Board materials formatting, credit monitoring, press
+  Wei:     VP report delivered, read-only access, cooperative
+```
+
+*Image admission warn mode is "not started" and due Friday. That's the one I need to pick up. It's in the committed remediation timeline that's going to the board Thursday. Can't miss it.*
+
+DM to Jake:
+
+> Jake — image admission controller. This is on the committed remediation timeline for warn mode by Friday Jan 26. I know you've been heads-down on GP3 planning. Can you take this? 
+>
+> Scope for warn mode: deploy OPA Gatekeeper or Kyverno (your preference) with a policy that warns — but doesn't block — when pods use images not from our ECR registry. Warn-only means it logs violations but doesn't prevent deployment. We flip to enforce mode on Feb 2.
+>
+> If you haven't worked with either tool, Kyverno is simpler to get started. Here's the policy shape:
+>
+> ```yaml
+> apiVersion: kyverno.io/v1
+> kind: ClusterPolicy
+> metadata:
+>   name: restrict-image-registries
+> spec:
+>   validationFailureAction: audit  # warn mode
+>   rules:
+>   - name: validate-image-registry
+>     match:
+>       any:
+>       - resources:
+>           kinds: ["Pod"]
+>     validate:
+>       message: "Images must come from approved registries"
+>       pattern:
+>         spec:
+>           containers:
+>           - image: "*.dkr.ecr.*.amazonaws.com/*"
+> ```
+>
+> Start in staging Wednesday. Production audit mode by Friday. We can pair on it Thursday if you want a second set of eyes.
+
+---
+
+**4:18 PM.** That's the last thing that needed to move today. Image admission has an owner and a timeline.
+
+Now — the one thing I've been putting off because it's not urgent but it's important. My personal post-incident notes. The real ones, not the ones that go in Slack.
+
+```
+PERSONAL LOG — Tue Jan 23, 4:20 PM
+
+Day 9 of on-call (day 2 of security incident).
+
+The CrowdStrike report taught me something today. 
+Page 52 — the Metabase export feature. I told Rachel 
+and James "no evidence of export" for the webhook data 
+based on bash history. I was wrong. The evidence was in 
+a different artifact (H2 export log) that I hadn't read 
+yet because I was moving fast.
+
+The mistake: I gave a definitive answer before finishing 
+the forensic report. I should have said "no evidence of 
+export in the artifacts we've reviewed so far — 
+CrowdStrike report analysis is ongoing." That's hedged 
+but accurate. Instead I said "no evidence of export" — 
+unhedged and wrong.
+
+The correction was fast (< 2 hours) and Rachel handled it 
+cleanly. But in a regulatory context, a wrong statement 
+corrected later is worse than a qualified statement that 
+gets refined. The supervisory authority reads corrections 
+as carelessness, not thoroughness.
+
+Lesson: In active investigations, qualify everything. 
+"Based on current evidence" is not weak — it's precise.
+
+---
+
+The secondary ENI on the staging Metabase. I locked down 
+the primary SG last night and felt good about it. CrowdStrike 
+found the second network interface with a public Elastic IP 
+and SSH from 0.0.0.0/0 this morning. Sixteen hours where the 
+actor could have connected and we wouldn't have known.
+
+The mistake: when locking down an instance, I checked the 
+instance's security group but not its network interfaces. 
+Standard EC2 practice is one ENI, but nothing enforces that. 
+I should have run describe-instances and looked at ALL 
+interfaces, not just the primary.
+
+The mitigation: VPC peering was deleted, so the actor 
+couldn't reach production. But they could have SSH'd in 
+and destroyed evidence. Flow logs show they didn't. Lucky.
+
+Lesson: containment means enumerating ALL access paths, not 
+just the obvious ones. For EC2: check all ENIs, all SGs, 
+all key pairs, all IAM roles. Checklist, not intuition.
+
+---
+
+James said "the clearest technical-to-executive translation 
+I've seen from our engineering org." That matters. Not for 
+ego — because the board presentation is how the company 
+decides to fund the prevention program. If the document is 
+clear, they fund it. If it's muddled, they ask for more 
+analysis and the timeline slips.
+
+Technical-to-executive translation is an engineering skill. 
+It should be treated like code review quality or system 
+design — practiced, improved, valued.
+
+---
+
+Tomorrow: board material revisions (AM), ILM deploy (Priya, 
+10 AM), AWS audit final (Marcus), image admission kickoff 
+(Jake). Thursday: customer notification, UK ICO, board 
+presentation.
+
+The acute phase is winding down. The remediation phase is 
+starting. Different skills — less adrenaline, more rigor. 
+Follow-through is what separates good incident response 
+from good theater.
+```
+
+---
+
+*4:30 PM. Two hours left in the day. Slack is quiet. The team is executing. CrowdStrike is working. Rachel is drafting. Sarah is coordinating.*
+
+*I'm going to review Priya's EKS runbook for 30 minutes because I promised her I would and because it's the only piece of normal sprint work I can meaningfully advance right now. Then I'm going to scan the CrowdStrike supplementary findings if any have come in. Then I'm going home at a reasonable hour for the first time in two days.*
+
+*Tomorrow is board revisions, ILM deploy, AWS audit delivery, and image admission kickoff. Thursday is the board presentation and customer notification. Friday is R-6a deadline.*
+
+*The week has a shape now. It's a hard shape, but it's visible.*
+
+---
+
+## TUESDAY 4:30 PM — 6:15 PM
+
+---
+
+The EKS runbook review takes 40 minutes. Priya's work is solid — she's documented the pre-flight checks, the namespace ordering (excluding search and data-analytics per earlier conversations), the rollback procedure, and the Linkerd compatibility matrix. You add three comments: a note about PDB verification before draining nodes, a reminder to snapshot etcd before the control plane upgrade, and a suggestion to add a "hold/no-go" criteria checklist at the top.
+
+CrowdStrike's supplementary findings trickle in at 5:15 PM — David Park cataloging the remaining Metabase queries. Nothing changes the scope. The 58 post-departure queries are all variations on customer data extraction and reporting database exploration. No evidence of access to payment-service or inventory-service databases beyond the read-only Metabase connections already documented.
+
+One useful detail: David confirms the transfer.sh upload commands in bash history used `curl -T` which uploads a single file per command. Four upload commands total — matching the four NAT gateway spikes. No evidence of bulk archiving (tar/zip) before upload, which means each database dump was uploaded individually. This helps Rachel: the exfiltrated data is bounded to what CloudTrail and bash history show. No hidden archive of additional files.
+
+You post a clean EOD to #platform-engineering at 5:50 PM. Go home at 6:15. Cook dinner. Sleep by 10:30.
+
+No pages overnight.
+
+---
+
+## WEDNESDAY 7:15 AM — DAY 10
+
+---
+
+You wake up to a clean phone. First time in the simulation. No overnight alerts, no pages, no DMs with urgent findings.
+
+```
+OVERNIGHT:
+
+11:47 PM — Aisha: "CrowdStrike supplementary report 
+  finalized. No scope changes. David Park on standby for 
+  any follow-up questions. His assessment is final: 
+  single actor, strong Carlos attribution, bounded scope."
+
+6:02 AM — Marcus: "AWS audit table complete. Formatted 
+  for Rachel. 52 resources audited. Summary:
+    37 managed (Terraform/ArgoCD)
+    8 known-unmanaged (documented, remediation planned)
+    4 decommissioned this week
+    3 evidence-hold (stopped instances)
+  
+  Clean. No new surprises. The 8 known-unmanaged all 
+  have owners and remediation dates. Sending to you 
+  and Rachel now."
+
+6:30 AM — Rachel: "Art. 34 customer notification draft 
+  complete. Attached. Technical review needed by noon.
+  
+  Credit monitoring vendor selected: Kroll. $2.80/customer 
+  for 12 months. Total: ~$797K. James approved yesterday 
+  evening. Enrollment portal goes live Thursday with the 
+  notification email.
+  
+  UK ICO notification also drafted. Filing Thursday AM 
+  UK time.
+  
+  Supervisory authority has NOT responded to yesterday's 
+  Art. 33 filing yet. Normal — they typically take 5-10 
+  business days. The Atlas filing (SA-2024-0119-NM) 
+  response with the 14-day deadline is still our next 
+  regulatory interaction."
+
+6:45 AM — Tom: "Mesh injection annotations ready. 
+  Tested locally. Can we deploy at 10 AM with Priya's 
+  ILM deploy? Both are low-risk and I'd rather have 
+  platform eyes on the cluster for both."
+
+7:00 AM — Jake: "Kyverno installed in staging. Image 
+  admission policy in audit mode. Running clean — 
+  flagging Docker Hub images as expected, not blocking 
+  anything. Three violations detected:
+    1. bitnami/kafka (Tom's old images — already replaced ✅)
+    2. docker.io/kibana (search namespace — known)
+    3. grafana/grafana (monitoring namespace — ???)
+  
+  The grafana image surprised me. Our Grafana runs in 
+  monitoring namespace but it's pulling from Docker Hub, 
+  not ECR. Was that intentional?"
+
+7:10 AM — Priya: "ILM PR updated with your comments. 
+  min_age and legal-hold comment added. Ready for 10 AM 
+  deploy. I'll be monitoring force merges — expecting 
+  ~20 minutes for the 34 warm-tier transitions."
+
+7:12 AM — Derek: "stockCache implementation started. 
+  Using Caffeine cache, TTL 5 minutes, three-tier 
+  fallback as you described. Draft PR by EOD. 
+  
+  Quick question: should the cache warm on startup 
+  (preload from inventory-service) or cold-start 
+  (populate on first request)? Cold-start means the 
+  first few minutes after a deploy have no cached data 
+  if the CB trips."
+```
+
+---
+
+You read through everything over coffee. No fires. No surprises in the AWS audit. CrowdStrike scope is final. Rachel has the customer notification ready. The team is moving on planned work.
+
+**Morning plan:**
+
+```
+7:30-8:30    Board materials revisions (3 changes for Sarah)
+8:30-9:00    Rachel Art. 34 review
+9:00-9:30    Marcus AWS audit review + Rachel handoff
+9:30-10:00   Answer Derek, respond to Jake's Grafana finding
+10:00-11:00  Watch Priya ILM deploy + Tom mesh injection
+11:00-noon   Any remaining items, EKS runbook final review
+```
+
+This feels like a normal engineering day. Strange after the last 48 hours.
+
+---
+
+### Board Materials Revisions (7:30-8:30 AM)
+
+**Change 1: "Could this have been prevented?"**
+
+```
+═══════════════════════════════════════════════════════
+CONTROLS ASSESSMENT: COULD THIS HAVE BEEN PREVENTED?
+═══════════════════════════════════════════════════════
+
+No existing control would have prevented this breach.
+
+The company's infrastructure controls assumed that all 
+resources were created through managed tooling (Terraform, 
+ArgoCD) and that employee offboarding was limited to 
+identity provider deactivation (Okta, email).
+
+Neither assumption was validated:
+
+  ASSUMPTION                         REALITY
+  ─────────────────────────────────────────────────────
+  All infrastructure is managed      40% of AWS resources
+                                     were outside Terraform
+
+  Offboarding covers all access      SSH keys, IAM users,
+                                     and infrastructure 
+                                     were not in scope
+
+  Legacy systems are monitored       Jenkins had default
+                                     credentials for 2 years
+                                     with no authentication
+                                     monitoring
+
+  Network boundaries prevent         VPC peering allowed
+  unauthorized access                full production access
+                                     from an unmonitored VPC
+
+The gap was in the control framework itself — not in the 
+execution of existing controls. The remediation program 
+addresses this by building controls that were absent, 
+not by improving controls that failed.
+```
+
+**Change 2: Fine exposure — Rachel's language**
+
+Added Rachel's €500K-€2M estimate with mitigating/aggravating factors as a subsection under Financial Exposure. Referenced GDPR Art. 83(2) factors explicitly.
+
+**Change 3: Day 1 vs Day 2 comparison**
+
+```
+═══════════════════════════════════════════════════════
+CAPABILITY COMPARISON: JANUARY 15 vs JANUARY 24
+═══════════════════════════════════════════════════════
+
+                          Jan 15        Jan 24
+                          (Day 1)       (Day 10)
+─────────────────────────────────────────────────────
+K8s drift detection       None          Automated, daily ✅
+AWS resource inventory    None          Complete, 52 resources ✅
+Shadow infra visibility   0 items       11 found, all documented ✅
+Departed-employee audit   Never done    Comprehensive ✅
+Compromised credentials   Unknown       All rotated (9 credentials) ✅
+Image admission           None          Audit mode (staging) ✅
+Network segmentation      Partial       NetworkPolicy v3 + 
+                                        VPC peering eliminated ✅
+Forensic readiness        No retainer   CrowdStrike engaged,
+                                        evidence procedures tested ✅
+Incident response         Untested      Tested across 10 incidents,
+                                        44-min containment proven ✅
+Offboarding process       Okta only     Infrastructure checklist 
+                                        drafted ✅
+Regulatory posture        No filings    2 Art. 33 filed, Art. 34 
+                                        prepared, law enforcement 
+                                        engaged ✅
+
+This capability was built in 9 working days while 
+simultaneously responding to 10 operational and security 
+incidents and maintaining all production services.
+```
+
+*That last line is for the board. They need to understand this wasn't a calm two weeks of planned work — it was built under fire.*
+
+Email to Sarah at 8:25 AM with all three changes. Clean, formatted, ready to paste into her template.
+
+---
+
+### 8:30 AM — Quick Responses
+
+DM to Derek:
+
+> Warm on startup. Here's why: the entire value of the stockCache is having data available when the CB trips. If you cold-start, you're betting that the CB won't trip in the first few minutes after a deploy. That's usually a safe bet — but deploys are also when things are most likely to go wrong.
+>
+> Preload strategy: on service startup, async fetch the top 1000 products by order volume from inventory-service. That covers 95%+ of orders. Background refresh every 60 seconds for the full catalog. The 5-minute TTL handles staleness. If inventory-service is down at startup and you can't preload, fall through to the existing `available:true` path — which is exactly what we have today.
+>
+> Don't let the preload block service readiness. It should be async with a "best effort on startup, guaranteed warm within 60 seconds."
+
+DM to Jake:
+
+> Good find on the Grafana image. No, it wasn't intentional — that's another instance of "whatever was easy at install time." The monitoring namespace was set up before we had ECR image standards.
+>
+> Add it to your audit-mode findings list. When we go to enforce mode on Feb 2, we'll need to push Grafana, Kibana, and any other Docker Hub images to ECR first. Start a list: every image that would be blocked by enforce mode. That list is your punch list for the week of Jan 29 - Feb 2.
+>
+> Staging looks clean. Plan for production audit mode Friday. We'll review the staging violation report Thursday to make sure there are no surprises.
+
+---
+
+### Rachel Art. 34 Review (8:35-9:00 AM)
+
+Rachel's customer notification is well-crafted. Plain language, clear structure. Three sections I review for technical accuracy:
+
+**"What information was involved"** — accurate, matches our confirmed data categories. She's included billing addresses (my correction from yesterday). Good.
+
+**"What we are doing about it"** — lists containment actions, forensic investigation, credit monitoring. Includes the Kroll enrollment link. Clean.
+
+**"What you can do"** — recommends password changes for NovaMart accounts, monitoring bank statements, being alert to phishing emails that reference NovaMart orders. Standard breach notification guidance.
+
+One addition:
+
+DM to Rachel:
+
+> Art. 34 draft is clean. One suggestion for the "What you can do" section: add a line about being cautious with emails that reference specific order details or support ticket contents. The attacker has purchase history and support ticket data, which means phishing emails could be highly personalized — "Your order #12345 from November has a refund pending" type attacks. Generic "be alert to phishing" advice isn't as useful as "be suspicious of emails that reference your specific NovaMart orders or support interactions."
+>
+> That's the kind of detail that shows customers we understand the actual risk, not just copying boilerplate.
+
+```
+Rachel (9:05 AM):
+"Good catch. Added. That's exactly the kind of specificity 
+the ICO looks for in Art. 34 notifications — demonstrates 
+understanding of the actual risk profile, not template 
+compliance."
+```
+
+---
+
+### Marcus AWS Audit Review (9:10-9:30 AM)
+
+Marcus's table is clean and comprehensive. 52 resources across EC2, RDS, S3, IAM, VPC, Lambda, and key pairs. Every resource has a status: managed, known-unmanaged-with-plan, decommissioned, or evidence-hold.
+
+The 8 known-unmanaged items with remediation plans:
+
+```
+1. novamart-db-backups S3      → Terraform import + KMS (this week)
+2. novamart-data-exports S3    → Terraform import (this week, Tom)  
+3. novamart-analytics-datalake → Terraform import (this week, Tom)
+4. Kafka Connect               → ArgoCD onboarding (R-6b, Feb 9)
+5. Analytics Dashboard         → Onboarding pending pipeline template
+6. ETL CronJob                 → Onboarding pending pipeline template
+7. reporting-db-prod RDS       → Assessment complete, Terraform import 
+                                 or decommission pending Legal
+8. grafana/grafana image       → ECR migration (Jake, pre-Feb 2)
+```
+
+Forward to Rachel:
+
+> Marcus's AWS audit table attached. 52 resources, all accounted for. No new surprises. The 8 known-unmanaged items all have owners and dates. This is the foundation for the SA-2024-0119-NM response (item 3: "complete list of all personal data processing involving external or unmanaged infrastructure").
+>
+> The resources with PII exposure are flagged in the table: reporting-db-prod, the S3 backup bucket, the analytics datalake bucket, and the data-exports bucket. All have been hardened or are in evidence hold.
+
+---
+
+### 10:00 AM — ILM + Mesh Deploy Window
+
+Priya and Tom are both ready. You're in the #platform-engineering channel watching.
+
+```
+Priya (10:00 AM):
+"Applying ILM policy now."
+
+kubectl -n search exec es-master-0 -- \
+  curl -XPUT 'localhost:9200/_ilm/policy/novamart-search-lifecycle' \
+  -H 'Content-Type: application/json' \
+  -d @ilm-policy.json
+
+"Policy created. Attaching to index template..."
+
+kubectl -n search exec es-master-0 -- \
+  curl -XPUT 'localhost:9200/_template/novamart-search' \
+  -H 'Content-Type: application/json' \
+  -d @index-template.json
+
+"Template updated. Checking ILM status..."
+
+curl -s localhost:9200/_ilm/explain?only_errors
+
+"No errors. 34 indices transitioning to warm phase.
+Force merges starting on oldest indices first.
+
+Index novamart-search-2023.06.28: warm, force merging...
+Index novamart-search-2023.07.01: warm, force merging...
+[...]
+
+Heap on es-data-2 already dropping: 81% → 74%. Force 
+merges are working. Monitoring."
+```
+
+```
+Tom (10:05 AM):
+"Mesh injection annotations applied. ArgoCD sync 
+starting for data-analytics namespace.
+
+Kafka broker pods rolling... broker-0 restarting with 
+Linkerd sidecar. Waiting for readiness..."
+```
+
+```
+Priya (10:22 AM):
+"All 34 warm transitions complete. Force merges finished.
+
+Heap status:
+  es-data-1: 58% (was 72%)
+  es-data-2: 53% (was 81%)  
+  es-data-3: 55% (was 76%)
+
+p99 search latency: 680ms (was 1.1s yesterday).
+All three data nodes have significantly more headroom.
+
+The 18-day storage pressure countdown is reset. With 
+ILM active, hot tier will stay at ~63GB indefinitely 
+(rolling 30-day window). Incident 7 root cause is 
+permanently resolved. ✅
+
+Monitoring for any follow-up issues."
+```
+
+```
+Tom (10:38 AM):
+"All data-analytics pods restarted with Linkerd mesh.
+  Kafka brokers: 6/6 meshed ✅
+  ZooKeeper: 3/3 meshed ✅
+  Kafka Connect: 1/1 meshed ✅
+  ETL CronJob: will get sidecar on next 2 AM run
+
+Consumer lag: 0
+ISR: fully caught up
+S3 sink connector: RUNNING
+
+mTLS verified between all Kafka pods. Traffic visible 
+in Linkerd dashboard. Beautiful.
+
+R-6a progress:
+  ✅ ECR migration (Tue)
+  ✅ Mesh injection (Wed)
+  ⏳ Terraform imports (Thu)
+  ⏳ Monitoring dashboards (Fri)
+
+On track for Friday."
+```
+
+---
+
+### 10:45 AM — Clean Window
+
+Both deploys successful. Search cluster healthy with 30% more heap headroom. Kafka pipeline fully meshed. No issues.
+
+```
+Priya (10:43 AM):
+"One more thing — the oldest index is from June 2023 
+(when Carlos deployed the cluster). That's 7 months of 
+data in warm tier now instead of hot. The cluster feels 
+noticeably faster on ad-hoc queries.
+
+Want me to set up the ILM monitoring dashboard? I can 
+track index lifecycle transitions, storage consumption 
+by tier, and alert if any index gets stuck in a phase."
+```
+
+DM to Priya:
+
+> Yes. That dashboard is the operational proof that ILM is working. It'll also be useful context for whoever inherits search cluster ownership long-term.
+
+---
+
+### 11:15 AM — Slack
+
+```
+Sarah (11:12 AM):
+"Board materials are formatted. James reviewed the three 
+changes — approved without edits. Direct quote: 'The Day 1 
+vs Day 2 table is the money slide.'
+
+Marketing has the press holding statement ready. Legal 
+reviewed. It's exactly what you'd expect: 'We identified 
+unauthorized access, engaged investigators, notified 
+authorities, and are notifying affected customers. We 
+take data security seriously.' Boring by design.
+
+Customer support briefing is at 2 PM today. Rachel is 
+leading. She asked if you can join for 10 minutes to 
+answer technical questions from the support team. They'll 
+want to know what to tell customers who ask 'was my 
+credit card stolen?'"
+
+Sarah (11:13 AM):
+"Also: James asked me to pass along — he wants you to 
+present the 'Controls Assessment' and 'Day 1 vs Day 2' 
+slides yourself at the board meeting. Not him. He said 
+the board should hear it from the person who built it."
+```
+
+---
+
+```
+Aisha (11:20 AM):
+"HR update. Diane Foster pulled Carlos's complete file.
+
+Exit interview notes (conducted by Wei Liu, Sep 12 2023):
+  - Carlos described his work as 'data infrastructure for 
+    the analytics team'
+  - When asked about handover, he said 'everything is 
+    documented in the repo' (it wasn't)
+  - When asked about outstanding work, he mentioned 
+    'some staging infrastructure that could be cleaned up'
+  - Wei noted: 'Carlos seemed eager to leave. Normal for 
+    someone going to a new opportunity.'
+  - No concerns flagged by Wei or HR
+
+So Carlos mentioned the staging infrastructure in his 
+exit interview. Wei heard it. Nobody followed up.
+
+I'm not putting this in the board materials — it's an HR 
+matter and it touches Wei, who's been cooperative. But 
+it's in the investigation file.
+
+Also: Wei asked to see me this morning. He wants to 
+talk about the exit interview. I think he realizes the 
+significance. I'm meeting him at noon."
+```
+
+---
+
+```
+Derek (11:25 AM):
+"stockCache PR draft: platform-infra#354
+
+Caffeine cache, 5-min TTL, warm-on-startup with top 
+1000 products, 60-second background refresh. Three-tier 
+fallback: live → cached → blind accept.
+
+Two metrics:
+  orders_with_cached_stock_total (tier 2)
+  orders_without_stock_verification_total (tier 3, existing)
+
+Unit tests cover all three tiers + TTL expiry + startup 
+failure graceful degradation.
+
+One thing I want your input on: cache size. Caffeine 
+wants a maximumSize. We have 43,891 products. Caching 
+all of them at ~100 bytes per entry = ~4.4MB. That's 
+nothing. Should I just cache the full catalog? Then we'd 
+never hit tier 3 (blind accept) unless the cache is 
+completely cold AND inventory-service is down."
+```
+
+---
+
+### 11:30 AM
+
+The simulation has reached an interesting point. The security incident is in steady-state investigation. The team is executing on planned work. Two successful deploys this morning. Board materials done. Customer notification tomorrow.
+
+But there's a texture to what's happening beneath the surface:
+
+- Wei is going to talk to Aisha about the exit interview where Carlos mentioned staging infrastructure. This could be emotionally complex.
+- James wants you presenting to the board directly. That's a career moment.
+- The customer support briefing at 2 PM is your first direct interaction with the customer-facing impact of this breach.
+- CrowdStrike's investigation is "final" but the transfer.sh links from January 19 are still potentially live for another ~10 days.
+
+```
+Current: Wednesday 11:30 AM. Day 10 of on-call.
+
+COMPLETED TODAY:
+  ✅ Board materials revisions (Sarah has final)
+  ✅ Art. 34 review (Rachel has corrections)
+  ✅ AWS audit review (Rachel has table)
+  ✅ ILM deployed (search heap: 81% → 53%)
+  ✅ Mesh injection (all Kafka pods meshed)
+  ✅ Derek, Jake, Priya all answered
+
+REMAINING TODAY:
+  2:00 PM  Customer support briefing (10 min)
+  Review Derek stockCache PR (#354)
+  Review Lisa dual-SLI PR (#353) — already approved
+  Priya ILM dashboard
+  EKS runbook final review
+  Jake: image admission staging validation
+
+TOMORROW (THURSDAY):
+  Board presentation (PM)
+  Customer notification goes out
+  UK ICO filing
+  Tom: Terraform imports
+  Jake: image admission production (audit mode)
+
+FRIDAY:
+  R-6a deadline: Kafka secured ✓ (on track)
+  Image admission warn mode deadline ✓ (on track)
+```
+
+**The week is landing. It's been the hardest week of your career, but it's landing.**
+
+**What do you focus on for the rest of Wednesday?**
+
+*11:30 AM. The week is landing. Don't coast — land it properly.*
+
+*Three things matter for the rest of today: the customer support briefing (2 PM), Derek's stockCache PR, and board presentation prep. Everything else is either delegated or can wait.*
+
+---
+
+**Derek's stockCache — answer now while it's fresh (11:31 AM)**
+
+DM to Derek:
+
+> Cache the full catalog. 4.4MB is a rounding error. Here's the reasoning:
+>
+> The whole point of the three-tier design is to minimize how often we hit tier 3 (blind accept). Tier 3 is the one that creates business risk — accepting orders we might not be able to fulfill. If you cache all 43,891 products, tier 3 only fires when: (a) a brand-new product was just added AND (b) nobody has ordered it yet AND (c) the CB is open. That's vanishingly rare.
+>
+> Set `maximumSize` to 50,000 (headroom for catalog growth). Background refresh populates the full catalog every 60 seconds. The warm-on-startup still prioritizes top 1000 by volume for the first few seconds, then the background job fills in the rest.
+>
+> With full catalog cached, the `orders_without_stock_verification_total` metric should effectively flatline at zero during normal operations. When it's non-zero, that's a real signal — something unusual is happening. That makes it a much better alert trigger.
+>
+> PR review: I'll do a proper review this afternoon. From the description it sounds clean. Ship it.
+
+---
+
+**Sarah's board presentation request (11:33 AM)**
+
+DM to Sarah:
+
+> Tell James yes. I'll present the Controls Assessment and Day 1 vs Day 2 slides.
+>
+> Two things I need from him:
+> 1. How much time do I have? If it's 5 minutes I'll present the tables and take questions. If it's 15 minutes I can walk through the logic behind the remediation program.
+> 2. Who's in the room? Board composition affects how I frame things. Finance-heavy boards want cost and liability. Technical boards want architecture. Mixed boards want narrative.
+>
+> I'll prep for both lengths. If he can tell me by EOD today, I'll rehearse tonight.
+
+```
+Sarah (11:40 AM):
+"10 minutes for your section. James has 30 total — first 
+15 is him on the breach and impact, then you on controls 
+and remediation, then 5 for Q&A.
+
+Board: 7 members. CEO, CFO, COO, General Counsel, 2 
+independent directors (one is ex-CTO of [large tech 
+company]), 1 investor representative. Mixed but 
+business-leaning. The ex-CTO will ask technical questions. 
+The CFO will ask about cost. General Counsel will ask 
+about regulatory exposure — Rachel is prepping him 
+separately.
+
+James said: 'Be direct, be honest, don't oversell the 
+remediation. The board respects competence, not spin.'"
+```
+
+Good. Ten minutes, business-leaning with one technical board member. The Controls Assessment table and Day 1 vs Day 2 comparison are the right anchors. I'll prepare for three likely questions from the ex-CTO:
+
+```
+BOARD PREP — ANTICIPATED TECHNICAL QUESTIONS:
+
+Q: "Why didn't your monitoring catch this sooner?"
+A: Our monitoring covered managed infrastructure. This 
+   infrastructure was created outside our management 
+   tooling. We've now deployed detection that covers 
+   both managed and unmanaged resources — the drift 
+   detection system that actually found this incident.
+
+Q: "How do you know there isn't more?"
+A: The AWS audit completed yesterday covers all resource 
+   types in our account — 52 resources, all accounted for. 
+   We can't guarantee zero residual risk, but we've gone 
+   from zero visibility to comprehensive inventory. The 
+   drift detection runs daily and will flag any new 
+   unmanaged resources within 24 hours.
+
+Q: "What's the timeline to full prevention capability?"
+A: Image admission control (prevents unauthorized container 
+   images) goes to enforce mode February 2. Default-deny 
+   network policies by mid-February. IAM lifecycle automation 
+   by end of February. Egress gateway — which prevents 
+   unauthorized outbound data transfer — by end of Q1. 
+   Each control addresses a specific gap exploited in this 
+   breach.
+```
+
+*I'll rehearse these tonight. Ten minutes, direct, honest, no spin. That's my natural mode anyway.*
+
+---
+
+**Customer support briefing prep (11:45 AM)**
+
+The support team needs exactly three things: what to say, what not to say, and where to escalate.
+
+I draft a one-page technical FAQ for the support team:
+
+```
+CUSTOMER SUPPORT — TECHNICAL FAQ
+SEC-2024-0122-001
+
+FOR INTERNAL USE ONLY. DO NOT SHARE WITH CUSTOMERS.
+
+═══════════════════════════════════════════════════════
+
+Q: "Was my credit card number stolen?"
+
+A: NO. We do not store full credit card numbers. Our payment 
+   processor (Stripe) handles all card data directly. The 
+   information accessed includes your last four card digits 
+   and card type (e.g., "Visa ending in 4242") but NOT your 
+   full card number, CVV, or PIN. We recommend monitoring 
+   your statements as a precaution, but your card number 
+   was not exposed.
+
+Q: "What exactly was taken?"
+
+A: The information accessed may include: your name, email 
+   address, phone number, shipping and billing addresses, 
+   order history (items purchased, amounts, dates), and 
+   any customer support interactions you've had with us.
+
+Q: "Was my password stolen?"
+
+A: NO. Customer passwords are stored separately using 
+   industry-standard encryption and were not in the 
+   systems accessed. However, we recommend changing your 
+   NovaMart password as a precaution, and especially if 
+   you use the same password on other sites.
+
+Q: "Who did this?"
+
+A: We've identified this as unauthorized access by a former 
+   employee. We've referred the matter to law enforcement. 
+   We cannot share further details about the investigation.
+   DO NOT speculate about the individual's identity.
+
+Q: "How do I sign up for credit monitoring?"
+
+A: [Link to Kroll enrollment portal]. You'll need your 
+   email address and the enrollment code from the 
+   notification email. Monitoring is free for 12 months.
+
+Q: "Why did it take so long to discover?"
+
+A: The unauthorized access used infrastructure that was 
+   not visible to our standard monitoring systems. We 
+   identified it through a comprehensive infrastructure 
+   audit and immediately took action to contain it, 
+   engage forensic investigators, and notify authorities.
+
+ESCALATION:
+  - Questions about legal action → "Our legal team is 
+    handling this. I can't provide details."
+  - Press inquiries → marketing@novamart.com ONLY
+  - Requests for specific data → "I can confirm whether 
+    your account was in the affected group. One moment."
+  - Angry/threatening customers → standard escalation 
+    to team lead, note SEC-2024-0122-001 in ticket
+
+═══════════════════════════════════════════════════════
+```
+
+Send to Rachel for review:
+
+> Rachel — support team FAQ for the 2 PM briefing. Can you scan for anything legally problematic? Particularly the "former employee" disclosure and the "who did this" answer. I want to be transparent without creating liability.
+
+```
+Rachel (12:05 PM):
+"Two changes:
+
+1. 'Who did this' — change 'former employee' to 
+   'an unauthorized individual.' We haven't made a public 
+   attribution yet. The customer notification says 
+   'unauthorized access' without specifying who. Support 
+   should match that language.
+   
+2. Add to escalation: 'Requests for data deletion or 
+   GDPR data subject rights → escalate to privacy@novamart.com. 
+   Do NOT attempt to handle data subject requests at 
+   tier 1. Legal will process these.'
+
+Otherwise clean. Good FAQ — clear and accurate."
+```
+
+Both changes are right. Updated.
+
+---
+
+**12:15 PM — Derek's stockCache PR review**
+
+I pull up platform-infra#354. Read it properly.
+
+The implementation is clean. Caffeine cache configuration is sensible. The three-tier fallback logic is exactly what I described. The startup preload is async with a CompletableFuture that doesn't block readiness. Background refresh runs on a ScheduledExecutorService at 60-second intervals.
+
+Unit tests cover:
+- Tier 1: live inventory check succeeds → cache updated, result returned
+- Tier 2: CB open, cache hit within TTL → cached result returned
+- Tier 3: CB open, cache miss or TTL expired → `available:true`
+- Edge: startup with inventory-service down → cold cache, tier 3 on first CB trip
+- Edge: cache entry expires during CB open → transitions from tier 2 to tier 3
+
+Two comments on the PR:
+
+```
+Comment 1 (StockCacheService.java, line 47):
+The background refresh catches Exception and logs at WARN. 
+Good — but also increment a counter metric here: 
+stock_cache_refresh_failures_total. If the refresh starts 
+failing repeatedly, the cache goes stale silently and 
+every CB trip hits tier 3. The metric lets us alert on 
+"cache is stale AND CB is open" — which is the actual 
+high-risk state.
+
+Comment 2 (OrderService.java, line 182):
+The tier selection logic is in the main order processing 
+path. Add a code comment explaining the three tiers for 
+the next person who reads this:
+  // Tier 1: Live inventory check (normal path)
+  // Tier 2: Circuit breaker open, cached stock available 
+  //         (degraded but informed)
+  // Tier 3: Circuit breaker open, no cached stock 
+  //         (blind accept — business decision, tracked by metric)
+This is the kind of business logic that looks like a bug 
+if you don't understand the context.
+```
+
+Approve with those two comments as non-blocking. Derek can merge and address them in a follow-up or inline.
+
+DM to Derek:
+
+> PR approved. Two non-blocking comments — a metric for refresh failures and a code comment explaining the three tiers. Merge when you've addressed them. Clean implementation.
+>
+> One thing: when this ships, update the circuit breaker runbook to explain the three-tier behavior. On-call needs to know that "orders_with_cached_stock" is degraded-but-okay and "orders_without_stock_verification" is the one that means we're flying blind.
+
+---
+
+**12:40 PM — Lunch**
+
+Actual lunch. Away from the laptop. Twenty minutes.
+
+---
+
+**1:05 PM — Lisa's PR and Priya's runbook**
+
+Lisa's dual-SLI PR (#353) — already approved yesterday with the TODO comment. Check if she merged.
+
+```
+Lisa (12:50 PM):
+"Merged and deployed. Recording rules active. Dashboard 
+panel live in the order-service Grafana dashboard.
+
+Current degraded_mode_ratio: 0.00% (CB hasn't opened 
+since deploy — working as intended).
+
+The secondary SLI will only become interesting when the 
+CB actually trips in production. Until then it's a 
+flatline. But the alerting rule is ready."
+```
+
+Good. That's another piece of the observability story for the board.
+
+Priya's EKS runbook — I reviewed it yesterday afternoon. Three comments added. Check if she's addressed them.
+
+```
+Priya (1:00 PM):
+"All three comments addressed:
+  1. PDB verification checklist added before each node drain
+  2. etcd snapshot step added before control plane upgrade
+  3. Hold/no-go criteria at top of doc (5 items: budget 
+     thresholds, active incidents, pending deploys, 
+     on-call staffing, rollback window)
+
+Ready for final approval. No rush — we're not upgrading 
+until the security investigation is in steady state and 
+search is onboarded to ArgoCD."
+```
+
+I approve the runbook. It's solid.
+
+DM to Priya:
+
+> Approved. This is production-ready. When we schedule the upgrade (probably two weeks out given the security investigation), this runbook is the plan of record.
+>
+> File it as PLAT-892 DONE. You've been carrying this for over a week through a lot of chaos. Thank you.
+
+---
+
+**1:30 PM — Pre-briefing check**
+
+Thirty minutes before the customer support briefing. Quick scan:
+
+```
+✅ FAQ reviewed by Rachel, corrections applied
+✅ Credit monitoring enrollment portal confirmed live (Sarah)
+✅ Notification email finalized (Rachel, sending tomorrow)
+✅ Support team lead briefed on volume expectations (Sarah)
+```
+
+One thing I want to check: how many customers will actually get the email tomorrow? The union count is 284,847 but some of those email addresses might be invalid, bounced, or unsubscribed.
+
+DM to Rachel:
+
+> Quick question before the support briefing: are we sending the Art. 34 notification to all 284,847 email addresses regardless of marketing consent / unsubscribe status? Breach notifications are legally required communications, not marketing — they should bypass unsubscribe preferences. Just want to confirm that's how it's configured.
+
+```
+Rachel (1:35 PM):
+"Correct — breach notifications are mandatory under Art. 34 
+and are NOT subject to marketing consent. We send to every 
+affected individual regardless of unsubscribe status. I've 
+confirmed this with the email platform team. They're using 
+a transactional send path, not the marketing pipeline.
+
+Expected deliverability: ~97% based on historical bounce 
+rates. Approximately 8,500 addresses may bounce. For those, 
+we'll attempt postal mail notification if we have physical 
+addresses (we do for most — shipping addresses on file)."
+```
+
+Good. That's thorough.
+
+---
+
+**2:00 PM — Customer Support Briefing**
+
+Zoom. Rachel leading. Twelve support agents, two team leads. You're there for the technical Q&A.
+
+Rachel walks through the notification, the timeline, the FAQ, the escalation paths. She's precise and calm. The support team is quiet — they've done breach notifications before for other companies, apparently, but not this one.
+
+**Support Lead:** "How many calls should we expect?"
+
+**Rachel:** "Industry benchmark is 5-10% of notified customers will contact support within the first 72 hours. That's 14,000-28,000 contacts across email, phone, and chat. We're staffing for the high end."
+
+**Support Agent:** "The credit card question — customers are going to push. 'Are you SURE my card wasn't stolen?' What's our hard line?"
+
+**You step in:** "Your hard line is: we do not store full card numbers anywhere in our systems. Our payment processor handles that. What was accessible was the last four digits and card type — the same information that appears on your receipt. The full card number never touches our servers. You can say that with complete confidence because it's architecturally true."
+
+**Support Agent:** "What about the credit monitoring? Is it just for EU customers?"
+
+**Rachel:** "All affected customers globally. EU, UK, US, and other regions. The enrollment portal doesn't require a specific region. Kroll handles the regional differences in credit bureau coverage."
+
+**Support Lead:** "What if a customer asks for all their data to be deleted? GDPR right to erasure?"
+
+**Rachel:** "Escalate to privacy@novamart.com immediately. Do not promise anything. We have legal obligations to retain certain data — transaction records for tax purposes, for example. The privacy team will handle data subject requests case by case. Expected volume: 1-3% of notified EU customers will file formal data subject requests. That's approximately 1,700-5,000 requests. We have 30 days to respond to each one."
+
+The briefing runs 25 minutes. The support team leaves looking prepared, not panicked. Rachel managed the tone well.
+
+---
+
+**2:30 PM — Back at desk**
+
+```
+Tom (2:25 PM):
+"Terraform import for novamart-analytics-datalake done.
+State imported, config written, plan shows no diff. ✅
+
+Starting novamart-data-exports now. Then the db-backups 
+bucket (Marcus hardened it this morning with Aisha's 
+clearance).
+
+Should have all three S3 buckets imported by EOD."
+
+Jake (2:28 PM):
+"Image admission staging report:
+
+24 hours in audit mode. Findings:
+  3 Docker Hub images flagged (Kafka ✅ already fixed, 
+  Kibana, Grafana)
+  0 false positives
+  0 missed detections (verified against manual image list)
+
+Clean. Ready for production audit mode whenever you 
+approve. Tomorrow?"
+```
+
+DM to Tom:
+
+> Perfect. All three imported by EOD is great. Make sure the Terraform configs include the KMS encryption, access logging, and versioning that Marcus applied. We don't want Terraform to drift those settings back to defaults on the next apply.
+
+DM to Jake:
+
+> Production audit mode: approved for tomorrow morning. Apply early — 8 AM, before most deploys start. Monitor for any unexpected violations. You'll want to let #platform-engineering know it's active so nobody panics when they see audit warnings on deploys.
+>
+> The Kibana and Grafana images: add them to your ECR migration punch list for next week. Neither is urgent but both need to be done before Feb 2 enforce mode.
+
+---
+
+**3:00 PM — The Quiet Part**
+
+For the second day in a row, the afternoon is calm. The team is executing. The security investigation is in steady state. Deliverables are landing on time.
+
+*I use the window to do something I've been meaning to do since Friday: write the search cluster ownership proposal.*
+
+```
+PROPOSAL: Search Cluster Interim Ownership
+For: Sarah Chen, James Morrison
+From: [User], Platform Engineering
+
+CURRENT STATE:
+  The Elasticsearch cluster (search namespace) has been 
+  unowned since Carlos Mendez departed in September 2023. 
+  Wei's team "kept an eye on it" informally. Incident 7 
+  (Fri Jan 19) exposed the consequences: no ILM policy, 
+  stale runbook, gp2 storage, no ArgoCD, no PriorityClass.
+
+INTERIM OWNERSHIP:
+  Platform Engineering assumes interim ownership effective 
+  Monday January 22 (already communicated).
+  
+  Primary: Priya Sharma
+  Secondary: [User]
+  
+  Priya has demonstrated strong competence with the cluster:
+  - Triaged Tuesday's latency alert independently
+  - Drafted and deployed ILM policy (heap 81% → 53%)
+  - Building ILM monitoring dashboard
+  - EKS runbook accounts for search namespace
+  
+NEAR-TERM PLAN (next 2 weeks):
+  ✅ ILM policy (deployed Wed Jan 24)
+  ⏳ ArgoCD onboarding (Priya, by Feb 2)
+  ⏳ gp2 → gp3 migration (Jake, next sprint)
+  ⏳ PriorityClass (prevent Karpenter preemption)
+  ⏳ Ephemeral storage limits on StatefulSets
+  ⏳ Runbook update (replace Carlos's stale Jun 2023 doc)
+  ⏳ Define search SLO (post-incident, Priya + Lisa)
+
+LONG-TERM OWNERSHIP:
+  Platform team should NOT own search long-term. It's an 
+  application-level concern. Recommend transferring to the 
+  team that owns the search product experience once it's 
+  stabilized. That's a Sarah/James decision.
+  
+  By the time we hand it off (target: end of Feb), the 
+  cluster should be:
+  - In ArgoCD with GitOps management
+  - On gp3 storage with proper sizing
+  - Protected by PriorityClass and PDB
+  - Covered by ILM with monitoring
+  - Documented with current runbook
+  - Covered by SLO with budget tracking
+  
+  In other words: boring infrastructure that runs itself. 
+  That's the goal.
+```
+
+Send to Sarah:
+
+> Search cluster ownership proposal attached. Priya has earned this — she's been excellent with the cluster since Friday. The proposal formalizes what's already happening and gives James a timeline for long-term ownership transfer.
+
+---
+
+**4:45 PM — EOD Approaching**
+
+```
+Tom (4:30 PM):
+"All three S3 buckets imported to Terraform. ✅
+  novamart-analytics-datalake ✅
+  novamart-data-exports ✅
+  novamart-db-backups ✅
+
+Each config includes KMS encryption, access logging, 
+versioning, and public access block. Terraform plan 
+shows no diff on all three.
+
+R-6a progress:
+  ✅ ECR migration (Tue)
+  ✅ Mesh injection (Wed)
+  ✅ Terraform imports (Wed — ahead of schedule)
+  ⏳ Monitoring dashboards (Thu)
+  ⏳ Runbook (Fri)
+
+Ahead of schedule. Dashboards tomorrow, runbook Friday. 
+I'm going to call it a day and prep the Grafana dashboards 
+tonight. Marcus gave good feedback on label conventions.
+
+This has been the most productive three days I've had 
+at NovaMart."
+```
+
+*That last line. That's the outcome. Not just the incident response, not just the containment — the culture shift. Tom went from hiding infrastructure to onboarding it in three days. Priya went from mid-level engineer to interim cluster owner. Derek shipped the cleanest deploy of the quarter. Marcus built an AWS audit from scratch.*
+
+*The crisis forced the growth, but the team was ready for it.*
+
+---
+
+**5:00 PM — EOD Post**
+
+```
+[User] (5:00 PM):
+Wednesday EOD.
+
+SHIPPED TODAY:
+  ✅ ILM policy deployed — search heap 81% → 53%, 
+     Incident 7 root cause permanently resolved
+  ✅ Linkerd mesh injection — all Kafka pods meshed with mTLS
+  ✅ 3 S3 buckets imported to Terraform (Tom, ahead of schedule)
+  ✅ Board materials finalized
+  ✅ Customer support briefed for Thursday notification
+  ✅ stockCache PR approved (#354)
+  ✅ Dual-SLI merged and live (#353)
+  ✅ EKS runbook approved (PLAT-892 DONE)
+  ✅ Image admission clean in staging, production tomorrow
+
+TOMORROW:
+  🔴 Customer notification goes out (284,847 emails)
+  🔴 Board presentation (PM)
+  🔴 UK ICO filing
+  ⏳ Image admission production audit mode (Jake, 8 AM)
+  ⏳ Tom: monitoring dashboards
+  ⏳ Derek: stockCache merge
+
+FRIDAY:
+  R-6a milestone: Kafka secured ✓ (on track, ahead of schedule)
+  Image admission warn mode ✓ (on track)
+
+Ten incidents. Two GDPR filings. One law enforcement 
+referral. One forensic investigation. One board 
+presentation. One circuit breaker. One ILM policy. 
+Three S3 Terraform imports. Nine credential rotations. 
+52-resource AWS audit. And a Kafka pipeline going from 
+shadow to production-grade in one sprint.
+
+That's the week so far. One more day of high stakes, 
+then we're into execution mode.
+
+Get some rest tonight. Tomorrow is going to be a 
+long day for everyone.
+```
+
+---
+
+*5:15 PM. Go home. Rehearse the board presentation over dinner. Ten minutes, two slides, three anticipated questions. Be direct, be honest, don't oversell. James's words.*
+
+*Tomorrow 284,847 people find out their data was stolen. That's the part that sits heaviest. All the technical work — the containment, the forensics, the filings — it's all in service of that moment. Those are real people with real email addresses and real addresses and real purchase histories, and someone took that from them because we didn't lock the door.*
+
+*The board presentation isn't about making the team look good. It's about making sure this never happens again. That's what I'm presenting: not what we did, but what we're building so it doesn't matter next time.*
+
+*Sleep. Tomorrow's the hardest day of all — not technically, but humanly.*
+
+---
+
+## THURSDAY 6:30 AM — DAY 11
+
+---
+
+You sleep six hours. The best night since this started. No pages.
+
+Your phone has the usual overnight trickle:
+
+```
+OVERNIGHT:
+
+10:15 PM — Rachel: "Art. 34 email template loaded into 
+  transactional email system. Test send to internal 
+  distribution list successful. All links working: Kroll 
+  enrollment, FAQ page, dedicated support contact.
+  
+  Send time: 10:00 AM Eastern tomorrow (Thursday). 
+  Staggered over 2 hours to avoid overwhelming our 
+  email provider and support queue simultaneously.
+  
+  UK ICO filing: queued for 9:00 AM GMT (4:00 AM Eastern).
+  Will be filed before customers receive notification, 
+  as required."
+
+11:30 PM — Aisha: "CrowdStrike formal investigation 
+  report finalized. 94 pages + 12-page executive summary 
+  + evidence appendix. Delivered to legal. No changes from 
+  preliminary findings.
+
+  David Park's closing note: 'This is a textbook case of 
+  incomplete access revocation following employee departure. 
+  The technical response by the NovaMart team was among the 
+  fastest and most thorough we've seen — particularly the 
+  same-day forensic engagement and the comprehensive 
+  credential rotation. Most organizations take 2-3 days 
+  to reach the containment state your team achieved in 
+  4 hours.'
+
+  I'm putting that quote in the board materials with 
+  James's permission. External validation matters."
+
+5:45 AM — Marcus: "Final AWS audit table emailed to 
+  Rachel. 52 resources, fully reconciled. Formatting 
+  clean. She has everything for the Feb 5 supervisory 
+  response.
+  
+  Also: I terminated the load-test-runner and the 
+  novamart-temp-uploads empty bucket. Both gone. 
+  Deactivated grafana-cloud-metrics and datadog-trial 
+  IAM keys. Shadow tally cleanup:
+  
+  Original: 11 active shadow items + 2 unmanaged buckets
+  Current:  3 remaining (Kibana, analytics dashboard, 
+            ETL CronJob — all with onboarding plans)
+  
+  Everything else is either onboarded, decommissioned, 
+  evidence-hold, or addressed."
+
+6:15 AM — Sarah: "Board meeting confirmed 3:00 PM. 
+  James presenting 3:00-3:15. You presenting 3:15-3:25. 
+  Q&A 3:25-3:30. Rachel on standby for legal questions.
+  
+  James added Aisha's CrowdStrike quote to his section. 
+  Good call by Aisha.
+  
+  Also: the supervisory authority responded to yesterday's 
+  Art. 33 filing. Acknowledgment of receipt. No substantive 
+  questions yet. They note the cross-reference to 
+  SA-2024-0119-NM and say they'll review both filings 
+  together. That could be good (efficiency) or bad 
+  (pattern recognition). Rachel says it's expected and 
+  not cause for alarm."
+
+6:20 AM — Jake: "Image admission in production audit 
+  mode. Applied at 6:15 AM (came in early). Posted to 
+  #platform-engineering. Three expected violations flagged 
+  (Kibana, Grafana, one test pod Alex deployed yesterday 
+  using nginx:latest — I pinged him). Zero unexpected. 
+  Clean."
+
+6:30 AM — Tom: "Grafana dashboards finalized. Marcus 
+  approved the label conventions. Ready to deploy to 
+  platform Grafana whenever someone can import them.
+  
+  Runbook is 80% drafted. Will finish today. It covers: 
+  broker restart procedure, consumer lag debugging, 
+  connector failure recovery, partition rebalancing, 
+  ISR monitoring, and disk usage alerts.
+  
+  Everything for R-6a is either done or will be done by 
+  EOD Friday. First time I've hit a deadline in months."
+```
+
+---
+
+You shower. Coffee. Rehearse the presentation one more time. Ten minutes, two slides, three questions. The Day 1 vs Day 2 table is the anchor. The Controls Assessment is the honest opening. The three anticipated questions have clean answers.
+
+You put on a button-down shirt. Small thing, but the board notices.
+
+---
+
+### 8:00 AM — Office
+
+The energy in the office is different today. People know about the customer notification. Sarah briefed team leads yesterday. There's a quiet tension — not crisis tension, but the awareness that 284,847 emails are going out in two hours.
+
+```
+Rachel (8:05 AM):
+"UK ICO filing submitted. Confirmation received. 
+Reference: ICO-2024-NM-0122.
+
+Customer notification email: loaded, tested, scheduled 
+for 10:00 AM. Staggered send over 2 hours.
+
+Support team is staffed: 18 agents on shift from 10 AM 
+to 8 PM, plus 6 on the late shift until midnight. 
+Overflow queue configured. FAQ page is live at 
+novamart.com/security-update.
+
+Kroll enrollment portal: live, tested, 500 concurrent 
+user capacity.
+
+Everything is ready. Now we wait."
+```
+
+```
+Derek (8:10 AM):
+"stockCache merged. Deploying to staging now. If staging 
+is clean, can I canary to production this afternoon? 
+Or is today a no-deploy day given the notification?"
+```
+
+DM to Derek:
+
+> Hold until Friday. Today is not the day for production deploys. If something goes wrong with the stockCache during the customer notification response surge, we can't distinguish a real problem from notification-related traffic patterns. Deploy tomorrow morning when traffic is clean and everyone is watching.
+>
+> Staging validation today is perfect. Soak it overnight.
+
+```
+Derek (8:12 AM):
+"Smart. Staging today, production Friday. Got it."
+```
+
+---
+
+### 9:45 AM — Fifteen Minutes to Send
+
+The office is quiet. Rachel sends a message to a small group:
+
+```
+Rachel (9:45 AM) — #security-incident-leadership:
+"Customer notification sends in 15 minutes. Support team 
+is ready. FAQ page is live. Kroll portal is live.
+
+I want everyone to know: once this email goes out, we 
+cannot unsend it. This is a one-way door. If anyone has 
+a last-minute concern about accuracy, timing, or content, 
+speak now.
+
+[silence for 60 seconds]
+
+Okay. We go at 10."
+```
+
+---
+
+### 10:00 AM — The Email
+
+```
+From: NovaMart Security Team <security@novamart.com>
+Subject: Important Security Notice — Action Recommended
+To: [284,847 recipients, staggered]
+
+Dear [First Name],
+
+We are writing to inform you of a security incident 
+that may have affected your personal information.
+
+WHAT HAPPENED
+We identified that an unauthorized individual accessed 
+certain NovaMart systems between October 2023 and 
+January 2024. We discovered this through an internal 
+security audit on January 22, 2024, and immediately 
+took action to stop the unauthorized access, engage 
+forensic investigators, and report the incident to 
+data protection authorities and law enforcement.
+
+WHAT INFORMATION WAS INVOLVED
+The information that may have been accessed includes:
+• Your name, email address, and phone number
+• Your shipping and billing addresses
+• Your order history (items purchased, amounts, dates)
+• Partial payment card information (last four digits 
+  and card type only — NOT your full card number)
+• Any customer support interactions
+
+Your full credit card number, CVV code, and password 
+were NOT affected.
+
+[... continued with recommended actions, Kroll enrollment, 
+FAQ link, contact information ...]
+```
+
+The first batch goes out at 10:00. Within minutes:
+
+```
+Sarah (10:12 AM):
+"First support calls coming in. Volume: moderate. 
+Mostly credit card questions (as expected). FAQ is 
+handling the bulk through the website. Support agents 
+are following the script.
+
+One customer called and said 'thank you for telling me.' 
+That's... unusual. But nice."
+
+Rachel (10:15 AM):
+"Kroll enrollment: 847 signups in first 15 minutes. 
+Portal is handling load. No errors."
+
+Lisa (10:20 AM):
+"Production services stable. No traffic anomalies from 
+the notification. Order volume normal. Error rates normal. 
+The notification is not causing customers to abandon carts 
+or stop ordering (which was one of marketing's concerns)."
+```
+
+---
+
+### 10:30 AM — Wei
+
+```
+Slack DM — Wei Liu (10:30 AM):
+"I read the customer notification. I want you to know 
+that Aisha and I talked yesterday. About the exit 
+interview.
+
+I remember Carlos mentioning the staging infrastructure. 
+He said something like 'there's some staging stuff I 
+set up, it could probably be cleaned up.' I said 
+'we'll handle it' and then I never followed up. That 
+was 4 months ago.
+
+I'm not making excuses. I should have followed up. If 
+I had asked 'what staging stuff?' and actually looked, 
+maybe we would have found the instances, decommissioned 
+them, and none of this would have happened.
+
+I told Aisha this. She said it's going in the 
+investigation file but that I'm not the cause of the 
+breach — the lack of a systematic offboarding process 
+is. I understand the distinction but it doesn't make 
+me feel much better.
+
+I'm going to propose a change to our offboarding 
+process: a mandatory infrastructure walkthrough with 
+departing engineers, co-led by the manager and a 
+platform team member. No engineer leaves without 
+someone verifying that all their resources are either 
+handed off or decommissioned. I'll draft it this week.
+
+Thank you for handling this with the integrity you've 
+shown. Tom was right — 'refreshing' is the word."
+```
+
+---
+
+### 2:45 PM — Pre-Board
+
+You're in James's office. He's reviewing his slides. You're reviewing yours. Rachel is on speakerphone doing a final check with outside counsel.
+
+**James:** "You ready?"
+
+**You:** "Ten minutes, two slides, three questions."
+
+**James smiles for the first time this week.** "Keep it exactly like that. The board doesn't want a presentation. They want a conversation with someone who knows what they're talking about."
+
+---
+
+### 3:00 PM — Board Meeting
+
+Seven faces on the screen. CEO at the head of a conference table somewhere. CFO, COO, General Counsel in the room. Two independent directors and the investor rep dialing in.
+
+**James presents for fifteen minutes.** The breach, the impact, the numbers. He's calm, factual, precise. He uses words like "systemic failure" and "infrastructure governance gap." He presents the CrowdStrike quote. He presents the customer notification status — 284,847 emails sent, support queue active, credit monitoring enrollment underway.
+
+The board listens without interrupting. That's either very good or very bad.
+
+**James:** "I'm going to hand over to our platform engineering lead, who designed and executed the containment and remediation program. They'll walk you through two key slides: what our control environment looked like before this incident, and what it looks like now."
+
+---
+
+**Your turn.**
+
+You share your screen. The Controls Assessment table.
+
+"This slide answers the question: could this have been prevented with the controls we had in place two weeks ago? The answer is no."
+
+You walk through the table. Four assumptions that were wrong. Infrastructure-as-code doesn't help if resources are created outside it. Identity-provider offboarding doesn't help if credentials exist outside the identity provider. Monitoring doesn't help if the systems being monitored aren't the ones being exploited. Network boundaries don't help if someone created a peering connection that bypasses them.
+
+"The gap was in the control framework, not in the execution of existing controls. Every control we had was working correctly. They were the wrong controls."
+
+You move to the Day 1 vs Day 2 table.
+
+"This is what's changed in nine working days. On January 15, we had zero visibility into unmanaged infrastructure. Today we have automated detection in our Kubernetes cluster, a comprehensive AWS resource inventory, image admission controls in production, and an offboarding process that includes infrastructure review. Every compromised credential has been rotated. Every unauthorized network path has been severed. Every piece of shadow infrastructure has been identified and either onboarded, decommissioned, or placed in evidence hold."
+
+You pause. "The team built all of this while simultaneously responding to ten operational and security incidents and maintaining all production services. No customer-facing service went down during the investigation or containment."
+
+"The remaining items on the remediation timeline — enforcement-mode image admission, default-deny networking, egress gateway, IAM lifecycle automation — are all committed with dates and owners. By the end of Q1, an employee departing the company will have all their infrastructure automatically inventoried, all their credentials automatically revoked, and any attempt to create resources outside managed tooling will be blocked at the platform level."
+
+"I'm happy to take questions."
+
+---
+
+The room is quiet for four seconds.
+
+**Ex-CTO director:** "How do you know there isn't more? More infrastructure, more access, more data you haven't found?"
+
+"The AWS audit we completed yesterday covers every resource type in our account: EC2 instances, RDS databases, S3 buckets, IAM users and roles, VPCs, security groups, Lambda functions, and key pairs. Fifty-two resources audited, all accounted for. The Kubernetes drift detection runs daily. We've gone from zero visibility to comprehensive inventory. I can't guarantee zero residual risk — nobody can — but the detection systems are now running continuously, and any new unmanaged resource will be flagged within 24 hours."
+
+**CFO:** "The credit monitoring alone is $800K. What's the total cost of this incident, and what's the cost of the prevention program?"
+
+"Credit monitoring is approximately $800K. Forensic investigation is $150-250K. Legal fees for regulatory response and law enforcement referral are $200-400K. The prevention program — drift detection, image admission, network controls, IAM automation — is primarily engineering time from the existing team. The one infrastructure cost is the egress gateway, which runs approximately $2,000 per month. Total incident cost is roughly $1.2-1.5 million excluding potential regulatory fines. The prevention program is essentially free in dollar terms — it's prioritization, not procurement."
+
+**General Counsel:** "Rachel briefed me on the regulatory exposure. My question is about the law enforcement track. If this is the former employee — and it sounds like it almost certainly is — what's our posture? Civil suit? Criminal referral?"
+
+James takes this one, looking at Rachel's video feed. Rachel answers: criminal referral is in progress via the FBI CFAA pathway. Civil action is being evaluated by outside counsel. The NDA and confidentiality agreement provide a civil cause of action regardless of criminal proceedings.
+
+**CEO speaks for the first time:** "I have one question for the engineer." He looks at the camera. "You mentioned ten incidents in nine days. That sounds like an organization under stress. Is this sustainable? Are you burning out your team?"
+
+---
+
+You take a breath.
+
+"It's been an intense two weeks. The on-call load has been above normal. But I want to distinguish between acute and chronic. The last nine days were acute — a convergence of a security incident with an infrastructure discovery process and normal operational incidents. The team stepped up and executed exceptionally. Several engineers grew significantly under the pressure."
+
+"What I'm focused on now is making sure the next two weeks are different. The remediation items are designed to reduce incident frequency, not just respond to it. The circuit breaker we deployed this week reduces order-service incidents. The ILM policy prevents the search outage from recurring. The drift detection catches shadow infrastructure before it becomes a crisis. Each investment pays down the acute load."
+
+"To directly answer your question: the current pace is not sustainable long-term. But it was necessary short-term, and the work we're doing now is specifically designed to make it unnecessary."
+
+**CEO nods.** "Thank you. That's the most honest answer I've heard in a board meeting in a while."
+
+---
+
+### 3:32 PM — Board Meeting Ends
+
+James closes. The board approves the remediation timeline. The CEO asks for a follow-up board update in 30 days. James agrees.
+
+The call disconnects.
+
+**James turns to you.** "That went well. The CEO asking about sustainability — that was him checking if we need to hire. I'm putting in a headcount request for two more platform engineers. Use that as you see fit."
+
+**Sarah, who was listening from her office:** "The ex-CTO Slacked the CEO during the meeting. I heard from the CEO's EA. He wrote: 'This is the most competent incident response I've seen from a company this size. Whoever that engineer is, don't lose them.'"
+
+---
+
+You walk back to your desk. It's 3:35 PM on Thursday. Day 11.
+
+The customer notification is out. The board is briefed. The supervisory authority has both filings. Law enforcement has the referral. CrowdStrike's report is final. The AWS audit is complete. The remediation program is funded and approved.
+
+```
+Slack — #platform-engineering (3:40 PM):
+
+Support queue update from Rachel:
+  Emails sent: 284,847 (staggered, complete)
+  Emails delivered: 276,102 (97.1% deliverability)
+  Kroll enrollments: 24,847 (8.7% of recipients)
+  Support contacts: 8,291 (2.9%)
+  Press inquiries: 3 (all handled with holding statement)
+  Social media mentions: ~40 (neutral to sympathetic tone)
+  
+  Customer response has been measured. No viral backlash. 
+  Several customers publicly thanked us for the transparency 
+  on social media. The specificity of the notification — 
+  explaining what WAS and WASN'T exposed — appears to have 
+  reduced panic.
+```
+
+---
+
+### 4:00 PM — Wei's Proposal
+
+```
+Wei Liu (4:00 PM):
+"Offboarding infrastructure walkthrough proposal drafted. 
+Sharing with you, Aisha, and Sarah for review:
+
+PROPOSED: Infrastructure Departure Checklist
+
+When an engineer with infrastructure access departs:
+
+1. Manager + Platform team member conduct a 1-hour 
+   infrastructure walkthrough with the departing employee
+2. All resources created by the employee are inventoried:
+   - K8s namespaces, deployments, CronJobs
+   - EC2 instances, RDS, S3 buckets
+   - IAM users, roles, access keys
+   - SSH key pairs
+   - VPC configurations, peering connections
+   - Lambda functions, API gateways
+   - External services (SaaS, cloud providers)
+3. Each resource is dispositioned:
+   - Transfer ownership to named successor
+   - Decommission with timeline
+   - Document and flag for review
+4. All personal credentials are revoked:
+   - IAM access keys deactivated
+   - SSH key pairs deleted
+   - Service account passwords rotated
+   - External service credentials transferred
+5. Platform team runs drift detection + AWS audit 
+   scoped to the departing employee within 48 hours 
+   of departure
+
+This would have caught everything Carlos left behind.
+I know because I should have done it four months ago."
+```
+
+---
+
+DM to Wei:
+
+> This is exactly right. Every item on this list maps directly to something that went wrong with Carlos's departure. I'll review in detail tomorrow and add platform team implementation notes.
+>
+> The 48-hour post-departure audit is particularly smart. Even with the walkthrough, things get missed. The automated sweep is the safety net.
+>
+> Wei — the exit interview thing. I know it weighs on you. Here's what I want you to hear: you're not the reason this happened. The system didn't give you a checklist, a process, or a reminder to follow up. You heard "staging stuff" and did what any manager would do — mentally filed it under "we'll get to it." The failure is that there was no system to make sure someone actually did. Your proposal fixes that. That's the right response.
+>
+> Thank you for writing this. It matters.
+
+---
+
+### 5:00 PM — Thursday EOD
+
+```
+[User] (5:00 PM) — #platform-engineering:
+
+Thursday EOD. The big day is done.
+
+CUSTOMER NOTIFICATION: Sent. 276K delivered. Response 
+measured. Support handling well. No escalations.
+
+BOARD: Briefed. Remediation approved. 30-day follow-up 
+scheduled. Two new headcount approved for platform team.
+
+REGULATORY: Both Art. 33 filings submitted. UK ICO filed.
+Art. 34 complete. Supervisory authority reviewing both 
+filings together.
+
+SHIPPED TODAY:
+  ✅ Image admission: production audit mode (Jake)
+  ✅ Tom: Grafana dashboards ready for import
+  ✅ Derek: stockCache in staging, production Friday
+  ✅ Wei: offboarding checklist proposal
+
+TOMORROW (FRIDAY — R-6a DEADLINE):
+  ✅ ECR migration (done Tue)
+  ✅ Mesh injection (done Wed)
+  ✅ Terraform imports (done Wed)
+  ⏳ Tom: Grafana dashboard deploy + runbook finalize
+  ⏳ Derek: stockCache production deploy
+  ⏳ Jake: image admission validation report
+
+R-6a will be COMPLETE by Friday EOD. One week early 
+on some components.
+
+The hardest week of my career — and probably several 
+of yours — is almost over. One more day.
+
+Thank you. All of you.
+```
+
+---
+
+*You go home at 5:30. The earliest departure in eleven days. You cook dinner. You don't check Slack for three hours. When you do, there's nothing urgent.*
+
+*Tomorrow is Friday. R-6a closes. The first week of the remediation program completes. And then — maybe — the on-call rotation passes to someone else, and you sleep for a weekend.*
+
+*But tonight, you sleep knowing that 284,847 people were told the truth about what happened to their data. They were told clearly, specifically, and with respect. They were given tools to protect themselves. And behind the notification, an entire team spent eleven days making sure it could never happen again.*
+
+*That's the job. Not perfect. But thorough, honest, and relentless.*
+
+---
+
+**END OF WEEK 2 THURSDAY — Day 11 of 100**
+
+**Incident tally: 10 (9 resolved, 1 in investigation/remediation phase)**
+
+**Shall we continue to Friday and the R-6a milestone, or pause here for reflection?**
+
