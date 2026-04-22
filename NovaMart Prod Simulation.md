@@ -21696,3 +21696,2241 @@ Time to go talk to Rachel.
 
 **The 5 PM session with Rachel. What happens?**
 
+---
+
+## MONDAY 5:00 PM — RACHEL WORKING SESSION
+
+---
+
+Zoom. Rachel, Aisha, you. Rachel has your document open — you can see her scrolling through it on screen share.
+
+**Rachel:** "This is thorough. Thank you. I can work with this. Let me walk through my questions — some are legal framing, some are factual gaps I need filled."
+
+She's in drafting mode. Fast, precise, no small talk.
+
+**Rachel:** "First. The 72-hour clock. Aisha declared at 2:50 PM. That gives us until Thursday 2:50 PM. I want to file tomorrow by noon. That gives us buffer if the supervisory authority comes back with questions on the Atlas filing and we need to handle both simultaneously. Are there any factual findings we're expecting between now and tomorrow noon that would materially change the notification?"
+
+**You:** "CrowdStrike starts remote triage at 6 PM tonight. They could potentially determine whether data was transferred off the Jenkins instance to the staging Metabase, and whether anything left via the internet gateway. That would change section 5 of the document — the exfiltration assessment — from 'assume exfiltration' to either confirmed or ruled out."
+
+**Rachel:** "How likely is it they'll have that answer by tomorrow morning?"
+
+**Aisha:** "Remote triage tonight is preliminary — checking disk artifacts, bash history, network connections, transfer logs. They might find something definitive, or they might need the full disk image tomorrow to be sure. I'd say fifty-fifty we have a clearer picture by 9 AM."
+
+**Rachel pauses.** "Here's my recommendation. We file tomorrow at noon regardless. If CrowdStrike gives us a definitive answer by then, we include it. If not, we file with the current language: 'exfiltration cannot be ruled out, forensic investigation in progress, supplementary findings will be provided.' The supervisory authority expects that — initial notifications are rarely complete. What they DON'T tolerate is delay."
+
+**You and Aisha both agree.**
+
+**Rachel:** "Second question. Article 34 — notification to individuals. This is the one that's going to hurt."
+
+She pulls up a section of the GDPR on her screen.
+
+> *Art. 34(1): Where the personal data breach is likely to result in a high risk to the rights and freedoms of natural persons, the controller shall communicate the personal data breach to the data subject without undue delay.*
+
+**Rachel:** "284,000 customers. Names, emails, phones, physical addresses, purchase history. If we're assuming exfiltration — which we are — that's clearly 'high risk to rights and freedoms.' Identity theft, targeted phishing, physical safety concerns for some individuals. Art. 34 notification to affected individuals is mandatory, not discretionary."
+
+She looks at the camera. "That means we need to email 284,000 customers telling them their data may have been compromised. James needs to approve the customer communication. Marketing needs to prepare for the response volume. Customer support needs to be briefed. This is not a quiet filing with a regulator — this is a public event."
+
+**Aisha:** "When?"
+
+**Rachel:** "Art. 34 says 'without undue delay.' In practice, regulators accept a short window to prepare proper communications — usually a few days after the Art. 33 filing. I'd recommend we notify customers by Friday. That gives us time to set up a dedicated response page, brief customer support, and coordinate with marketing."
+
+She turns to you. "I need something from the platform team for the customer notification. Can you set up a way to identify which specific customers were in the September, October, and November backups? If the customer base grew between September and November, some customers in the November dump might not be in the September dump. I want to notify everyone in ANY of the three dumps, but I need the union set, not just November's count."
+
+---
+
+**You think about this.** The backups are complete database dumps. The customer table as of each date. A customer created in October would be in the October and November dumps but not September. You need to restore all three and get the union.
+
+**You:** "I can get you the union count. The November dump has 284,391. September and October will be subsets — fewer customers because the table was smaller. The union is likely very close to the November count, maybe slightly higher if any customers were deleted between months. I'll run it tonight and have exact numbers by morning."
+
+**Rachel:** "Good. I also need to know if any of those customers are minors. Do we collect date of birth?"
+
+**You:** "The customers table doesn't have a date of birth field. We have email, name, phone, country, marketing consent, and timestamps. No age data."
+
+**Rachel:** "Small mercy. Okay — if we don't collect DOB, we can't determine minor status, which means we note that in the filing and move on. The supervisory authority may ask us to implement age verification, but that's a future requirement, not a current notification gap."
+
+---
+
+### 5:18 PM — Rachel's Third Question
+
+**Rachel:** "Third. Relationship to SA-2024-0119-NM. You wrote these should be filed separately. I agree, but there's a complication."
+
+She pauses, choosing her words carefully.
+
+**Rachel:** "When the supervisory authority reads our second notification — filed one week after the first — they're going to see a pattern. Former employee infrastructure. Inadequate offboarding. Unmanaged resources. Both incidents involve the same person's work. They will ask: 'Did you conduct a thorough investigation after the first incident, and if so, how did you miss this?'"
+
+She looks at you directly. "I need a good answer to that question. Not a defensive one. A real one."
+
+---
+
+**Aisha jumps in before you can respond:** "I can speak to part of this. The Atlas finding was discovered through a Kubernetes cluster audit. The Jenkins instance is AWS infrastructure — EC2, not Kubernetes. The K8s drift detection tool we deployed Monday morning correctly identified all unmanaged workloads in the cluster. But it's blind to EC2 instances, RDS databases, and VPC configurations. We didn't have an AWS-level equivalent until today."
+
+**Rachel:** "That's factual, but it's not sufficient. The supervisory authority will say: 'You knew a former employee had created unauthorized infrastructure. Why didn't you immediately audit ALL infrastructure — not just Kubernetes — for other instances of the same pattern?'"
+
+She's right. And you know she's right.
+
+**Rachel:** "I'm not trying to assign blame. I'm trying to prepare us for the question. What I want to put in the notification is: 'Upon discovery of the first incident, the controller initiated a systematic infrastructure audit. The initial scope covered the Kubernetes cluster, where the first unauthorized infrastructure was found. The scope was expanded to AWS-level resources on [date], leading to the discovery of this second incident.' The question is: what date did the AWS audit scope formally expand?"
+
+---
+
+### 5:22 PM — Aisha's Phone Buzzes
+
+She glances down, then holds up a hand.
+
+**Aisha:** "Hold on. CrowdStrike David Park is early. He's pinging me — says he pulled the CloudTrail for the staging Metabase instance profile and found something."
+
+She unmutes her phone, reads for 30 seconds, then looks up.
+
+**Aisha:** "The staging Metabase IAM role — `metabase-staging-profile` — has S3 read access. CloudTrail shows **outbound S3 GetObject calls from that role** on January 15 and 19."
+
+```
+Jan 15 15:02  s3:GetObject  novamart-db-backups/orders/20231101.dump
+              Source IP: 172.31.4.89 (staging Metabase)
+              Role: metabase-staging-profile
+
+Jan 15 15:04  s3:GetObject  novamart-db-backups/orders/20231001.dump
+              Source IP: 172.31.4.89
+              
+Jan 15 15:06  s3:GetObject  novamart-db-backups/orders/20230901.dump
+              Source IP: 172.31.4.89
+
+Jan 19 10:15  s3:GetObject  novamart-db-backups/orders/20231101.dump
+              Source IP: 172.31.4.89
+```
+
+**Aisha:** "The backups were downloaded **twice**. First to the Jenkins instance at 2:32 PM via the Jenkins IAM role. Then to the staging Metabase at 3:02 PM via its own IAM role. The attacker used Jenkins to find and download the backups, then copied them — or re-downloaded them — to the staging Metabase."
+
+**Rachel's face goes still.**
+
+**Aisha:** "The staging Metabase has a NAT gateway to the internet. If the files landed on that instance, they were one `curl` or `scp` command away from being anywhere in the world."
+
+**Rachel:** "This changes the exfiltration assessment from 'possible' to 'probable.' The attacker deliberately moved the data to the instance with internet access. That's not accidental. That's staging for exfiltration."
+
+**Aisha:** "David Park says he can prioritize the staging Metabase for tonight's triage. If there are outbound transfer artifacts — bash history, scp logs, curl history, large outbound data flows through the NAT gateway — he'll find them. He's asking if we can enable VPC Flow Logs on the legacy-staging VPC retroactively."
+
+**You know the answer:** Flow logs aren't retroactive. You can only capture future traffic. The VPC peering is already deleted so there's no production traffic to capture anyway. But enabling flow logs on the legacy-staging VPC could capture any remaining outbound traffic from the staging Metabase if the attacker has another access path you haven't found.
+
+---
+
+### 5:28 PM — Back to Rachel's Question
+
+Rachel is looking at you. "I still need the answer. When did the AWS-level audit scope formally expand? And what do I tell the supervisory authority about the gap between the K8s audit and the AWS audit?"
+
+The honest answer is: **today.** Marcus started the EC2 investigation today because he found the instances during the RDS connection exhaustion incident investigation. The AWS-level audit wasn't formally scoped until James asked for it on the bridge call at 3:15 PM. Between the Atlas discovery on Monday January 15 and today January 22, a full seven days passed during which the audit scope was limited to Kubernetes.
+
+There are mitigating factors — you were handling seven other incidents, you delivered drift detection on schedule, the PCI meeting and GDPR notification consumed significant bandwidth. But the gap is real.
+
+---
+
+**Marcus posts in #security-incidents while you're thinking:**
+
+```
+Marcus (5:30 PM):
+"Before I eat: carlos-dev-scratch S3 bucket.
+
+Created: August 14, 2023 (same day as everything else Carlos).
+Server access logging: NOT ENABLED.
+Bucket policy: none (private, account access only).
+Versioning: not enabled.
+
+Contents:
+  test-data/  (3 objects, all <1KB, look like test CSVs)
+  backups/    (empty)
+  exports/    (2 objects)
+    exports/customer_emails_20231015.csv  (4.2 MB)
+    exports/customer_orders_20231112.csv  (28.7 MB)
+
+The exports folder has customer data CSVs. Dates are 
+October and November 2023. Before Carlos's departure? 
+No — he left in September. These were created AFTER he 
+left.
+
+I haven't downloaded them. Preserving for CrowdStrike. 
+But the filenames speak for themselves.
+
+CloudTrail for these objects:
+
+  Oct 15 2023 — PutObject customer_emails_20231015.csv
+    Source IP: 172.31.4.89
+    Role: metabase-staging-profile
+
+  Nov 12 2023 — PutObject customer_orders_20231112.csv
+    Source IP: 172.31.4.89
+    Role: metabase-staging-profile
+
+This has been going on since OCTOBER. The January 
+S3 backup downloads weren't the first exfiltration 
+attempt — they were an ESCALATION. Someone started with 
+targeted CSV exports in October, then moved to full 
+database dumps in January.
+
+Going to eat. Back at 5:50 for CrowdStrike."
+```
+
+---
+
+**The room is very quiet.**
+
+**Rachel:** "The timeline just extended by three months. This person has been accessing our infrastructure since at least October 15, 2023 — one month after Carlos's departure."
+
+**Aisha:** "And those CSVs were written from the staging Metabase. Same IP, same IAM role. This isn't someone who stumbled onto Jenkins in January. They've had access to the staging environment since at least October and have been methodically extracting data."
+
+**Rachel looks at you.** "I'm going to need a comprehensive timeline going back to Carlos's departure date. Every access event, every data movement, everything CloudTrail has. The notification scope just changed — this isn't a January 15-22 incident. This is potentially a four-month unauthorized access campaign."
+
+---
+
+### Current State: Monday 5:33 PM
+
+**Rachel still needs:**
+1. The answer to her supervisory authority question (the audit scope gap)
+2. Updated timeline going back to October
+3. Union customer count across all three backup dumps (tonight)
+4. Comprehensive CloudTrail analysis (CrowdStrike scope expansion)
+
+**Aisha needs:**
+1. Decision on VPC Flow Logs (retroactive isn't possible, but prospective?)
+2. Updated CrowdStrike scope to include carlos-dev-scratch bucket
+3. Full S3 access log analysis across ALL buckets for staging Metabase role
+
+**You need to:**
+1. Answer Rachel's question honestly
+2. Update the data scope document with the October/November findings
+3. Brief CrowdStrike at 6 PM with expanded scope
+4. Get home at some point today
+
+**The October CSV exports change the story. This isn't "someone found Jenkins last week." This is a sustained, escalating data extraction campaign by someone with ongoing access to Carlos's infrastructure — starting one month after he left.**
+
+**Rachel and Aisha are both looking at you. Rachel's question is still hanging: what do you tell the supervisory authority about the gap?**
+
+**I take a breath. This is a moment where honesty matters more than comfort.**
+
+"Rachel, I'm going to give you the honest answer, and then I'm going to give you the framing that's both honest and accurate."
+
+"The formal AWS-level audit scope expanded **today**. Marcus discovered the EC2 instances at approximately 12:15 PM during the investigation of an unrelated database incident. James formally requested a comprehensive AWS audit on the 3:15 PM bridge call. Between the Atlas discovery on January 15 and today, our audit scope was limited to Kubernetes."
+
+**I hold up a hand before anyone responds.**
+
+"Here's why that's honest but incomplete if you stop there. The Kubernetes audit was the correct first scope. The shadow infrastructure we found — Kafka, Atlas, the ETL pipeline — was **all** Kubernetes-resident. We designed and deployed drift detection to cover the attack surface we'd identified. It worked — it found nine findings on its first production run this morning, all correct. What we didn't do was ask the next question fast enough: *what else might a departed employee have created outside the cluster?* We had the pattern — Carlos created unmanaged infrastructure — and we didn't generalize it to AWS-level resources quickly enough."
+
+"The mitigating factors are real — seven other incidents, the GDPR filing for Atlas, the PCI review — but they're explanations, not excuses. The gap is seven days."
+
+**Rachel is writing. She looks up.**
+
+"For the notification, here's what I'd recommend you write — and push back if this isn't accurate enough:"
+
+> *'Upon discovery of unauthorized Kubernetes infrastructure on January 15, the controller initiated a systematic audit of all cluster workloads, deploying automated drift detection on January 22. The initial audit scope reflected the attack surface of the first finding. During investigation of an unrelated operational incident on January 22, AWS-level infrastructure created by the same former employee was identified. The controller immediately expanded audit scope to all AWS services and engaged external forensic investigators. The controller acknowledges that the scope expansion to non-Kubernetes infrastructure should have been initiated earlier and has implemented a comprehensive AWS resource inventory as a preventive control.'*
+
+"It's honest about the gap. It shows the K8s audit was systematic and deliberate. It doesn't hide that we should have gone wider sooner. And it shows we self-identified the gap rather than having it pointed out by a regulator."
+
+---
+
+**Rachel reads it back, nods slowly.** "That works. It's the right tone — accountable without being self-flagellating. I'll draft around that framing."
+
+**She makes a note, then looks up.** "Now. The October discovery changes this significantly. I need you both to understand what we're dealing with."
+
+---
+
+**I pivot to the operational items while Rachel is still in drafting mode.**
+
+"Aisha — three things. First, VPC Flow Logs: we can't get retroactive data, but yes, enable them on the legacy-staging VPC now. If there's another access path we haven't found, or if someone has a persistent shell on the staging Metabase, we want to capture that traffic. Second, CrowdStrike scope needs to expand tonight — David Park needs to know about `carlos-dev-scratch` and the October/November CSV exports. That bucket, the staging Metabase instance, and the Jenkins instance are all in scope for forensic imaging. Third, I need a full CloudTrail query for the `metabase-staging-profile` IAM role going back to August 14, 2023 — the creation date. Every API call. S3, EC2, RDS, everything. Same for the Jenkins instance role. If CloudTrail retention covers that window."
+
+**Aisha:** "CloudTrail retention is 90 days in the console, but we have the S3 trail archive. I'll check how far back it goes. If it's been logging to S3 since creation, we might have everything back to when the trail was set up."
+
+"Good. If the trail predates August 2023, we can reconstruct the full access pattern. If not, we have a gap we need to disclose."
+
+---
+
+**I turn back to Rachel.**
+
+"On the timeline — here's what we know right now, and what we'll know by morning:"
+
+```
+WHAT WE KNOW:
+  Aug 14, 2023  Carlos creates staging Metabase, carlos-dev-scratch bucket
+  Sep 2023      Carlos departs. Account disabled. Infrastructure NOT decommissioned.
+  Oct 15        172.31.4.89 writes customer_emails CSV to carlos-dev-scratch
+  Nov 12        172.31.4.89 writes customer_orders CSV to carlos-dev-scratch
+  Jan 8         172.31.4.89 logs into Jenkins (2 logins)
+  Jan 15        172.31.4.89 logs into Jenkins, downloads all 3 DB dumps via Jenkins role
+                172.31.4.89 re-downloads dumps via staging Metabase role
+  Jan 19        172.31.4.89 logs into Jenkins, re-downloads Nov dump
+  Jan 22        172.31.4.89 logs into Jenkins at 9:14 AM (last known access)
+  Jan 22 2:40   Marcus changes Jenkins password (access cut)
+  Jan 22 3:15   VPC peering deleted (network path cut)
+
+WHAT WE DON'T KNOW YET:
+  - Was data exfiltrated beyond the staging VPC? (CrowdStrike tonight)
+  - Full CloudTrail history for both IAM roles (Aisha pulling tonight)
+  - What happened between October and January? (gap in known activity)
+  - Who is 172.31.4.89? (forensics pending)
+  - Were the October CSVs generated via Metabase queries or direct DB access?
+  - Is there any access BEFORE October 15?
+
+WHAT WE'LL HAVE BY TOMORROW NOON:
+  - CrowdStrike preliminary findings (outbound transfer artifacts)
+  - Full CloudTrail timeline (if archive covers the window)
+  - Union customer count across all three backup dumps
+  - VPC Flow Logs enabled (prospective only)
+```
+
+"The customer impact scope also just expanded. The October CSV — `customer_emails_20231015.csv` at 4.2 MB — that's a targeted extraction. Not a database dump. Someone queried for customer emails specifically. That's a different intent signal than downloading backups."
+
+---
+
+**Rachel:** "Agreed. That's deliberate targeting. The supervisory authority will read that the same way."
+
+She checks her notes. "Okay. For tomorrow's noon filing, I'm going to draft tonight with the 'assume exfiltration' language. If CrowdStrike confirms or denies by 9 AM, I update. If not, we file with the current assessment. The October discovery extends the incident window from one week to four months, which changes the severity framing but not our obligation to file."
+
+"One more question for you." She looks at the camera. "The `novamart-db-backups` S3 bucket — the one with the three database dumps. Is that bucket still receiving new backups? Is there a December or January dump?"
+
+---
+
+**That's a good question.** The monthly-db-backup Jenkins job has been failing since December 1. So the most recent successful backup is November 1. No December or January dumps exist. The attacker has September, October, and November 2023 data — but not anything more recent.
+
+"No. The Jenkins backup job has been failing since December 1 — it errors out silently, no alerting. The most recent successful dump is November 1, 2023. So the data exposure ceiling is the November customer table — 284,391 records. The September and October dumps are subsets of that. The union count will be very close to 284,391, potentially slightly higher if any customers were hard-deleted between September and November."
+
+**Rachel:** "That's actually helpful for the notification. We can bound the exposure window: data as of November 1, 2023. Customers created after that date are not in the exposed dataset."
+
+---
+
+"Rachel, one more thing. The `carlos-dev-scratch` bucket with the CSV exports — those files are **still there.** Marcus correctly didn't touch them for evidence preservation. But they're sitting in an unencrypted S3 bucket with no access logging. Once CrowdStrike has imaged or documented them, we need to either move them to a secured evidence bucket or delete them. They're active PII exposure right now."
+
+**Aisha:** "I'll flag that for David Park tonight. Evidence capture first, then we secure or remove."
+
+**Rachel:** "Agreed. Don't delete anything until CrowdStrike confirms they have what they need."
+
+---
+
+**I check the time. 5:38 PM. CrowdStrike at 6:00.**
+
+"Rachel, do you have what you need to start drafting tonight? I want to make sure you're unblocked before I prep for the CrowdStrike call."
+
+**Rachel:** "I have enough. Three things I still need from you by 9 AM tomorrow: the union customer count, the full CloudTrail timeline if Aisha has it, and an updated data scope inventory — every bucket, database, and file we know was accessed, with dates and record counts. I'll send you my draft sections that need technical review by 8 AM."
+
+"You'll have all three."
+
+**Aisha:** "I'll have CloudTrail pulled tonight. I'm joining the CrowdStrike call too — I'll make sure David Park knows about the expanded scope and the carlos-dev-scratch bucket."
+
+---
+
+**Rachel pauses before ending.**
+
+"One thing I want to say to both of you. This is bad. Four months of unauthorized access, deliberate data targeting, escalation from CSVs to full database dumps. The supervisory authority is going to scrutinize this hard. But — the fact that we found it ourselves, contained it within hours of discovery, engaged forensics the same day, and are filing within 72 hours? That matters. They see organizations that take weeks or months to notice. We found it, we acted, and we're being transparent. That's the story I want to tell."
+
+"The gap in the audit scope is real and I won't hide it. But the response since discovery has been fast and thorough. Let's keep it that way."
+
+**She disconnects.**
+
+---
+
+**It's 5:41 PM. CrowdStrike at 6:00. Nineteen minutes to prepare.**
+
+What are you doing with those nineteen minutes?
+
+*5:41 PM. Nineteen minutes. Three things: enable flow logs, prep CrowdStrike brief, start the union count running as a background job so it's done by morning.*
+
+---
+
+**First — VPC Flow Logs (2 minutes, 5:41 PM)**
+
+```bash
+# Enable flow logs on legacy-staging VPC - prospective capture only
+aws ec2 create-flow-logs \
+  --resource-type VPC \
+  --resource-ids vpc-0f8a3c... \
+  --traffic-type ALL \
+  --log-destination-type s3 \
+  --log-destination arn:aws:s3:::novamart-security-evidence/SEC-2024-0122-001/flow-logs/ \
+  --max-aggregation-interval 60 \
+  --tag-specifications 'ResourceType=vpc-flow-log,Tags=[{Key=incident,Value=SEC-2024-0122-001},{Key=created-by,Value=platform-eng}]'
+```
+
+Post to #security-incidents:
+
+> VPC Flow Logs enabled on legacy-staging VPC (vpc-0f8a3c). Logging to evidence bucket. 60-second aggregation. Prospective only — no retroactive data. If anyone still has access to the staging Metabase through a path we haven't found, we'll see the traffic now.
+
+---
+
+**Second — Start the union count as a background job (3 minutes, 5:43 PM)**
+
+I don't want to be restoring 3 database dumps on my laptop at 11 PM. Set it up to run now and collect results in the morning.
+
+```yaml
+# union-count-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: backup-union-analysis
+  namespace: monitoring
+  labels:
+    incident: SEC-2024-0122-001
+    purpose: gdpr-data-scope
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: analysis
+        image: postgres:15
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          
+          # Download all three dumps
+          aws s3 cp s3://novamart-db-backups/orders/20230901.dump /tmp/sep.dump
+          aws s3 cp s3://novamart-db-backups/orders/20231001.dump /tmp/oct.dump
+          aws s3 cp s3://novamart-db-backups/orders/20231101.dump /tmp/nov.dump
+          
+          # Init postgres, create temp databases
+          pg_ctlcluster 15 main start
+          
+          createdb sep_backup
+          createdb oct_backup
+          createdb nov_backup
+          
+          pg_restore -d sep_backup /tmp/sep.dump 2>/dev/null || true
+          pg_restore -d oct_backup /tmp/oct.dump 2>/dev/null || true
+          pg_restore -d nov_backup /tmp/nov.dump 2>/dev/null || true
+          
+          # Union analysis
+          psql -d sep_backup -c "
+            CREATE TABLE results AS
+            SELECT id, email, country, 'sep' as source FROM customers;
+          "
+          
+          psql -d oct_backup -c "
+            INSERT INTO sep_backup.public.results
+            SELECT id, email, country, 'oct' FROM customers;
+          "
+          
+          psql -d nov_backup -c "
+            INSERT INTO sep_backup.public.results
+            SELECT id, email, country, 'nov' FROM customers;
+          "
+          
+          # Generate report
+          psql -d sep_backup -c "
+            SELECT 'UNION COUNT ANALYSIS — SEC-2024-0122-001' as report;
+            
+            SELECT '--- Per-dump counts ---' as section;
+            SELECT source, count(DISTINCT id) as unique_customers 
+            FROM results GROUP BY source ORDER BY source;
+            
+            SELECT '--- Union (all dumps) ---' as section;
+            SELECT count(DISTINCT id) as total_unique_customers FROM results;
+            
+            SELECT '--- Union by region ---' as section;
+            SELECT 
+              CASE 
+                WHEN country IN ('DE','FR','IT','ES','NL','BE','AT','PT','IE','FI','GR','LU','MT','CY','SK','SI','EE','LV','LT','HR','BG','RO','CZ','DK','SE','PL','HU') THEN 'EU'
+                WHEN country = 'GB' THEN 'UK'
+                WHEN country = 'US' THEN 'US'
+                ELSE 'Other'
+              END as region,
+              count(DISTINCT id) as unique_customers
+            FROM results
+            GROUP BY 1 ORDER BY 2 DESC;
+            
+            SELECT '--- Customers ONLY in earlier dumps (deleted by Nov) ---' as section;
+            SELECT count(DISTINCT id) as deleted_customers
+            FROM results 
+            WHERE source IN ('sep','oct') 
+            AND id NOT IN (SELECT DISTINCT id FROM results WHERE source = 'nov');
+          " | tee /tmp/union-report.txt
+          
+          # Upload results
+          aws s3 cp /tmp/union-report.txt \
+            s3://novamart-security-evidence/SEC-2024-0122-001/union-customer-count.txt
+          
+          # Cleanup - don't leave PII sitting around
+          dropdb sep_backup
+          dropdb oct_backup
+          dropdb nov_backup
+          rm /tmp/*.dump
+          
+          echo "COMPLETE"
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "1"
+          limits:
+            memory: "8Gi"
+        env:
+        - name: AWS_DEFAULT_REGION
+          value: "us-east-1"
+        serviceAccountName: platform-admin
+```
+
+```bash
+kubectl apply -f union-count-job.yaml
+```
+
+*This will run in the background. Results in the evidence bucket. Rachel has them by morning without me touching database dumps at midnight.*
+
+---
+
+**Third — CrowdStrike brief document (5:46 PM, 14 minutes to write)**
+
+David Park needs to hit the ground running at 6 PM. He shouldn't have to piece the story together from Slack messages. I write a structured brief:
+
+```
+SEC-2024-0122-001 — CROWDSTRIKE INCIDENT BRIEF
+Prepared: Mon Jan 22, 2024 5:46 PM
+For: David Park, CrowdStrike IR
+From: [User], Platform Engineering + Aisha Rahman, Security
+
+═══════════════════════════════════════════════════════
+EXECUTIVE SUMMARY
+═══════════════════════════════════════════════════════
+
+Confirmed unauthorized data access from legacy 
+infrastructure. Sustained campaign: at minimum 
+Oct 15, 2023 through Jan 22, 2024 (~3 months). 
+Escalating pattern: targeted CSV exports → full 
+database dump downloads. Attacker likely a former 
+employee (departed Sep 2023) or someone with access 
+to their credentials/infrastructure.
+
+284,391 customer records (PII) confirmed in scope. 
+168,442 EU residents. Exfiltration beyond AWS is 
+possible — internet egress path exists from the 
+staging environment. GDPR Art. 33 filing tomorrow.
+
+═══════════════════════════════════════════════════════
+TARGET INSTANCES FOR FORENSIC ANALYSIS
+═══════════════════════════════════════════════════════
+
+INSTANCE 1: novamart-jenkins-legacy
+  Instance ID:  i-0e8g3f...
+  Type:         t3.large
+  IP:           10.0.43.201 (production VPC)
+  OS:           Amazon Linux 2
+  Launched:     March 2, 2022
+  Created by:   former-devops@novamart.com
+  IAM role:     jenkins-legacy-role
+    Policies:   AmazonS3FullAccess, EC2ReadOnly,
+                CloudWatchLogsFullAccess, RDS describe
+  Jenkins ver:  2.361
+  Status:       RUNNING. SG locked to 2 platform IPs.
+                Password changed 2:40 PM today.
+                Filesystem UNTOUCHED (evidence preserved).
+  
+  WHAT TO LOOK FOR:
+  - Groovy console execution history/artifacts
+  - Jenkins job run history beyond audit log
+  - Files downloaded to /tmp or other local paths
+  - SSH connections in/out (authorized_keys, known_hosts)
+  - bash_history for any user
+  - Cron jobs or scheduled tasks beyond Jenkins
+  - AWS credential caching artifacts
+
+INSTANCE 2: metabase-staging
+  Instance ID:  i-0c4d5e6f...
+  Type:         t3.small
+  IP:           172.31.4.89 (legacy-staging VPC)
+  OS:           Ubuntu — AMI ami-0abcdef... (verify version)
+  Launched:     August 14, 2023
+  Created by:   carlos.mendez@novamart.com
+  IAM role:     metabase-staging-profile (S3 read access)
+  SSH key:      carlos-dev-key (EC2 pair deleted, but 
+                authorized_keys on instance still has it)
+  Status:       RUNNING. ALL inbound SG rules removed.
+                VPC peering to production DELETED.
+                Filesystem UNTOUCHED.
+  
+  WHAT TO LOOK FOR:
+  - Downloaded database dump files (.dump, extracted CSVs)
+  - Outbound transfer artifacts: scp, rsync, curl, wget
+  - bash_history, .ssh/known_hosts (where did they connect TO?)
+  - Metabase query history (if Metabase has local H2 DB)
+  - Evidence of scripts or automation for data extraction
+  - Any SSH connections FROM external IPs
+  - Size/timestamp of any large files written to disk
+  - Outbound network: did they use curl/wget to send data out?
+
+═══════════════════════════════════════════════════════
+S3 BUCKET: carlos-dev-scratch
+═══════════════════════════════════════════════════════
+
+  Created:      August 14, 2023
+  Logging:      NOT enabled
+  Encryption:   NOT enabled
+  Versioning:   NOT enabled
+  
+  Known contents:
+    test-data/   (3 objects, <1KB each — test CSVs)
+    backups/     (empty)
+    exports/customer_emails_20231015.csv  (4.2 MB)
+    exports/customer_orders_20231112.csv  (28.7 MB)
+  
+  CloudTrail:
+    Oct 15 — PutObject customer_emails CSV from 172.31.4.89
+    Nov 12 — PutObject customer_orders CSV from 172.31.4.89
+  
+  WHAT TO DETERMINE:
+  - Were these files subsequently downloaded by anyone?
+  - Were they shared via pre-signed URLs?
+  - Full CloudTrail for this bucket (all operations)
+  - Content verification: are these the files we think they are?
+
+═══════════════════════════════════════════════════════
+CONFIRMED DATA ACCESS TIMELINE (CLOUDTRAIL)
+═══════════════════════════════════════════════════════
+
+All times UTC.
+
+  Date          Actor           Action
+  ──────────────────────────────────────────────────────
+  Aug 14 2023   Carlos          Creates staging VPC, 
+                                Metabase, peering, NAT/IGW,
+                                carlos-dev-scratch bucket
+  Sep 15 2023   —               Carlos departs. Corporate 
+                                accounts disabled. SSH keys 
+                                + AWS infra NOT decommissioned.
+  Oct 15 2023   172.31.4.89     PutObject: customer_emails CSV 
+                (metabase role) to carlos-dev-scratch (4.2 MB)
+  Nov 12 2023   172.31.4.89     PutObject: customer_orders CSV
+                (metabase role) to carlos-dev-scratch (28.7 MB)
+  Jan 8 2024    172.31.4.89     Jenkins login (2 sessions)
+  Jan 15        172.31.4.89     Jenkins login + Groovy console
+                (jenkins role)  DescribeInstances (all EC2)
+                                DescribeDBInstances (all RDS)
+                                ListBucket × 3
+                                GetObject × 3 DB dumps + 12 ETL
+                (metabase role) GetObject × 3 DB dumps (re-download)
+  Jan 19        172.31.4.89     Jenkins login + Groovy console
+                (jenkins role)  DescribeInstances
+                                GetObject × 1 DB dump
+                (metabase role) GetObject × 1 DB dump
+  Jan 22        172.31.4.89     Jenkins login 9:14 AM
+                                No API activity recorded
+  Jan 22 14:40  Marcus          Jenkins password changed
+  Jan 22 15:24  Platform        VPC peering deleted, all SGs locked
+
+  GAPS:
+  - No known activity between Nov 12 and Jan 8 (~2 months)
+  - CloudTrail archive retention TBD (Aisha checking tonight)
+  - May be additional activity before Oct 15 if trail covers it
+  - Jenkins audit log only covers 90 days (back to ~Oct 24)
+
+═══════════════════════════════════════════════════════
+KEY QUESTIONS FOR FORENSIC INVESTIGATION
+═══════════════════════════════════════════════════════
+
+PRIORITY 1 — EXFILTRATION
+  Did data leave AWS? Specifically:
+  a) Are DB dumps or extracted data on staging Metabase disk?
+  b) Evidence of outbound transfers (scp, curl, rsync, etc.)?
+  c) NAT gateway CloudWatch metrics — large outbound data 
+     flows on Jan 15 or Jan 19?
+  d) Any evidence of tunneling, VPN, or reverse shell?
+
+PRIORITY 2 — ATTRIBUTION  
+  Who is the actor?
+  a) SSH access logs on staging Metabase — source IPs?
+  b) Was access via carlos-dev-key or another method?
+  c) Is there evidence of multiple actors or single?
+  d) Any identifying artifacts (usernames, hostnames, 
+     agent strings)?
+
+PRIORITY 3 — FULL SCOPE
+  What else was accessed beyond what CloudTrail shows?
+  a) Groovy console: what scripts were executed?
+  b) Metabase query history: what database queries were run?
+  c) Any access to production services via VPC peering 
+     beyond Jenkins?
+  d) Were the production Metabase (10.0.43.147) or 
+     reporting-db-prod also accessed from this path?
+
+PRIORITY 4 — TIMELINE COMPLETENESS
+  Is the Oct 15 start date accurate or was there earlier access?
+  a) Staging Metabase: first SSH login?
+  b) Earliest evidence of human activity post-Carlos departure?
+  c) Any activity in Sept 2023 (immediately after departure)?
+
+═══════════════════════════════════════════════════════
+AWS ACCESS FOR CROWDSTRIKE
+═══════════════════════════════════════════════════════
+
+  IAM user: crowdstrike-ir-readonly (Aisha creating)
+  Access: ReadOnlyAccess + S3 evidence bucket read/write
+  Console access: Yes (read-only)
+  Evidence bucket: s3://novamart-security-evidence/SEC-2024-0122-001/
+  
+  Contents of evidence bucket:
+    /jenkins-audit.json (full 90-day Jenkins audit log)
+    /aws-inventory/ (full AWS resource enumeration)
+    /flow-logs/ (VPC flow logs — prospective from 5:41 PM)
+    [union-customer-count.txt will appear when job completes]
+
+  Contacts:
+    Aisha Rahman (Security) — IR lead, primary contact
+    [User] (Platform Eng) — technical lead, infrastructure context
+    Marcus Webb (Platform Eng) — evidence collection, AWS inventory
+
+═══════════════════════════════════════════════════════
+TWO REMAINING CARLOS SSH KEYS
+═══════════════════════════════════════════════════════
+
+  carlos-staging-key  (created Aug 2023)
+  novamart-analytics-key (created Jun 2023)
+
+  Both still active in EC2. We have NOT deleted them 
+  because they may be in use on instances you need to 
+  image. Please confirm when it's safe to delete.
+
+═══════════════════════════════════════════════════════
+```
+
+Upload to evidence bucket and send link to Aisha:
+
+> Brief for David Park is in the evidence bucket: `SEC-2024-0122-001/crowdstrike-brief.txt`. Covers both instances, the scratch bucket, full timeline, key forensic questions prioritized, and the two remaining SSH keys we're holding for his clearance.
+>
+> One thing I want David to check that isn't in the formal brief: NAT gateway CloudWatch metrics for the legacy-staging VPC. `NatGateway.BytesOutToDestination` and `NatGateway.BytesOutToSource` on Jan 15 and Jan 19. If someone moved three database dumps (~500MB+ of pg_dump) out through the NAT gateway, there should be a visible spike in outbound bytes. That won't tell us WHERE it went, but it'll tell us IF large data left the VPC. We can check that right now without waiting for forensics.
+
+---
+
+**Actually — I check it myself (5:56 PM, 4 minutes to spare):**
+
+```bash
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/NATGateway \
+  --metric-name BytesOutToDestination \
+  --dimensions Name=NatGatewayId,Value=nat-0d4e5f... \
+  --start-time 2024-01-15T00:00:00Z \
+  --end-time 2024-01-16T00:00:00Z \
+  --period 3600 \
+  --statistics Sum
+```
+
+---
+
+*5:58 PM. Brief is uploaded. Flow logs enabled. Union count job running. NAT gateway metrics query submitted. Two minutes to CrowdStrike call.*
+
+*This is the worst day. But the response is clean. Every containment action documented. Every evidence artifact preserved. Every question Rachel needs answered by morning is either answered or has a job running to answer it. CrowdStrike has a brief that lets them start working immediately instead of spending the first hour asking us "so what happened?"*
+
+*The thing I keep coming back to: we found this because Marcus was thorough during Incident 8. An RDS connection count investigation led to a Metabase EC2 instance which led to a Jenkins server which led to a four-month data exfiltration campaign. If Incident 8 hadn't happened — or if Marcus hadn't been curious enough to dig into those EC2 instances — we might not have found this for weeks or months longer.*
+
+*Every incident has been connected. The shadow Kafka led to the Atlas data. The RDS connections led to the Metabase. The Metabase led to the Jenkins. The Jenkins led here. Pull the thread, find the next thing. That's been the pattern for nine days straight.*
+
+*Time to brief CrowdStrike. Then I go home and sleep, because tomorrow is going to be just as long.*
+
+Joining the call.
+
+---
+
+## MONDAY 5:58 PM — NAT GATEWAY METRICS
+
+Your CloudWatch query returns before the call starts.
+
+```
+{
+  "Datapoints": [
+    {"Timestamp": "2024-01-15T14:00:00Z", "Sum": 2847293, "Unit": "Bytes"},
+    {"Timestamp": "2024-01-15T15:00:00Z", "Sum": 847219456, "Unit": "Bytes"},
+    {"Timestamp": "2024-01-15T16:00:00Z", "Sum": 312448791, "Unit": "Bytes"},
+    {"Timestamp": "2024-01-15T17:00:00Z", "Sum": 4192847, "Unit": "Bytes"},
+    {"Timestamp": "2024-01-15T18:00:00Z", "Sum": 1847293, "Unit": "Bytes"},
+    ...
+  ]
+}
+```
+
+You stare at the 3-4 PM hour. **847 MB outbound.** The 4-5 PM hour: **312 MB outbound.** Normal hours are 1-4 MB (health checks, package repo pings, Metabase telemetry).
+
+You run January 19:
+
+```
+{
+  "Datapoints": [
+    {"Timestamp": "2024-01-19T09:00:00Z", "Sum": 3104582, "Unit": "Bytes"},
+    {"Timestamp": "2024-01-19T10:00:00Z", "Sum": 524871234, "Unit": "Bytes"},
+    {"Timestamp": "2024-01-19T11:00:00Z", "Sum": 2943817, "Unit": "Bytes"},
+    ...
+  ]
+}
+```
+
+**524 MB outbound** in the 10 AM hour on January 19. The S3 re-download of the November dump happened at 10:15 AM.
+
+Your stomach drops. The database dumps total roughly 800MB-1.2GB uncompressed. The outbound spikes are the right order of magnitude. This isn't someone downloading data *to* the staging Metabase and leaving it there. This is someone pulling data through the staging VPC **and out to the internet.**
+
+You run October 15 for completeness:
+
+```
+{
+  "Datapoints": [
+    {"Timestamp": "2023-10-15T15:00:00Z", "Sum": 6847219, "Unit": "Bytes"},
+    {"Timestamp": "2023-10-15T16:00:00Z", "Sum": 2104582, "Unit": "Bytes"},
+    ...
+  ]
+}
+```
+
+October 15: **6.8 MB outbound** at 3 PM. The customer_emails CSV was 4.2 MB. Almost exactly right for the file plus protocol overhead.
+
+November 12:
+
+```
+{
+  "Datapoints": [
+    {"Timestamp": "2023-11-12T14:00:00Z", "Sum": 31284719, "Unit": "Bytes"},
+    ...
+  ]
+}
+```
+
+**31.2 MB outbound.** The customer_orders CSV was 28.7 MB.
+
+---
+
+Every single data access event has a corresponding outbound NAT gateway spike of the right size. The data left AWS.
+
+You screenshot all four results, upload to the evidence bucket, and post to #security-incidents:
+
+```
+[User] (5:59 PM):
+NAT Gateway BytesOutToDestination for legacy-staging VPC:
+
+  Oct 15 3PM:  6.8 MB  (matches customer_emails CSV — 4.2 MB)
+  Nov 12 2PM:  31.2 MB (matches customer_orders CSV — 28.7 MB)
+  Jan 15 3-4PM: 1.16 GB (matches 3x database dumps)
+  Jan 19 10AM: 524 MB  (matches 1x database dump re-download)
+
+Every known data access event has a corresponding 
+outbound spike through the NAT gateway. The data didn't 
+just move to the staging instance. It left AWS.
+
+Exfiltration is CONFIRMED. Not probable. Confirmed.
+
+Evidence uploaded to SEC-2024-0122-001/nat-gateway-metrics/.
+
+Updating Rachel now. Joining CrowdStrike in 60 seconds.
+```
+
+Quick DM to Rachel:
+
+> Rachel — before you draft with "assume exfiltration." NAT gateway metrics confirm data left AWS on every access date. Oct 15, Nov 12, Jan 15, Jan 19. Byte counts match the known files. Change "assume exfiltration" to "confirmed exfiltration" in your draft. Full evidence in the security bucket. Sorry to deliver this tonight.
+
+Rachel responds in 15 seconds:
+
+> Understood. Thank you for confirming before I drafted the wrong version.
+
+---
+
+## MONDAY 6:00 PM — CROWDSTRIKE CALL
+
+Zoom. David Park, CrowdStrike senior IR consultant. Mid-40s, calm, clearly done this hundreds of times. Aisha is on. Marcus joins from his phone — eating a sandwich, camera off.
+
+**David Park:** "I've read the brief. Thorough — thank you, this saves us at least an hour. I want to confirm a few things, then walk you through what we're going to do tonight."
+
+He shares his screen — your brief, annotated.
+
+**David:** "First confirmation. The two instances — Jenkins and staging Metabase — are both still running, filesystems untouched, only network access has been modified. Correct?"
+
+**Aisha:** "Correct. Jenkins has security group locked to two platform engineer IPs. Staging Metabase has all inbound rules removed — it can't receive connections from anywhere. Both are running. Nobody has SSH'd in or modified anything since containment."
+
+**David:** "Good. We want to image both disks before anyone touches them. I'm going to create EBS snapshots from both instances remotely — that preserves the exact disk state. Then we work from the snapshots, never the originals. Standard chain of custody."
+
+He pauses. "I see you already confirmed outbound data transfer via NAT gateway metrics. Good work — that's usually one of the first things we check and you've saved us time. The byte-count correlation is strong. I'd call that confirmed exfiltration as well."
+
+**David:** "Now, the questions I need answered that aren't in the brief."
+
+---
+
+**David:** "One. The `metabase-staging-profile` IAM role. You show it has S3 read access. Is that `AmazonS3ReadOnlyAccess` — the managed policy — or a scoped custom policy?"
+
+You check:
+
+```bash
+aws iam list-attached-role-policies --role-name metabase-staging-profile
+```
+
+```json
+{
+  "AttachedPolicies": [
+    {"PolicyName": "AmazonS3ReadOnlyAccess", "PolicyArn": "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"}
+  ]
+}
+```
+
+"Managed policy. `AmazonS3ReadOnlyAccess`. That gives read access to **every S3 bucket in the account.**"
+
+**David's expression doesn't change, but his typing speeds up.** "So the actor could have read any S3 bucket, not just the backup bucket. We need to check CloudTrail for ListBucket and GetObject calls from that role against *all* buckets, not just the ones you've identified."
+
+**Aisha:** "I'll expand the CloudTrail query."
+
+**David:** "Two. The Jenkins IAM role — `jenkins-legacy-role`. You show `AmazonS3FullAccess`. Full access means read *and* write. Could the actor have modified or deleted data in any bucket?"
+
+"Yes. In theory, they could have planted files, modified existing objects, or deleted evidence."
+
+**David:** "Three. The VPC peering connection. You deleted it today at 3:24 PM. Before that, what was the routing? Could someone on the staging Metabase instance reach production services — RDS, internal ALBs, Kubernetes node ports?"
+
+You think about this carefully. "The peering connection allowed the staging VPC to route to the production VPC's CIDR. Route table entries would determine what was actually reachable. I didn't check the staging VPC route tables before deleting the peering."
+
+**David pauses.** "That's important. If the peering route table allowed full CIDR access, the actor had network-level access to everything in production — not just through Jenkins, but directly from the staging Metabase. RDS, internal services, node ports. We need the route table configuration."
+
+**You:** "The peering connection is deleted, but the route table entries should still be there — they'd just be blackholed. Let me check."
+
+```bash
+aws ec2 describe-route-tables \
+  --filters "Name=vpc-id,Values=vpc-0f8a3c..." \
+  --query "RouteTables[].Routes[?VpcPeeringConnectionId]"
+```
+
+```json
+[
+  {
+    "DestinationCidrBlock": "10.0.0.0/16",
+    "VpcPeeringConnectionId": "pcx-0a1b2c3d...",
+    "State": "blackhole"
+  }
+]
+```
+
+"Full production CIDR. `10.0.0.0/16`. The staging Metabase had network access to **everything in production.**"
+
+**David:** "So from the staging instance, the actor could reach production RDS directly — not just through Jenkins. They could have run queries against any database that accepts connections from the VPC CIDR range."
+
+**Aisha:** "Our production RDS security groups... most of them allow from `10.0.0.0/8`."
+
+There's a silence.
+
+**David:** "I want to be clear about what we're looking at. This actor had: admin access to Jenkins with S3 full access and RDS describe permissions. A staging instance with S3 read-all and full network access to production. And default credentials that were never changed. For at least four months. The blast radius is potentially much larger than the database backups."
+
+---
+
+**David:** "Here's what we're doing tonight, in order:"
+
+```
+1. EBS snapshot both instances (evidence preservation)
+2. Launch forensic analysis instances from snapshots
+3. Staging Metabase first priority:
+   a. Disk artifacts: downloaded files, scripts, tools
+   b. bash_history all users
+   c. SSH authorized_keys + known_hosts
+   d. Metabase internal database (H2 — query history)
+   e. Cron jobs, systemd timers, at jobs
+   f. /tmp, /var/tmp, any large files
+   g. Network: established connections, listening ports (from snapshot — process list won't be live)
+4. Jenkins second priority:
+   a. Groovy script console history
+   b. All job configurations (credentials in XML)
+   c. Jenkins credentials store (may have RDS passwords)
+   d. Same disk artifact sweep
+5. Expanded CloudTrail:
+   a. Both IAM roles, all API calls, back to trail creation
+   b. All S3 access across all buckets from both roles
+   c. Any RDS connection attempts (if logged)
+   d. Any EC2 actions (launches, modifications)
+```
+
+**David:** "I'll have preliminary disk findings by midnight. Full CloudTrail analysis by 6 AM — we have tooling that chews through the S3 trail archive fast. I'll send interim findings to Aisha as I go. If I find anything that changes the severity — additional compromised systems, evidence of RDS direct access, or signs of a second actor — I'll call immediately."
+
+He looks at the camera. "One more thing. You mentioned two Carlos SSH key pairs still active in EC2. Don't delete them yet — but **do** check if either of those keys was used to access any other running instance. If the actor had the private key, they could have SSH'd into any instance that trusts those keys."
+
+**Aisha:** "How do we check that? authorized_keys are on the instances themselves."
+
+**David:** "CloudTrail won't show SSH connections — that's OS-level. But you can check which instances were *launched* with those key pairs. That tells you which instances *trust* those keys. If any production instance was launched with `carlos-staging-key` or `novamart-analytics-key`, the actor may have had SSH access to production workloads."
+
+```bash
+aws ec2 describe-instances \
+  --filters "Name=key-name,Values=carlos-staging-key,novamart-analytics-key" \
+  --query "Reservations[].Instances[].[InstanceId,KeyName,Tags[?Key=='Name'].Value|[0],State.Name]" \
+  --output table
+```
+
+You run it.
+
+```
+-----------------------------------------------------------------
+|                       DescribeInstances                        |
++----------------------+------------------------+----------------+
+| i-0e8g3f...          | carlos-staging-key     | novamart-jenkins-legacy | running |
+| i-0c4d5e6f...        | carlos-staging-key     | metabase-staging        | running |
+| i-0a1b2c3d...        | novamart-analytics-key | analytics-metabase      | running |
+| i-0f7g8h9i...        | carlos-staging-key     | (none)                  | terminated |
++-----------------------+-----------------------+-----------------+--------+
+```
+
+**Three running instances, all using Carlos's keys.** The Jenkins legacy, the staging Metabase, and — the production analytics Metabase. The one at 10.0.43.147 that Marcus found during Incident 8. Connected to production RDS *and* the unknown reporting-db-prod.
+
+**David:** "The production Metabase instance uses the same SSH key. If the actor has the private key — which they almost certainly do if they're Carlos or someone who obtained Carlos's credentials — they could SSH directly into the production Metabase from the staging VPC. That gives them interactive access to any database the production Metabase connects to."
+
+**Aisha:** "The production Metabase connects to orders-db-prod and reporting-db-prod."
+
+**David:** "Add the production Metabase to the forensic scope. Three instances, not two. And that unknown RDS — reporting-db-prod — we need to know what's in it and who has accessed it."
+
+---
+
+### 6:22 PM
+
+**David:** "Last thing before I start imaging. The Metabase internal database — it's usually an H2 file database stored on the instance. It contains saved queries, dashboard definitions, and importantly: **a complete query execution log.** Every SQL query anyone has run through Metabase, with timestamps and the user who ran it. If the actor used Metabase's interface to query production databases, that log will tell us exactly what they accessed."
+
+"That's potentially the most valuable artifact on the staging instance. If there are queries like `SELECT * FROM customers` or `SELECT email, phone FROM orders JOIN customers...` in the H2 database, we'll know exactly what data was accessed beyond the S3 artifacts."
+
+**David:** "I'm starting the snapshots now. I'll have preliminary findings in your evidence bucket channel by midnight. Anything urgent, I call Aisha's cell. Questions?"
+
+**Aisha:** "What about the terminated instance — `i-0f7g8h9i`? No name tag, using Carlos's key."
+
+**David:** "Good catch. Check CloudTrail for its launch and termination dates. Depending on timing, it could be another staging resource the actor used and cleaned up. If it was terminated after Carlos left, that's significant."
+
+```bash
+aws ec2 describe-instances \
+  --instance-ids i-0f7g8h9i... \
+  --query "Reservations[].Instances[].[LaunchTime,StateTransitionReason]"
+```
+
+```
+[
+  ["2023-10-08T14:22:00Z", "User initiated (2023-10-18T09:15:00Z)"]
+]
+```
+
+Launched October 8, terminated October 10. **After Carlos left.** Ten days, then gone.
+
+**David:** "Someone launched an instance with Carlos's key a month after he departed, ran it for ten days, and terminated it. That's your earliest confirmed post-departure infrastructure activity — October 8, not October 15. The CSV export was a week later. This person was setting up their access path first."
+
+---
+
+### 6:28 PM — Call Wrapping
+
+**David:** "One recommendation. You've done good containment — network paths cut, passwords changed, security groups locked. But the production Metabase instance is still running with connections to two production databases, accessible via an SSH key the actor likely possesses. That key is the one remaining live access path."
+
+**Aisha looks at you.**
+
+**David:** "I'd recommend rotating the SSH key on the production Metabase instance immediately. Replace `authorized_keys` with a new key pair that only your team controls. Don't terminate the instance — we need to image it too — but cut the SSH path. The actor's credentials for the VPC peering are gone, but if they have *any* other network path to that instance — a reverse tunnel, a VPN, anything we haven't found — the SSH key is their way in."
+
+He pauses. "And change the database passwords for whatever users the production Metabase connects with. If the actor pulled Metabase's `application.properties` or environment variables at any point, they have the database credentials too."
+
+---
+
+David disconnects to start imaging.
+
+**Aisha turns to you on the Zoom.** It's 6:31 PM.
+
+**Aisha:** "I need to update Sarah and James tonight. This is bigger than what we briefed at 3:15. The scope just expanded from 'Jenkins with bad passwords' to 'four-month campaign with confirmed exfiltration and potential production database access.' What do I tell them?"
+
+**She also asks:** "And the production Metabase — David's right about the SSH key. But that instance has 7 users who use it daily. If we rotate the key and lock it down, those people can't work tomorrow morning. Do we do it tonight or wait for business hours?"
+
+---
+
+**Marcus, still eating:** "Also — the terminated instance. October 8 to October 18. That overlaps with the first CSV export on October 15. Whatever that instance was for, it was running when the data extraction started."
+
+---
+
+### Current State: Monday 6:31 PM
+
+**Exfiltration is confirmed.** NAT gateway metrics match every known data access event. Data left AWS.
+
+**Scope is expanding:**
+- Production Metabase (analytics-metabase) added to forensic scope
+- Carlos's SSH keys give access to 3 running instances
+- Production Metabase connects to 2 production databases
+- Terminated October instance: earliest post-departure activity (Oct 8)
+- S3 read access to ALL buckets in account via managed policy
+- Full production CIDR reachable from staging via peering (now deleted)
+
+**Aisha needs:**
+1. What to tell Sarah and James tonight
+2. Decision on production Metabase SSH key rotation (tonight vs. morning)
+
+**David Park is imaging disks now.** Preliminary findings by midnight.
+
+**Your union count job is running.** Rachel needs results by 9 AM.
+
+**It's 6:31 PM.** You've been working for nearly 11 hours.
+
+**What do you do?**
+
+*6:31 PM. Eleven hours in. The scope keeps growing. But the decision tree is actually clear.*
+
+---
+
+**Aisha — the Metabase SSH question first. This one's not close.**
+
+"We rotate tonight. Here's why."
+
+"The VPC peering is gone, so the *known* network path from staging to production is cut. But David just told us to assume the actor might have paths we haven't found — reverse tunnels, VPN, anything. The production Metabase security group allows inbound from `10.0.0.0/8` on port 3000 and `0.0.0.0/0` on 443. That 443 rule — is that actually terminating on the Metabase process, or is there an ALB in front? Because if there's any world where that instance is reachable from the internet on any port, and the actor has the SSH key, we're one `ssh -p 443` or tunneled connection away from a live breach **right now.**"
+
+"Seven users can't access Metabase for one morning. That's an inconvenience. An active SSH key to an instance connected to two production databases, held by someone who has been exfiltrating data for four months, is an emergency. This isn't a tradeoff."
+
+"Here's what I want to do:"
+
+```bash
+# Lock down production Metabase SG immediately
+# Remove ALL inbound except from our two platform IPs
+aws ec2 describe-security-groups \
+  --filters "Name=group-name,Values=analytics-metabase-sg" \
+  --query 'SecurityGroups[0]'
+
+# Then revoke all existing inbound rules and add only platform IPs
+# Same pattern we used on staging Metabase and Jenkins
+```
+
+"Don't touch authorized_keys — evidence. Just kill the network path like we did with the staging instance. Then we image it tomorrow alongside the other two. The 7 Metabase users get an email tonight explaining planned maintenance, and we figure out a secure access path tomorrow."
+
+"For the database credentials — the production Metabase connects to orders-db-prod as `analytics_reader` (which we already put CONNECTION LIMIT 20 on) and to `reporting-db-prod` as an unknown user. I want to:"
+
+```
+1. Check what user the production Metabase uses for reporting-db-prod
+2. Rotate that password immediately  
+3. Set CONNECTION LIMIT 0 on it (same as backup_admin)
+4. analytics_reader password should also rotate tonight — 
+   the actor may have pulled it from Metabase's config
+```
+
+"The analytics dashboard in K8s also uses analytics_reader — it's at 1 replica with HPA frozen. It'll break when we rotate the password. That's fine. It's Tom's shadow infrastructure running on borrowed time anyway. We update the K8s secret tomorrow when we bring it back up."
+
+---
+
+**Now — what you tell James and Sarah.**
+
+"Aisha, here's what I'd send. Keep it short. They don't need a working session tonight — they need the updated picture so they're not blindsided tomorrow."
+
+I draft it while talking:
+
+```
+To: James Morrison, Sarah Chen
+From: Aisha Rahman
+Subject: SEC-2024-0122-001 — Updated scope (6:30 PM)
+
+Three developments since the 3:15 PM bridge call:
+
+1. EXFILTRATION CONFIRMED
+   NAT gateway metrics show outbound data transfers matching 
+   every known access event. Data left AWS on Oct 15, Nov 12, 
+   Jan 15, and Jan 19. Total outbound: ~1.7 GB across all 
+   events. This is no longer "assume exfiltration" — it's 
+   confirmed.
+
+2. CAMPAIGN STARTED EARLIER THAN KNOWN
+   A terminated EC2 instance (no name tag) was launched Oct 8 
+   using Carlos's SSH key — 3 weeks after his departure — and 
+   ran for 10 days. First data export was Oct 15 while this 
+   instance was still running. The unauthorized access campaign 
+   began at minimum October 8, 2023 — not January 15, 2024.
+
+3. SCOPE EXPANDED TO PRODUCTION METABASE
+   The production Metabase EC2 instance (analytics-metabase) 
+   was also launched with Carlos's SSH key. It connects to 
+   two production databases: orders-db-prod and an unmanaged 
+   RDS instance (reporting-db-prod). CrowdStrike is adding it 
+   to the forensic scope. We are locking down its security 
+   group and rotating connected database credentials tonight.
+
+   The 7 Metabase users (mostly product/finance) will lose 
+   access temporarily. We'll notify them of planned maintenance.
+
+WHAT HASN'T CHANGED:
+   - Containment on all other vectors remains solid
+   - GDPR Art. 33 filing still on track for tomorrow noon
+   - CrowdStrike is imaging disks tonight, preliminary 
+     findings by midnight, full analysis by 6 AM
+
+WHAT THIS MEANS:
+   This is a confirmed four-month data exfiltration campaign, 
+   not a one-week incident. The actor had broader access than 
+   initially assessed — production databases were potentially 
+   reachable via SSH and VPC peering, not just through S3 
+   backups. Full scope will be determined by CrowdStrike 
+   forensics.
+
+   Rachel is updating the GDPR notification draft tonight.
+
+   Board briefing materials will need to be updated before 
+   Thursday. We recommend a 15-minute sync tomorrow morning 
+   (suggest 8:30 AM) to review overnight findings.
+
+ACTION NEEDED FROM JAMES:
+   None tonight. We have all approvals we need to continue 
+   containment and forensics. The 8:30 AM sync is for your 
+   awareness, not for decisions.
+```
+
+"Aisha — feel free to adjust the tone. You know James's communication preferences better than I do for security matters. But the key message is: scope is bigger, we're on it, nothing needs from him tonight, sync tomorrow morning."
+
+---
+
+**Now the containment actions. Let me execute while we're still on this call.**
+
+**Production Metabase SG lockdown:**
+
+```bash
+# Get current SG details
+aws ec2 describe-instances \
+  --filters "Name=tag:Name,Values=analytics-metabase" \
+  --query 'Reservations[].Instances[].{ID:InstanceId,SG:SecurityGroups,IP:PrivateIpAddress}'
+```
+
+Then lock it down same as the others — platform team IPs only on SSH, block everything else. Post each step to #security-incidents as I do it.
+
+**Reporting-db-prod credentials:**
+
+```bash
+# First — what IS reporting-db-prod?
+aws rds describe-db-instances \
+  --db-instance-identifier reporting-db-prod \
+  --query 'DBInstances[0].{Engine:Engine,Endpoint:Endpoint,DBName:DBName,MasterUsername:MasterUsername,VpcSG:VpcSecurityGroups,Storage:AllocatedStorage,Created:InstanceCreateTime}'
+```
+
+I need to know what this database is, who created it, and what's in it before I rotate credentials. If it's another Carlos creation with wide-open access, we may have a second data exposure to assess.
+
+**analytics_reader password rotation:**
+
+```bash
+# Rotate analytics_reader password
+# This breaks: analytics dashboard (1 replica, acceptable)
+# This breaks: Metabase prod (being locked down anyway)
+# This does NOT break: production services (they use order_svc, payment_svc, inventory_svc users)
+ALTER ROLE analytics_reader PASSWORD 'ROTATED-SEC-2024-0122-002';
+```
+
+---
+
+**Notify the Metabase users (brief, non-alarming):**
+
+"Aisha — who sends the notification to the 7 Metabase users? I don't know who they are. We know Carlos was admin, Wei and Tom had accounts, and there are 4 unknowns — probably product and finance. I'd suggest Sarah sends it as a 'planned maintenance' notification. Don't mention the security investigation."
+
+```
+Subject: Metabase — Planned Maintenance Tonight
+
+Hi team,
+
+The internal Metabase instance (metabase.internal.novamart.com) 
+will be offline starting tonight for infrastructure maintenance. 
+We expect it to be unavailable tomorrow morning and will notify 
+you when it's restored.
+
+If you have urgent reporting needs tomorrow, please contact 
+[Sarah/Wei] and we'll arrange alternative access.
+
+Apologies for the short notice.
+```
+
+"Sarah can send that — she manages the stakeholder relationship. Wei can field questions from his team since he knows the data context."
+
+---
+
+**#security-incidents update (6:38 PM):**
+
+```
+[User] (6:38 PM):
+Executing final containment actions for tonight:
+
+1. ⏳ Production Metabase SG lockdown (in progress)
+2. ⏳ reporting-db-prod investigation (running describe now)
+3. ⏳ analytics_reader password rotation
+4. ⏳ reporting-db-prod credential rotation (pending investigation)
+
+After these complete, all known attack paths will be closed:
+  ✅ Jenkins: password + SG (2:40 PM)
+  ✅ Staging Metabase: SG + VPC peering (3:24 PM)
+  ✅ backup_admin: password + CONN LIMIT 0 (3:01 PM)
+  ✅ carlos-dev-key: deleted from EC2 (3:22 PM)
+  ⏳ Production Metabase: SG lockdown (now)
+  ⏳ analytics_reader: password rotation (now)
+  ⏳ reporting-db-prod credentials: rotation (now)
+
+Remaining until CrowdStrike clears:
+  ❓ carlos-staging-key (still in EC2, used by 2 instances)
+  ❓ novamart-analytics-key (still in EC2, used by 1 instance)
+  Both have SG-level blocks now. Key deletion after imaging.
+
+CrowdStrike EBS snapshots starting now.
+Union customer count job running — results by morning.
+VPC flow logs enabled on legacy-staging (prospective).
+```
+
+---
+
+**To Marcus (6:40 PM):**
+
+> The terminated October instance — good catch connecting it to the CSV export timeline. That's in the CrowdStrike brief now. When you're back from eating, one more thing for tonight: check CloudTrail for `RunInstances` and `TerminateInstances` events for i-0f7g8h9i. I want to know the source IP that launched and terminated it. If it was launched from 172.31.4.89, that confirms the staging Metabase was the actor's operations base from day one.
+>
+> After that — go home. You've been incredible today. I need you sharp tomorrow for the James sync at 8:30 AM and the AWS reconciliation. CrowdStrike has the night shift. We don't need to duplicate their work.
+
+---
+
+**Quick mental inventory before I close out (6:42 PM):**
+
+```
+CONTAINMENT STATUS (after tonight's actions complete):
+  Every known credential rotated or locked
+  Every known network path severed
+  Every known instance either SG-locked or evidence-preserved
+  CrowdStrike imaging all three instances tonight
+  
+OUTSTANDING FOR TOMORROW:
+  □ 8:30 AM — James/Sarah sync (Aisha leads, I support)
+  □ 9:00 AM — Rachel: union count, CloudTrail timeline, 
+    updated data scope doc
+  □ 9:00 AM — Review CrowdStrike overnight findings
+  □ 10:00 AM — Tom ECR restart (still the right thing to do)
+  □ 12:00 PM — Rachel files Art. 33 #2
+  □ Ongoing — AWS audit reconciliation with Marcus
+  □ Ongoing — reporting-db-prod investigation
+  
+  R-6a (Kafka secured) still due Friday. Tom's sprint 
+  plan is intact. ECR restart delayed by one day.
+  Derek's CB is deployed and clean.
+  Priya has EKS + secondary on-call.
+
+WHAT I'M NOT DOING TONIGHT:
+  - Staying up until midnight for CrowdStrike prelim
+    Aisha is IR lead. David reports to her. She'll call 
+    if something critical surfaces. I need sleep because 
+    tomorrow is going to be worse than today.
+```
+
+**To Aisha (6:44 PM):**
+
+> Once the SG lockdown and credential rotations are done, I'm going to hand the night watch to you and CrowdStrike. David has my cell if something changes the severity — new compromised systems, evidence of a second actor, anything that means we need to take immediate additional action tonight. Otherwise, I'll review his findings at 7 AM and have Rachel's deliverables ready by 9.
+>
+> One thing I want David to prioritize in the Metabase H2 database: look for queries against `reporting-db-prod`. We don't even know what's in that database yet. If the actor does, that's our next scope expansion.
+>
+> You've been exceptional today, Aisha. The speed of the IR declaration, the CrowdStrike engagement, the CloudTrail work — all of it. Thank you.
+
+---
+
+*Finish the SG lockdown, rotate the credentials, verify containment, post final status to #security-incidents, and go home.*
+
+*Twelve hours ago I was reviewing a successful drift detection run and having a productive meeting with Tom about Kafka onboarding. Now we're running forensics on a four-month data exfiltration campaign affecting 284,000 customers.*
+
+*Every thread we've pulled for nine days has led to the next thing. Tomorrow the threads continue. But tonight, CrowdStrike has the watch, and I need four hours of sleep before the 8:30 sync that's going to reshape the rest of this week.*
+
+*One last thing before I close the laptop — personal log:*
+
+```
+PERSONAL LOG — Mon Jan 22, EOD
+
+Day 8 of on-call. Incident #10 (security). 
+Confirmed data exfiltration. 284K customers.
+
+What went right today:
+  - Marcus's curiosity during Inc-8 found this
+  - 22 minutes from discovery to IR declaration
+  - 42 minutes from discovery to full containment
+  - CrowdStrike engaged same day
+  - NAT gateway metrics insight saved hours
+  - Rachel has everything she needs to file tomorrow
+
+What I should have done differently:
+  - AWS-level audit should have started the day we found
+    the shadow Kafka, not a week later. The K8s drift 
+    detection was the right tool for the K8s problem, but 
+    I didn't generalize the threat model to AWS fast enough.
+    Seven days. That gap is mine.
+  
+  - reporting-db-prod is STILL uninvestigated. Found by 
+    Marcus at 12:15, it's now 6:45 and I still don't know 
+    what's in it. Deprioritized correctly (security 
+    containment first) but it's another unknown.
+
+What I can't control:
+  - Carlos's offboarding was incomplete before I was here
+  - SSH keys aren't in Okta. Nobody's fault, systemic gap.
+  - admin/admin for two years. Nobody looked.
+
+Tomorrow: James sync, Rachel filing, CrowdStrike findings,
+Tom ECR restart, AWS audit continues. 
+
+Sleep now. It'll still be there at 7 AM.
+```
+
+---
+
+## MONDAY 6:44-7:12 PM — FINAL CONTAINMENT ACTIONS
+
+---
+
+**Production Metabase SG lockdown (6:44 PM):**
+
+```bash
+aws ec2 describe-instances \
+  --filters "Name=tag:Name,Values=analytics-metabase" \
+  --query 'Reservations[].Instances[].{ID:InstanceId,SG:SecurityGroups,IP:PrivateIpAddress}'
+```
+
+```json
+{
+  "ID": "i-0d7f2e...",
+  "SG": [{"GroupId": "sg-0a4b8c12", "GroupName": "analytics-metabase-sg"}],
+  "IP": "10.0.43.147"
+}
+```
+
+```bash
+# Revoke all inbound
+aws ec2 revoke-security-group-ingress \
+  --group-id sg-0a4b8c12 \
+  --ip-permissions \
+    'IpProtocol=tcp,FromPort=3000,ToPort=3000,IpRanges=[{CidrIp=10.0.0.0/8}]' \
+    'IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges=[{CidrIp=0.0.0.0/0}]' \
+    'IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=10.0.0.0/8}]'
+
+# Add platform-only SSH (for CrowdStrike imaging tomorrow)
+aws ec2 authorize-security-group-ingress \
+  --group-id sg-0a4b8c12 \
+  --ip-permissions \
+    'IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=10.0.41.15/32,Description=platform-user},{CidrIp=10.0.41.22/32,Description=platform-marcus}]'
+```
+
+✅ Done. 6:47 PM.
+
+---
+
+**reporting-db-prod investigation (6:48 PM):**
+
+```bash
+aws rds describe-db-instances \
+  --db-instance-identifier reporting-db-prod \
+  --query 'DBInstances[0].{Engine:Engine,Endpoint:Endpoint,DBName:DBName,MasterUsername:MasterUsername,VpcSG:VpcSecurityGroups,Storage:AllocatedStorage,Created:InstanceCreateTime,Class:DBInstanceClass,MultiAZ:MultiAZ,Encrypted:StorageEncrypted}'
+```
+
+```json
+{
+  "Engine": "postgres",
+  "Endpoint": {
+    "Address": "reporting-db-prod.c9xk2m4h7pqr.us-east-1.rds.amazonaws.com",
+    "Port": 5432
+  },
+  "DBName": "reporting",
+  "MasterUsername": "reporting_admin",
+  "VpcSG": [
+    {"VpcSecurityGroupId": "sg-0e9f1a23", "Status": "active"}
+  ],
+  "AllocatedStorage": 100,
+  "InstanceCreateTime": "2023-08-14T16:45:00Z",
+  "Class": "db.t3.medium",
+  "MultiAZ": false,
+  "Encrypted": false,
+  "BackupRetentionPeriod": 7,
+  "Tags": []
+}
+```
+
+Created **August 14, 2023.** Same day as the staging Metabase, the carlos-dev-scratch bucket, and the VPC peering. Carlos built all of this in one day.
+
+100GB PostgreSQL. Unencrypted. No tags. Master user: `reporting_admin`. The security group:
+
+```bash
+aws ec2 describe-security-groups \
+  --group-ids sg-0e9f1a23 \
+  --query 'SecurityGroups[0].IpPermissions'
+```
+
+```json
+[
+  {
+    "IpProtocol": "tcp",
+    "FromPort": 5432,
+    "ToPort": 5432,
+    "IpRanges": [
+      {"CidrIp": "10.0.0.0/8", "Description": ""},
+      {"CidrIp": "172.31.0.0/16", "Description": ""}
+    ]
+  }
+]
+```
+
+Open to both the production VPC **and** the legacy-staging VPC CIDR. Accessible from everywhere the actor had access.
+
+You can't connect to it right now — the Metabase that knew the password is locked down, and you don't have the `reporting_admin` password. But you can rotate it through RDS:
+
+```bash
+# Rotate master password — locks out anyone who had it
+aws rds modify-db-instance \
+  --db-instance-identifier reporting-db-prod \
+  --master-user-password "$(openssl rand -base64 32)" \
+  --apply-immediately
+```
+
+The new password is... in the CLI output. You save it to the evidence bucket:
+
+```bash
+echo "reporting-db-prod master password rotated $(date -u)" | \
+  aws s3 cp - s3://novamart-security-evidence/SEC-2024-0122-001/credential-rotations.log \
+  --sse aws:kms
+```
+
+You also lock the security group:
+
+```bash
+# Remove the staging VPC CIDR (attack path)
+aws ec2 revoke-security-group-ingress \
+  --group-id sg-0e9f1a23 \
+  --ip-permissions \
+    'IpProtocol=tcp,FromPort=5432,ToPort=5432,IpRanges=[{CidrIp=172.31.0.0/16}]'
+```
+
+✅ Done. reporting-db-prod: password rotated, staging VPC access revoked. 6:55 PM.
+
+---
+
+**analytics_reader password rotation (6:56 PM):**
+
+You connect to orders-db-prod:
+
+```sql
+-- Rotate password
+ALTER ROLE analytics_reader PASSWORD 'ROTATED-SEC-2024-0122-003';
+
+-- Verify connection limit still in place
+SELECT rolname, rolconnlimit FROM pg_roles WHERE rolname = 'analytics_reader';
+```
+
+```
+  rolname          | rolconnlimit
+-------------------+-------------
+  analytics_reader |          20
+```
+
+Good — CONNECTION LIMIT 20 still set.
+
+```sql
+-- Check active connections (should be 0-1 from dashboard)
+SELECT count(*) FROM pg_stat_activity WHERE usename = 'analytics_reader';
+```
+
+```
+ count
+-------
+     1
+```
+
+One connection — the dashboard replica. It'll disconnect on next query failure and won't be able to reconnect. That's expected.
+
+✅ Done. 6:58 PM.
+
+---
+
+**#security-incidents final status (7:00 PM):**
+
+```
+[User] (7:00 PM):
+Final containment actions complete for tonight:
+
+  ✅ Production Metabase SG: locked to platform IPs only (6:47 PM)
+  ✅ reporting-db-prod: master password rotated, staging VPC 
+     CIDR removed from SG (6:55 PM)
+  ✅ analytics_reader: password rotated (6:58 PM)
+
+reporting-db-prod details:
+  - PostgreSQL, db.t3.medium, 100GB, UNENCRYPTED
+  - Created Aug 14, 2023 (same day as all Carlos infrastructure)
+  - Master user: reporting_admin (password rotated)
+  - SG was open to both prod VPC AND staging VPC CIDR
+  - Staging CIDR removed. Production CIDR remains (for 
+    investigation tomorrow — we need to know what's in it)
+  - NOT IN TERRAFORM. Not in any inventory. Shadow item #11.
+
+ALL KNOWN ATTACK PATHS NOW CLOSED:
+  ✅ Jenkins password + SG
+  ✅ Staging Metabase SG + VPC peering deleted  
+  ✅ Production Metabase SG
+  ✅ backup_admin password + CONN LIMIT 0
+  ✅ analytics_reader password rotated
+  ✅ reporting_admin password rotated
+  ✅ reporting-db-prod staging VPC access revoked
+  ✅ carlos-dev-key deleted from EC2
+  ⚠️ carlos-staging-key — SG-blocked, deletion pending imaging
+  ⚠️ novamart-analytics-key — SG-blocked, deletion pending imaging
+
+Handing night watch to Aisha + CrowdStrike.
+David Park imaging disks now. Prelim findings by midnight.
+Union customer count job running — results by morning.
+
+I'll be back at 7 AM to review overnight findings.
+If anything changes severity, Aisha has my cell.
+
+Aisha — I forwarded the reporting-db-prod details to 
+David Park. He should image this too once we've connected 
+to it. 100GB unencrypted Postgres that was accessible 
+from the staging VPC for 5 months.
+```
+
+---
+
+**Sarah responds at 7:04 PM:**
+
+```
+Sarah (7:04 PM):
+Maintenance email sent to Metabase users. Kept it boring 
+on purpose. Three of the four unknowns are product 
+managers; the fourth is Martha Reeves (finance).
+
+James read Aisha's escalation email. His response to me: 
+"8:30 tomorrow. I want the full picture." He didn't say 
+anything else, which for James means he's processing.
+
+Go home. Both of you.
+```
+
+**Aisha (7:06 PM):**
+
+```
+Aisha (7:06 PM):
+Email sent to James and Sarah. Used your draft almost 
+verbatim — good framing. Added one line: "HR has been 
+notified regarding the former employee investigation 
+angle. They are reviewing Carlos Mendez's departure 
+records and NDA status."
+
+I'll be monitoring CrowdStrike channel until midnight. 
+David's doing Jenkins snapshot now, staging Metabase next. 
+He confirmed he'll prioritize the H2 Metabase database 
+for query history.
+
+Thank you for the brief. He said it was "the best-prepared 
+client handoff I've seen in two years." Coming from 
+CrowdStrike, that's not nothing.
+
+Get some sleep. Tomorrow's going to be long.
+```
+
+**Marcus (7:08 PM):**
+
+```
+Marcus (7:08 PM):
+Terminated instance CloudTrail:
+
+  RunInstances — Oct 8, 14:22 UTC
+    Source IP: 172.31.4.89
+    Key: carlos-staging-key
+    IAM: metabase-staging-profile (assumed via instance)
+    AMI: ami-0abcdef1234567890 (Ubuntu 22.04)
+    Type: t3.medium
+    No tags. No name.
+
+  TerminateInstances — Oct 18, 09:15 UTC
+    Source IP: 172.31.4.89
+    Same role.
+
+Launched and terminated from the staging Metabase. 
+Same IP as everything else. The staging Metabase was 
+operational base from day one.
+
+Going home. See you at 8:30.
+```
+
+---
+
+## MONDAY 7:12 PM — GOING HOME
+
+You close the laptop. The apartment is quiet. Your phone buzzes one more time:
+
+```
+Tom Chen (7:10 PM DM):
+Hey — I saw the Metabase maintenance email. I know that's 
+connected to the investigation Marcus was doing today. 
+I'm not going to ask details.
+
+Just wanted to say: the ECR images are ready whenever 
+you clear me for the restart. No rush. I know today 
+got complicated. I'll be here tomorrow working on the 
+mesh injection prep — that doesn't need namespace access.
+
+Thanks for this morning. First time in months I feel 
+like I'm building something instead of hiding something.
+```
+
+You don't respond tonight. You'll answer tomorrow.
+
+---
+
+## TUESDAY 6:47 AM — PHONE ALARM
+
+Four hours and forty-five minutes of sleep. Your phone has notifications stacked:
+
+```
+OVERNIGHT NOTIFICATIONS (chronological):
+
+11:42 PM — Aisha → #security-incidents:
+  "CrowdStrike preliminary findings posted to evidence bucket.
+   Key items below. Full report attached."
+
+11:43 PM — Aisha:
+  "STAGING METABASE — CRITICAL FINDINGS:
+   
+   bash_history (ubuntu user):
+     Oct 10: psql commands connecting to orders-db-prod
+     Oct 12: pg_dump of customers table → /tmp/customers_oct.csv
+     Oct 15: aws s3 cp /tmp/customers_oct.csv s3://carlos-dev-scratch/exports/customer_emails_20231015.csv
+     Oct 15: rm /tmp/customers_oct.csv
+     Nov 11: psql -h reporting-db-prod.xxx -U reporting_admin
+     Nov 12: pg_dump → aws s3 cp chain (customer_orders export)
+     Jan 15: Multiple aws s3 cp commands (the DB dumps)
+     Jan 15: wget https://transfer.sh (file transfer service)
+     Jan 15: curl -T ... https://transfer.sh/... (UPLOAD)
+     Jan 19: Same curl pattern to transfer.sh
+
+   The data was uploaded to transfer.sh — a public file 
+   sharing service. Exfiltration destination CONFIRMED.
+   transfer.sh links expire after 14 days. The Jan 15 
+   uploads are gone. The Jan 19 upload might still be live.
+
+   David Park says: this is consistent with a single actor 
+   with moderate technical skill. The bash history was not 
+   cleared, which suggests either confidence they wouldn't 
+   be caught or lack of sophistication about forensic traces.
+
+   More findings in the report. The H2 database has 340+ 
+   saved Metabase queries. David is cataloging them."
+
+11:58 PM — Aisha:
+  "JENKINS — FINDINGS:
+   
+   Jenkins credentials store contains:
+     - orders-db-prod RDS master password (root / [redacted])
+     - analytics_reader password (old, pre-rotation)
+     - AWS access key for a user called 'jenkins-deployer'
+       (key ID: AKIA...)
+     - GitHub personal access token (expired Apr 2023)
+   
+   David: 'The RDS master password in Jenkins credentials 
+   store is the highest-risk finding. If the actor accessed 
+   the credentials page — which admin access allows — they 
+   had the master password for orders-db-prod.'
+
+   I'm checking if the master password for orders-db-prod 
+   has been changed since Carlos left. If not, the actor 
+   has had root database access for four months."
+
+12:14 AM — Aisha:
+  "Checked. orders-db-prod master password last rotated: 
+   NEVER. It's the original password set at instance creation.
+   
+   The actor has had — or could have had — master-level 
+   access to our primary production database since October.
+   
+   Rotating NOW. I know it's midnight but this can't wait. 
+   All services use their own database users with separate 
+   passwords, so rotating root won't break production. 
+   Verifying service users are unaffected."
+
+12:18 AM — Aisha:
+  "orders-db-prod master password rotated. New password 
+   in Secrets Manager. All service connections stable — 
+   order, payment, inventory users unaffected (separate 
+   credentials). 
+   
+   analytics_reader was already rotated by you at 6:58 PM.
+   
+   That jenkins-deployer IAM key — checking if it's still 
+   active..."
+
+12:22 AM — Aisha:
+  "jenkins-deployer IAM user. Key status: ACTIVE.
+   Last used: November 3, 2023.
+   Policies: AdministratorAccess.
+   
+   ADMINISTRATOR ACCESS. Full AWS admin.
+   
+   Deactivating key immediately. Checking CloudTrail for 
+   any usage from non-Jenkins IPs."
+
+12:24 AM — Aisha:
+  "Key deactivated. CloudTrail check: all usage from 
+   10.0.43.201 (Jenkins IP). No usage from 172.31.4.89. 
+   Last used Nov 3 for an S3 operation. The actor either 
+   didn't find this key or chose not to use it.
+   
+   That's lucky. If they had used this key from the staging 
+   instance, they would have had full admin over our entire 
+   AWS account."
+
+12:31 AM — Aisha:
+  "David's assessment at midnight: 'Single actor. Technically 
+   competent but not sophisticated. Using transfer.sh for 
+   exfiltration is a low-sophistication indicator — a skilled 
+   attacker would use their own infrastructure. The actor 
+   knew the internal systems well enough to navigate RDS, 
+   S3, and Metabase, but left extensive forensic traces. 
+   This is consistent with a former employee or contractor 
+   with pre-existing system knowledge, not an external 
+   threat actor.'
+
+   We're going to need to have a conversation about Carlos.
+   HR is pulling his departure records."
+
+12:45 AM — Aisha:
+  "Going to sleep. David continuing H2 analysis overnight.
+   Full report by 6 AM as promised. Summary of what we know:
+
+   CONFIRMED EXFILTRATION DESTINATIONS:
+     transfer.sh (public file sharing)
+     carlos-dev-scratch S3 bucket (staging area)
+
+   CONFIRMED DATA ACCESSED:
+     customers table (pg_dump, Oct 12)
+     customer_emails CSV (exported Oct 15)
+     customer_orders CSV (exported Nov 12)
+     DB dumps: Sep, Oct, Nov (downloaded Jan 15 + Jan 19)
+     340+ Metabase queries against prod DBs (cataloging)
+
+   CONFIRMED CREDENTIALS EXPOSED:
+     orders-db-prod master password (in Jenkins) — ROTATED
+     analytics_reader password (in Jenkins) — ROTATED
+     jenkins-deployer IAM key (AdministratorAccess) — DEACTIVATED
+     reporting_admin password (in Metabase config) — ROTATED
+
+   LUCKY BREAKS:
+     jenkins-deployer key apparently not used by attacker
+     Service-specific DB users not stored in Jenkins
+     GitHub PAT was expired
+
+   See you at 8:30."
+
+5:55 AM — Aisha:
+  "David's full report is in the evidence bucket. 94 pages.
+   Executive summary: 12 pages. I'm reading now.
+
+   One new finding: the H2 database shows Metabase queries 
+   against reporting-db-prod that pulled 'customer_support_tickets'
+   and 'product_reviews' tables. Both contain PII — customer 
+   names, emails, free-text descriptions. 
+
+   reporting-db-prod appears to be a replica or ETL target 
+   that Carlos set up to aggregate data from multiple sources. 
+   It has 14 tables. David is cataloging PII fields.
+
+   Customer count impact may be LARGER than 284K if 
+   reporting-db-prod contains customers not in the orders DB.
+
+   Updating Rachel now."
+
+6:12 AM — Union count job:
+  "Job completed. Results in evidence bucket."
+
+6:30 AM — Marcus:
+  "At the office early. Pulled the union count results:
+
+   UNION CUSTOMER COUNT ANALYSIS:
+   
+   Per-dump counts:
+     Sep 2023:  261,847 unique customers
+     Oct 2023:  274,129 unique customers  
+     Nov 2023:  284,391 unique customers
+
+   Union (all dumps): 284,847 unique customers
+     (456 customers deleted between Sep-Nov, 
+      present in earlier dumps only)
+
+   By region:
+     EU:     168,442  (59.1%)
+     UK:      41,207  (14.5%)
+     US:      58,934  (20.7%)
+     Other:   16,264  (5.7%)
+
+   Rachel has the numbers."
+
+6:44 AM — Rachel:
+  "Thank you for the overnight work. Union count received.
+   CrowdStrike findings received from Aisha.
+   
+   The transfer.sh exfiltration is devastating for the filing. 
+   Public file sharing service. No access controls. Links may 
+   have been shared with anyone. I'm updating the notification 
+   language from 'data left AWS' to 'data was uploaded to a 
+   publicly accessible file sharing service.'
+   
+   This changes the Art. 34 customer notification tone 
+   significantly. I'm recommending we accelerate customer 
+   notification to Thursday, not Friday. James needs to 
+   approve today.
+   
+   Draft Art. 33 notification will be in your inbox by 8 AM 
+   for technical review. I need corrections back by 9:30 AM. 
+   Filing at noon is still the target.
+
+   The reporting-db-prod PII expansion — I need the table 
+   catalog from David Park ASAP. If there are customers in 
+   reporting-db-prod not in orders-db-prod, the notification 
+   count changes. We may be above 300K."
+
+6:58 AM — PagerDuty:
+  "SearchServiceHighLatency — p99 > 2s for 5 min.
+   Source: search-service, namespace: search"
+```
+
+---
+
+### TUESDAY 6:58 AM
+
+You're looking at your phone in bed. Four hours and forty-five minutes of sleep.
+
+The overnight CrowdStrike findings are devastating but clarifying:
+- Single actor, former-employee profile
+- Data confirmed exfiltrated to transfer.sh (public)
+- RDS master password was exposed in Jenkins for four months
+- An IAM key with **AdministratorAccess** was sitting in Jenkins (unused by attacker — lucky)
+- 340+ Metabase queries against production databases
+- reporting-db-prod has additional PII tables
+- Customer count: 284,847 (union) + unknown reporting-db-prod delta
+
+Rachel is accelerating customer notification to Thursday. James needs to approve today.
+
+And search is throwing latency alerts again. The cluster you saved Friday at 5:47 AM.
+
+**You have 92 minutes until the 8:30 AM James sync that will define this week.**
+
+**PagerDuty is waiting for acknowledgment.**
+
+**What do you do?**
+
+*6:58 AM. Phone in hand. Four hours forty-five minutes of sleep. Brain boot sequence: prioritize, delegate, triage.*
+
+**Ack PagerDuty immediately (6:58 AM).** Clock is running.
+
+Then — think before moving.
+
+The search alert is **latency**, not errors. p99 > 2s, not a node down. Friday was a node eviction cascade. This is different. And Priya is secondary on-call as of yesterday.
+
+---
+
+**Slack DM to Priya (6:59 AM):**
+
+> Priya — SearchServiceHighLatency alert just fired. p99 > 2s for 5 min. Can you take initial triage? You're secondary on-call this week.
+>
+> Quick context: this is the cluster from Friday's incident. No ILM policy, so indices are still growing. Most likely cause is either:
+> 1. Slow queries from large indices (ILM — chronic, not urgent)
+> 2. Another storage pressure event (check ephemeral storage on all 3 data nodes)
+> 3. JVM GC pressure from heap (check ES node stats)
+>
+> ```
+> kubectl -n search exec es-master-0 -- \
+>   curl -s localhost:9200/_cluster/health
+> 
+> kubectl -n search exec es-master-0 -- \
+>   curl -s localhost:9200/_nodes/stats/fs,jvm | jq '.nodes[] | {name, fs: .fs.total, jvm_heap_percent: .jvm.mem.heap_used_percent}'
+> ```
+>
+> If cluster is GREEN and it's just slow queries from index bloat, that's expected degradation — we knew ILM was the root cause and it's on the follow-up list. Monitor but no action needed.
+>
+> If a node is down or storage is critical, page me and I'll jump in.
+>
+> I have the James security sync at 8:30 and need to prep. Thank you.
+
+*Priya is capable. She did the Linkerd dry-run, she understands the cluster from Friday's context. This is exactly what secondary on-call is for. If it escalates, I'm here. If it's chronic ILM bloat — which is the most likely cause — she monitors and we add urgency to the ILM ticket.*
+
+---
+
+**Now — the 92 minutes. Time-box everything.**
+
+```
+6:59-7:15   Read CrowdStrike executive summary (12 pages)
+7:15-7:30   Read Rachel's Art. 33 draft (arrives 8 AM, but prep notes now)
+7:30-7:50   Prep James sync materials
+7:50-8:00   Review Priya's search triage, answer Tom
+8:00-8:20   Rachel's draft technical review (when it arrives)
+8:20-8:30   Final prep, join call
+```
+
+---
+
+**CrowdStrike Executive Summary Review (7:00-7:15 AM)**
+
+```bash
+aws s3 cp s3://novamart-security-evidence/SEC-2024-0122-001/crowdstrike-report-executive-summary.pdf ./
+```
+
+*Reading. Key items I'm extracting for the James sync — he needs the story, not the technical detail:*
+
+From Aisha's overnight posts, the picture I'm building:
+
+```
+WHAT WE NOW KNOW (for James):
+
+ACTOR PROFILE:
+  - Single actor operating from staging Metabase (172.31.4.89)
+  - CrowdStrike assessment: former employee or contractor with 
+    pre-existing system knowledge
+  - "Technically competent but not sophisticated" — left bash 
+    history, used public transfer service, didn't clear traces
+  - Consistent with Carlos Mendez profile. Not confirmed.
+  - HR pulling departure records and NDA status.
+
+TIMELINE (now complete):
+  Sep 15    Carlos departs. Accounts disabled. Infra remains.
+  Oct 8     Actor launches temporary EC2 from staging Metabase
+  Oct 10    Direct psql to orders-db-prod (customers table)
+  Oct 12    pg_dump customers → local CSV
+  Oct 15    CSV uploaded to carlos-dev-scratch S3, then 
+            exfiltrated via NAT gateway (6.8 MB spike)
+  Oct 18    Temporary EC2 terminated
+  Nov 11    Actor connects to reporting-db-prod
+  Nov 12    customer_orders CSV exported + exfiltrated (31.2 MB)
+  Jan 8     Actor logs into Jenkins (2 sessions)
+  Jan 15    ESCALATION: Full DB dumps via Jenkins + Metabase
+            1.16 GB exfiltrated via transfer.sh
+  Jan 19    November dump re-downloaded, 524 MB exfiltrated
+  Jan 22    Login at 9:14 AM. No API calls. Password changed 2:40 PM.
+
+EXFILTRATION:
+  - CONFIRMED to transfer.sh (public file sharing)
+  - transfer.sh links expire 14 days — Jan 15 links are gone
+  - Jan 19 link MAY still be live (expires ~Feb 2)
+  - No way to determine if links were shared further
+
+CREDENTIAL EXPOSURE:
+  - orders-db-prod MASTER password was in Jenkins → ROTATED
+  - jenkins-deployer IAM key with AdministratorAccess → DEACTIVATED
+  - Actor apparently did NOT use the admin IAM key (lucky)
+  - Actor apparently did NOT use RDS master password for 
+    direct superuser access (used backup_admin + analytics_reader)
+
+REPORTING-DB-PROD:
+  - Carlos-created aggregation database
+  - 14 tables including customer_support_tickets + product_reviews
+  - Contains PII (names, emails, free text)
+  - 340+ Metabase queries run against it
+  - Customer count delta TBD (may push above 300K)
+  - Full table catalog coming from CrowdStrike today
+
+DATA SCOPE (CURRENT BEST ESTIMATE):
+  - 284,847 unique customers (union of 3 backup dumps)
+  - + unknown delta from reporting-db-prod
+  - 168,442 EU, 41,207 UK, 58,934 US
+  - Full PII: names, emails, phones, addresses, order history, 
+    partial payment data, support tickets, product reviews
+```
+
+---
+
+**James Sync Prep (7:15-7:30 AM)**
+
+*James is going to ask five questions. I know this because I know James by now. Prep the answers:*
+
+**Q1: "How bad is this?"**
+
+> Confirmed four-month data exfiltration. 284,847 customers, likely over 300K when we catalog reporting-db-prod. Data uploaded to a public file sharing service. Full PII. GDPR Art. 33 filing today at noon, Art. 34 customer notification recommended Thursday. CrowdStrike assessment: single actor with former employee profile.
+
+**Q2: "Is it Carlos?"**
+
+> CrowdStrike says the profile is consistent with a former employee — system knowledge, access via his infrastructure, low sophistication. Not confirmed without forensic attribution or law enforcement involvement. HR is reviewing his departure records and NDA. Rachel can advise on legal posture if we want to pursue.
+
+**Q3: "Is it contained?"**
+
+> Yes. Every known credential rotated. Every known network path severed. Three instances locked down and being forensically imaged. The one lucky break: an IAM key with full AdministratorAccess was sitting in Jenkins credentials store and the actor apparently never used it. If they had, we'd be looking at full AWS account compromise.
+
+**Q4: "What's the customer impact?"**
+
+> We need to email ~285K customers telling them their personal data was exposed. Rachel recommends Thursday. Marketing, customer support, and comms need to be briefed today. This will be a public event — press coverage is likely. We should have a statement ready.
+
+**Q5: "What do I tell the board Thursday?"**
+
+> Three things. One: we found it ourselves, contained it same-day, engaged forensics same-day, filed with regulators within 72 hours. That's best-practice incident response. Two: the root cause is systemic — incomplete employee offboarding and unmanaged infrastructure. Not a technical vulnerability. Three: here's our prevention plan — [drift detection, AWS audit, image admission, offboarding checklist, SSH key management through identity provider]. The board wants to see that this can't happen again.
+
+---
+
+**Answer Tom (7:31 AM)**
+
+He sent a thoughtful message last night. He deserves a response.
+
+Slack DM to Tom:
+
+> Tom — thank you for this message. It means a lot, especially given how the last two weeks have gone for you.
+>
+> ECR restart: cleared for this morning. Images are tag-for-tag identical, consumer offsets are safe on disk, one broker at a time with ISR check. You know the procedure better than I do. I'll have Marcus or Priya execute the rolling restart since you're read-only in the namespace — ping Marcus after 9 AM.
+>
+> Mesh injection prep is a great use of the morning. One thing: check with Priya on the search cluster before starting — she's investigating a latency alert. Don't want to overlap if she needs namespace access in data-analytics.
+>
+> Building, not hiding. That's the right frame. Keep going.
+
+---
+
+**Check Priya's triage (7:35 AM)**
+
+```
+Priya (7:22 AM):
+Cluster is GREEN. All 3 data nodes healthy. Storage check:
+
+  es-data-1: 72% ephemeral used
+  es-data-2: 68% ephemeral used
+  es-data-3: 74% ephemeral used
+
+Not critical but trending up. No ILM = indices growing daily.
+
+JVM heap:
+  es-data-1: 78% heap
+  es-data-2: 81% heap  
+  es-data-3: 76% heap
+
+Heap is the probable cause — es-data-2 at 81% is in GC 
+pressure territory. Occasional full GCs are adding ~1-2s 
+to tail latency.
+
+This isn't an incident — it's chronic degradation from 
+the missing ILM policy. I'll monitor. If heap crosses 85% 
+on any node we should add it to today's priority list.
+
+Also: I read the Incident 7 follow-up notes. ILM is 
+a 7-month-old TODO. Want me to draft the policy today? 
+I've done ILM on a previous cluster. Hot/warm/delete 
+with a 30-day hot window would solve both the storage 
+and the heap issue.
+```
+
+*This is exactly what I needed to see. Good triage, correct diagnosis, proactive offer.*
+
+Slack DM to Priya:
+
+> Perfect triage. Agree — chronic degradation, not an incident. Monitor for 85% threshold.
+>
+> Yes please on the ILM policy draft. That's the single highest-value follow-up from Incident 7. Hot/warm/delete with 30-day hot window sounds right — check with Ryan or the search team if there's a business need for older data beyond 30 days. If not, 30-day hot → 90-day warm → delete is a good starting point.
+>
+> Don't deploy today — draft the policy, test in staging if we have a staging ES (we probably don't — check with Wei), and we'll review together tomorrow. The cluster is stable enough for another day.
+>
+> Also: you're on secondary on-call this week. Sarah should have briefed you yesterday. Anything operational that isn't the security investigation, you're first responder. Page me only if it's SEV2+ or you're stuck. You've got this.
+
+---
+
+**Rachel's draft arrives (7:58 AM)**
+
+Email from Rachel. Subject: **"DRAFT — Art. 33 Notification — SEC-2024-0122-001 — TECHNICAL REVIEW NEEDED"**
+
+*I open it. Twelve pages. Scanning for the sections that need my input...*
+
+Rachel has flagged three sections with `[TECHNICAL REVIEW — USER]`:
+
+**Section 1: Nature of the breach (Article 33(3)(a))**
+
+> *"The personal data breach involves unauthorized access to and exfiltration of personal data stored in production database backups and analytical data stores. The breach was carried out by a single actor accessing legacy infrastructure created by a former employee, using the former employee's unrevoked credentials. Data was accessed on at minimum four occasions (October 15, 2023; November 12, 2023; January 15, 2024; January 19, 2024) and uploaded to a publicly accessible file transfer service."*
+>
+> `[TECHNICAL REVIEW: Is "legacy infrastructure created by a former employee" accurate? Or should we say "infrastructure created by a then-current employee that was not decommissioned upon their departure"? The distinction matters for the supervisory authority's assessment of our controls at time of creation vs. time of departure.]`
+
+Rachel's instinct is right. The infrastructure was legitimate when Carlos built it. It became a risk when he left and it wasn't decommissioned. I note my response:
+
+> Rachel — use "infrastructure created by the employee during their tenure that was not identified or decommissioned during the offboarding process." This accurately reflects that the infrastructure was authorized when created, and the gap was in offboarding, not in creation. The supervisory authority will focus on the offboarding control failure, which is where the actual gap is.
+
+**Section 2: Data scope (Article 33(3)(b))**
+
+> *"Approximately 284,847 unique data subjects are affected, based on analysis of database backups accessed by the actor. [PENDING: Additional data subjects may be identified in a secondary database (reporting-db-prod) currently under forensic investigation. A supplementary notification will be filed if the affected population increases materially.] Of the confirmed affected data subjects, approximately 168,442 are residents of EU member states and 41,207 are residents of the United Kingdom."*
+>
+> `[TECHNICAL REVIEW: The 284,847 is the UNION count. Confirm this is the right number to report — not 284,391 (November only) or the higher number that includes reporting-db-prod. Also: should we note the UK count separately given UK GDPR is a separate regime?]`
+
+> Rachel — 284,847 is correct. It's the union of all three dumps the actor downloaded, which is the complete affected population from the S3 exfiltration vector. Report this number with a note that it may increase pending reporting-db-prod investigation.
+> 
+> On UK: yes, note separately. We'll need a separate ICO notification for UK GDPR — different supervisory authority. Flag for discussion at the sync if you haven't already.
+
+**Section 3: Measures taken (Article 33(3)(d))**
+
+> *"The controller has taken the following measures to address the breach and mitigate its effects:*
+> *[List of 14 containment actions with timestamps]*
+> *Additionally, the controller has engaged a third-party forensic investigation firm (CrowdStrike) to conduct disk imaging, artifact analysis, and full scope assessment."*
+>
+> `[TECHNICAL REVIEW: Verify the 14 containment actions and timestamps are accurate. I pulled these from the #security-incidents channel. Also: should we mention the drift detection system and AWS audit as preventive controls, or save those for a follow-up communication?]`
+
+I cross-reference against my #security-incidents posts. All 14 actions, all timestamps check out. One small correction:
+
+> Rachel — timestamps are accurate. One correction: item 8 should say "VPC peering connection deleted" not "VPC peering connection suspended." We deleted it permanently, which is a stronger containment action.
+>
+> On drift detection + AWS audit: include them. The supervisory authority wants to see that you're not just plugging the hole but preventing recurrence. Frame as: "The controller has deployed automated infrastructure monitoring (operational since January 22) and has initiated a comprehensive AWS resource inventory to identify any additional unmanaged infrastructure." This shows proactive systemic remediation, not just incident-specific fixes.
+
+Email back to Rachel with all three reviews. **8:14 AM.** Sixteen minutes to the James sync.
+
+---
+
+**Final prep (8:15 AM)**
+
+I pull up the CrowdStrike executive summary PDF properly and scan the last few pages I haven't read. One section I flag:
+
+```
+CrowdStrike Finding CF-2024-0122-017:
+  The staging Metabase H2 database contains 347 saved 
+  queries. Of these, 289 are analytical/reporting queries 
+  consistent with normal Metabase usage (likely created by 
+  Carlos while employed). 
+
+  58 queries were created or modified after September 15, 2023
+  (post-departure). Of these:
+    - 31 query the orders-db-prod database
+    - 22 query reporting-db-prod
+    - 5 query a connection labeled 'inventory-db-prod'
+  
+  Notable post-departure queries:
+    Q-201: SELECT email, first_name, last_name, phone, 
+           country FROM customers WHERE country IN 
+           ('DE','FR','GB','NL','ES','IT')
+           Created: Oct 9, 2023. Run 3 times.
+    
+    Q-215: SELECT c.email, c.first_name, o.total_amount, 
+           o.created_at FROM customers c JOIN orders o 
+           ON c.id = o.customer_id WHERE o.total_amount > 500
+           Created: Nov 8, 2023. Run 2 times.
+    
+    Q-238: SELECT * FROM customer_support_tickets 
+           WHERE created_at > '2023-09-01'
+           Created: Jan 14, 2024. Run 1 time.
+  
+  Assessment: The post-departure queries show deliberate 
+  targeting of high-value customer data. Q-201 specifically 
+  filters for EU customers. Q-215 targets high-spending 
+  customers. Q-238 targets recent support tickets (which 
+  contain free-text descriptions of customer issues).
+  
+  This pattern is consistent with data collection for 
+  potential sale or competitive use, not random exploration.
+```
+
+*I stare at Q-201 for a long moment. Specifically filtering for EU customers by country code. That's not curiosity. That's targeting.*
+
+And there's a **fifth** data connection I hadn't known about: `inventory-db-prod`. Five queries against it post-departure. Another database the actor has been touching.
+
+I post to #security-incidents:
+
+```
+[User] (8:18 AM):
+Reading CrowdStrike exec summary. New finding: 
+5 post-departure Metabase queries against a connection 
+labeled 'inventory-db-prod'. This is a THIRD production 
+database the actor has been querying.
+
+Also: the query patterns show deliberate EU customer 
+targeting (Q-201 filters by country code for DE/FR/GB/NL/ES/IT)
+and high-value customer targeting (Q-215 filters orders > $500).
+
+CrowdStrike assessment: "consistent with data collection 
+for potential sale or competitive use."
+
+Adding inventory-db-prod to the investigation scope. 
+Aisha — we need to check if the actor's Metabase credentials 
+for this DB are still active. And I need the SG + connection 
+details for inventory-db-prod.
+
+@Marcus — when you're in, add inventory-db-prod to the 
+AWS audit reconciliation. Is it the same as the RDS instance 
+our inventory service uses, or is it ANOTHER shadow database?
+```
+
+---
+
+**8:22 AM. Eight minutes to the sync.**
+
+Quick message to Aisha:
+
+> For the James sync — I think the key new information since yesterday's bridge call is:
+> 1. Exfiltration CONFIRMED to transfer.sh (public)
+> 2. Timeline extends to October 8 (not January 15)
+> 3. AdministratorAccess IAM key found but not used (lucky)
+> 4. RDS master password was exposed (rotated overnight by you)
+> 5. 58 post-departure queries showing deliberate targeting of EU + high-value customers
+> 6. CrowdStrike assessment: "data collection for potential sale or competitive use"
+> 7. Third production database (inventory-db-prod) in the query history
+>
+> Rachel wants customer notification moved to Thursday. James needs to approve.
+> Rachel also needs a decision on UK ICO separate notification.
+>
+> I'll present the technical picture. You present the forensic findings and IR status. Let James drive the questions.
+
+---
+
+*8:28 AM. Coffee. Deep breath. Join the call.*
+
+*Yesterday at 8:00 AM I was watching a drift detection CronJob report clean findings and feeling good about the week. Twenty-four hours later I'm briefing the VP of Engineering on a four-month data exfiltration campaign targeting EU customers for potential sale.*
+
+*This is what on-call looks like. Not the incidents you expect. The ones that find you.*
+
