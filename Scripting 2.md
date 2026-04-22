@@ -6072,3 +6072,4671 @@ Total: ~30-50 MB  ← 4-8× less than threading
 
 CPU: Single thread, single core. Event loop does
 
+# You're Right. That Was Incomplete. Here's What's Missing.
+
+I taught the **framework** (project structure, types, boto3, CLI, testing) but skipped the **actual work**. That's like teaching someone how to hold a wrench and calling them a mechanic.
+
+Let me audit what a Senior DevOps engineer actually does with Python **every week**, rank by frequency, and deliver everything I missed.
+
+---
+
+## Missing Scenarios — Ranked by Daily/Weekly Usage
+
+| Rank | Missing Scenario | Frequency | Severity of Gap |
+|------|-----------------|-----------|-----------------|
+| 1 | **subprocess — wrapping CLI tools** | Daily | 🔴 CRITICAL |
+| 2 | **Log parsing & data processing** | Daily | 🔴 CRITICAL |
+| 3 | **File operations (pathlib)** | Daily | 🔴 CRITICAL |
+| 4 | **YAML/JSON manipulation at scale** | Daily | 🔴 CRITICAL |
+| 5 | **Configuration management (pydantic-settings, env vars)** | Daily | 🔴 CRITICAL |
+| 6 | **Regular expressions in production** | 3-4x/week | 🟡 SIGNIFICANT |
+| 7 | **Webhook receivers (FastAPI)** | Weekly | 🟡 SIGNIFICANT |
+| 8 | **AWS Lambda handlers** | Weekly | 🟡 SIGNIFICANT |
+| 9 | **Database operations (psycopg2, redis-py)** | Weekly | 🟡 SIGNIFICANT |
+| 10 | **Advanced decorators (timing, caching, auth)** | Weekly | 🟡 SIGNIFICANT |
+| 11 | **Git automation (GitPython, PR creation)** | Weekly | 🟡 SIGNIFICANT |
+| 12 | **Docker SDK (docker-py)** | Weekly | 🟡 SIGNIFICANT |
+| 13 | **Date/time operations (timezone, windows, scheduling)** | 3-4x/week | 🟡 SIGNIFICANT |
+| 14 | **CSV/reporting (pandas basics for DevOps)** | Weekly | 🟠 MODERATE |
+| 15 | **Prometheus client (custom metrics)** | Occasional | 🟠 MODERATE |
+| 16 | **Migration scripts patterns** | Occasional | 🟠 MODERATE |
+| 17 | **Caching patterns (lru_cache, TTL)** | Occasional | 🟠 MODERATE |
+
+That's **17 scenarios** I left out. 5 of them are **daily-use, critical gaps**. No excuses. Let me deliver them now.
+
+---
+
+## 1. SUBPROCESS — Wrapping CLI Tools (DAILY USE)
+
+Half of DevOps Python is wrapping `kubectl`, `terraform`, `helm`, `aws`, `argocd`. This is the single most common pattern and I didn't teach it at all.
+
+```python
+"""
+src/novatools/utils/shell.py
+
+Production-grade subprocess wrapper.
+"""
+from __future__ import annotations
+
+import os
+import shlex
+import subprocess
+import time
+from dataclasses import dataclass
+from typing import Any
+
+import structlog
+
+log = structlog.get_logger()
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    """Result of a shell command execution."""
+    command: str
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_seconds: float
+    timed_out: bool = False
+
+    @property
+    def success(self) -> bool:
+        return self.exit_code == 0
+
+    @property
+    def stdout_lines(self) -> list[str]:
+        return [line for line in self.stdout.strip().splitlines() if line]
+
+    def raise_on_error(self, message: str = "") -> None:
+        """Raise if command failed."""
+        if not self.success:
+            detail = message or f"Command failed (exit {self.exit_code})"
+            raise subprocess.CalledProcessError(
+                self.exit_code, self.command,
+                output=self.stdout, stderr=self.stderr,
+            )
+
+
+def run(
+    cmd: str | list[str],
+    *,
+    check: bool = False,
+    capture: bool = True,
+    timeout: int = 300,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    stdin_data: str | None = None,
+    sensitive: bool = False,
+    dry_run: bool = False,
+) -> CommandResult:
+    """
+    Execute a shell command with production defaults.
+
+    Args:
+        cmd: Command string or list. String is split with shlex.
+        check: Raise CalledProcessError on non-zero exit.
+        capture: Capture stdout/stderr (False = print to terminal).
+        timeout: Seconds before SIGTERM (then SIGKILL after 10s).
+        cwd: Working directory.
+        env: Additional environment variables (merged with current env).
+        stdin_data: Data to pipe to stdin.
+        sensitive: If True, don't log the command (contains secrets).
+        dry_run: Log command but don't execute.
+
+    Returns:
+        CommandResult with stdout, stderr, exit code, duration.
+    """
+    # Normalize command
+    if isinstance(cmd, str):
+        cmd_list = shlex.split(cmd)
+        cmd_display = cmd if not sensitive else "[REDACTED]"
+    else:
+        cmd_list = cmd
+        cmd_display = shlex.join(cmd) if not sensitive else "[REDACTED]"
+
+    log.info("executing_command", command=cmd_display, cwd=cwd, timeout=timeout)
+
+    if dry_run:
+        log.info("dry_run_skip", command=cmd_display)
+        return CommandResult(
+            command=cmd_display, exit_code=0,
+            stdout="[dry run]", stderr="", duration_seconds=0.0,
+        )
+
+    # Merge environment
+    full_env = os.environ.copy()
+    if env:
+        full_env.update(env)
+
+    start = time.monotonic()
+
+    try:
+        proc = subprocess.run(
+            cmd_list,
+            capture_output=capture,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+            env=full_env,
+            input=stdin_data,
+        )
+
+        duration = time.monotonic() - start
+
+        result = CommandResult(
+            command=cmd_display,
+            exit_code=proc.returncode,
+            stdout=proc.stdout or "",
+            stderr=proc.stderr or "",
+            duration_seconds=round(duration, 2),
+        )
+
+        if result.success:
+            log.info("command_succeeded",
+                     command=cmd_display, duration=result.duration_seconds)
+        else:
+            log.warning("command_failed",
+                        command=cmd_display,
+                        exit_code=result.exit_code,
+                        stderr=result.stderr[:500] if not sensitive else "[REDACTED]")
+
+        if check and not result.success:
+            result.raise_on_error()
+
+        return result
+
+    except subprocess.TimeoutExpired:
+        duration = time.monotonic() - start
+        log.error("command_timed_out", command=cmd_display, timeout=timeout)
+        return CommandResult(
+            command=cmd_display, exit_code=-1,
+            stdout="", stderr=f"Command timed out after {timeout}s",
+            duration_seconds=round(duration, 2), timed_out=True,
+        )
+
+
+# ═══════════════════════════════════════════════════════════
+# PRODUCTION WRAPPERS — The actual daily tools
+# ═══════════════════════════════════════════════════════════
+
+# ─── kubectl ───────────────────────────────────────────────
+class Kubectl:
+    """Type-safe kubectl wrapper."""
+
+    def __init__(
+        self,
+        context: str | None = None,
+        namespace: str | None = None,
+        kubeconfig: str | None = None,
+    ) -> None:
+        self._base_args: list[str] = ["kubectl"]
+        if context:
+            self._base_args.extend(["--context", context])
+        if namespace:
+            self._base_args.extend(["--namespace", namespace])
+        if kubeconfig:
+            self._base_args.extend(["--kubeconfig", kubeconfig])
+
+    def _run(self, args: list[str], **kwargs: Any) -> CommandResult:
+        return run(self._base_args + args, **kwargs)
+
+    def get(
+        self,
+        resource: str,
+        name: str = "",
+        output: str = "json",
+        label_selector: str = "",
+        field_selector: str = "",
+    ) -> CommandResult:
+        cmd = ["get", resource]
+        if name:
+            cmd.append(name)
+        cmd.extend(["-o", output])
+        if label_selector:
+            cmd.extend(["-l", label_selector])
+        if field_selector:
+            cmd.extend(["--field-selector", field_selector])
+        return self._run(cmd)
+
+    def get_json(self, resource: str, name: str = "", **kwargs: Any) -> dict | list:
+        """Get resource as parsed JSON."""
+        import json
+        result = self.get(resource, name, output="json", **kwargs)
+        result.raise_on_error(f"Failed to get {resource} {name}")
+        return json.loads(result.stdout)
+
+    def apply(self, file: str = "", stdin: str = "", dry_run: str = "") -> CommandResult:
+        cmd = ["apply"]
+        if file:
+            cmd.extend(["-f", file])
+        if dry_run:
+            cmd.extend(["--dry-run", dry_run])  # "client", "server", "none"
+        return self._run(cmd, stdin_data=stdin if not file else None)
+
+    def delete(self, resource: str, name: str, force: bool = False) -> CommandResult:
+        cmd = ["delete", resource, name]
+        if force:
+            cmd.extend(["--force", "--grace-period=0"])
+        return self._run(cmd)
+
+    def rollout_status(
+        self, resource: str, name: str, timeout: int = 300,
+    ) -> CommandResult:
+        return self._run(
+            ["rollout", "status", f"{resource}/{name}", f"--timeout={timeout}s"],
+            timeout=timeout + 30,  # Shell timeout > kubectl timeout
+        )
+
+    def rollout_undo(self, resource: str, name: str) -> CommandResult:
+        return self._run(["rollout", "undo", f"{resource}/{name}"])
+
+    def logs(
+        self,
+        pod: str,
+        container: str = "",
+        tail: int = 100,
+        since: str = "",
+        previous: bool = False,
+    ) -> CommandResult:
+        cmd = ["logs", pod, f"--tail={tail}"]
+        if container:
+            cmd.extend(["-c", container])
+        if since:
+            cmd.extend([f"--since={since}"])
+        if previous:
+            cmd.append("--previous")
+        return self._run(cmd)
+
+    def exec(self, pod: str, command: list[str], container: str = "") -> CommandResult:
+        cmd = ["exec", pod]
+        if container:
+            cmd.extend(["-c", container])
+        cmd.append("--")
+        cmd.extend(command)
+        return self._run(cmd)
+
+    def top_pods(self, sort_by: str = "memory") -> CommandResult:
+        return self._run(["top", "pods", f"--sort-by={sort_by}"])
+
+    def cordon(self, node: str) -> CommandResult:
+        return self._run(["cordon", node])
+
+    def uncordon(self, node: str) -> CommandResult:
+        return self._run(["uncordon", node])
+
+    def drain(
+        self,
+        node: str,
+        timeout: int = 300,
+        ignore_daemonsets: bool = True,
+        delete_emptydir: bool = True,
+    ) -> CommandResult:
+        cmd = ["drain", node, f"--timeout={timeout}s"]
+        if ignore_daemonsets:
+            cmd.append("--ignore-daemonsets")
+        if delete_emptydir:
+            cmd.append("--delete-emptydir-data")
+        return self._run(cmd, timeout=timeout + 60)
+
+    def scale(self, resource: str, name: str, replicas: int) -> CommandResult:
+        return self._run(
+            ["scale", f"{resource}/{name}", f"--replicas={replicas}"]
+        )
+
+    def patch(
+        self, resource: str, name: str, patch: str, patch_type: str = "strategic",
+    ) -> CommandResult:
+        return self._run([
+            "patch", resource, name,
+            "--type", patch_type,
+            "-p", patch,
+        ])
+
+    def wait(
+        self,
+        resource: str,
+        condition: str,
+        timeout: int = 120,
+        label_selector: str = "",
+    ) -> CommandResult:
+        cmd = [
+            "wait", resource,
+            f"--for={condition}",
+            f"--timeout={timeout}s",
+        ]
+        if label_selector:
+            cmd.extend(["-l", label_selector])
+        return self._run(cmd, timeout=timeout + 30)
+
+
+# ─── Terraform ─────────────────────────────────────────────
+class Terraform:
+    """Type-safe Terraform wrapper."""
+
+    def __init__(self, working_dir: str, var_file: str | None = None) -> None:
+        self.working_dir = working_dir
+        self.var_file = var_file
+
+    def _run(self, args: list[str], **kwargs: Any) -> CommandResult:
+        cmd = ["terraform"] + args
+        if self.var_file and args[0] in ("plan", "apply", "destroy"):
+            cmd.extend([f"-var-file={self.var_file}"])
+        return run(cmd, cwd=self.working_dir, **kwargs)
+
+    def init(self, backend: bool = True, upgrade: bool = False) -> CommandResult:
+        cmd = ["init"]
+        if not backend:
+            cmd.append("-backend=false")
+        if upgrade:
+            cmd.append("-upgrade")
+        cmd.append("-input=false")
+        return self._run(cmd)
+
+    def plan(
+        self,
+        out: str = "tfplan",
+        destroy: bool = False,
+        target: str = "",
+    ) -> CommandResult:
+        cmd = ["plan", f"-out={out}", "-input=false", "-detailed-exitcode"]
+        if destroy:
+            cmd.append("-destroy")
+        if target:
+            cmd.extend(["-target", target])
+        result = self._run(cmd)
+        # -detailed-exitcode: 0=no changes, 1=error, 2=changes present
+        return result
+
+    def apply(
+        self,
+        plan_file: str = "tfplan",
+        auto_approve: bool = False,
+    ) -> CommandResult:
+        cmd = ["apply"]
+        if plan_file:
+            cmd.append(plan_file)
+        elif auto_approve:
+            cmd.append("-auto-approve")
+        cmd.append("-input=false")
+        return self._run(cmd, timeout=1800)  # 30 min for large applies
+
+    def output(self, name: str = "", json_format: bool = True) -> CommandResult:
+        cmd = ["output"]
+        if json_format:
+            cmd.append("-json")
+        if name:
+            cmd.append(name)
+        return self._run(cmd)
+
+    def output_value(self, name: str) -> Any:
+        """Get a single output as parsed value."""
+        import json
+        result = self.output(name)
+        result.raise_on_error(f"Failed to get output: {name}")
+        data = json.loads(result.stdout)
+        return data  # For single output, terraform returns the value directly
+
+    def state_list(self) -> list[str]:
+        result = self._run(["state", "list"])
+        result.raise_on_error()
+        return result.stdout_lines
+
+    def state_show(self, address: str) -> CommandResult:
+        return self._run(["state", "show", address])
+
+    def import_resource(self, address: str, resource_id: str) -> CommandResult:
+        return self._run(["import", address, resource_id])
+
+    def validate(self) -> CommandResult:
+        return self._run(["validate", "-json"])
+
+    def fmt_check(self) -> CommandResult:
+        return self._run(["fmt", "-check", "-recursive"])
+
+    def workspace_select(self, workspace: str) -> CommandResult:
+        return self._run(["workspace", "select", workspace])
+
+    def destroy(self, auto_approve: bool = False, target: str = "") -> CommandResult:
+        cmd = ["destroy", "-input=false"]
+        if auto_approve:
+            cmd.append("-auto-approve")
+        if target:
+            cmd.extend(["-target", target])
+        return self._run(cmd, timeout=1800)
+
+
+# ─── Helm ──────────────────────────────────────────────────
+class Helm:
+    """Type-safe Helm wrapper."""
+
+    def __init__(self, kubeconfig: str | None = None) -> None:
+        self._base: list[str] = ["helm"]
+        if kubeconfig:
+            self._base.extend(["--kubeconfig", kubeconfig])
+
+    def _run(self, args: list[str], **kwargs: Any) -> CommandResult:
+        return run(self._base + args, **kwargs)
+
+    def upgrade_install(
+        self,
+        release: str,
+        chart: str,
+        namespace: str,
+        values_files: list[str] | None = None,
+        set_values: dict[str, str] | None = None,
+        version: str = "",
+        dry_run: bool = False,
+        wait: bool = True,
+        timeout: int = 600,
+        atomic: bool = True,
+    ) -> CommandResult:
+        cmd = [
+            "upgrade", release, chart,
+            "--install",
+            "--namespace", namespace,
+            "--create-namespace",
+            f"--timeout={timeout}s",
+        ]
+        if wait:
+            cmd.append("--wait")
+        if atomic:
+            cmd.append("--atomic")
+        if dry_run:
+            cmd.append("--dry-run")
+        if version:
+            cmd.extend(["--version", version])
+        for vf in (values_files or []):
+            cmd.extend(["-f", vf])
+        for k, v in (set_values or {}).items():
+            cmd.extend(["--set", f"{k}={v}"])
+        return self._run(cmd, timeout=timeout + 60)
+
+    def template(
+        self,
+        release: str,
+        chart: str,
+        namespace: str,
+        values_files: list[str] | None = None,
+    ) -> CommandResult:
+        cmd = ["template", release, chart, "--namespace", namespace]
+        for vf in (values_files or []):
+            cmd.extend(["-f", vf])
+        return self._run(cmd)
+
+    def list_releases(self, namespace: str = "", all_namespaces: bool = False) -> CommandResult:
+        cmd = ["list", "-o", "json"]
+        if all_namespaces:
+            cmd.append("--all-namespaces")
+        elif namespace:
+            cmd.extend(["--namespace", namespace])
+        return self._run(cmd)
+
+    def rollback(self, release: str, revision: int = 0, namespace: str = "") -> CommandResult:
+        cmd = ["rollback", release]
+        if revision:
+            cmd.append(str(revision))
+        if namespace:
+            cmd.extend(["--namespace", namespace])
+        cmd.append("--wait")
+        return self._run(cmd)
+
+    def get_values(self, release: str, namespace: str) -> CommandResult:
+        return self._run([
+            "get", "values", release,
+            "--namespace", namespace,
+            "-o", "json",
+        ])
+
+    def diff_upgrade(
+        self,
+        release: str,
+        chart: str,
+        namespace: str,
+        values_files: list[str] | None = None,
+    ) -> CommandResult:
+        """Requires helm-diff plugin."""
+        cmd = ["diff", "upgrade", release, chart, "--namespace", namespace]
+        for vf in (values_files or []):
+            cmd.extend(["-f", vf])
+        return self._run(cmd)
+
+
+# ─── ArgoCD ────────────────────────────────────────────────
+class ArgoCD:
+    """Type-safe ArgoCD CLI wrapper."""
+
+    def __init__(self, server: str = "", auth_token: str = "") -> None:
+        self._base: list[str] = ["argocd"]
+        if server:
+            self._base.extend(["--server", server])
+        if auth_token:
+            self._base.extend(["--auth-token", auth_token])
+        self._base.append("--grpc-web")  # Through ingress
+
+    def _run(self, args: list[str], **kwargs: Any) -> CommandResult:
+        return run(self._base + args, **kwargs)
+
+    def app_get(self, app: str, output: str = "json") -> CommandResult:
+        return self._run(["app", "get", app, "-o", output])
+
+    def app_sync(
+        self, app: str, prune: bool = False, force: bool = False,
+    ) -> CommandResult:
+        cmd = ["app", "sync", app]
+        if prune:
+            cmd.append("--prune")
+        if force:
+            cmd.append("--force")
+        return self._run(cmd, timeout=600)
+
+    def app_wait(self, app: str, timeout: int = 300) -> CommandResult:
+        return self._run(
+            ["app", "wait", app, "--timeout", str(timeout)],
+            timeout=timeout + 60,
+        )
+
+    def app_set(self, app: str, parameters: dict[str, str]) -> CommandResult:
+        cmd = ["app", "set", app]
+        for k, v in parameters.items():
+            cmd.extend(["-p", f"{k}={v}"])
+        return self._run(cmd)
+
+    def app_history(self, app: str) -> CommandResult:
+        return self._run(["app", "history", app, "-o", "json"])
+
+    def app_rollback(self, app: str, revision: int) -> CommandResult:
+        return self._run(["app", "rollback", app, str(revision)])
+
+
+# ═══════════════════════════════════════════════════════════
+# USAGE EXAMPLES — Real daily operations
+# ═══════════════════════════════════════════════════════════
+
+def deploy_with_rollback(
+    service: str,
+    version: str,
+    namespace: str,
+    context: str = "production",
+) -> bool:
+    """End-to-end deploy with rollback on failure."""
+    k = Kubectl(context=context, namespace=namespace)
+
+    # Capture current state for rollback
+    current = k.get_json("deployment", service)
+    current_image = current["spec"]["template"]["spec"]["containers"][0]["image"]
+    log.info("current_image", image=current_image)
+
+    # Set new image
+    new_image = f"123456789012.dkr.ecr.us-east-1.amazonaws.com/{service}:{version}"
+    result = k.patch(
+        "deployment", service,
+        f'{{"spec":{{"template":{{"spec":{{"containers":[{{"name":"{service}","image":"{new_image}"}}]}}}}}}}}',
+        patch_type="strategic",
+    )
+    if not result.success:
+        log.error("patch_failed", stderr=result.stderr)
+        return False
+
+    # Wait for rollout
+    rollout = k.rollout_status("deployment", service, timeout=300)
+    if not rollout.success:
+        log.error("rollout_failed", stderr=rollout.stderr)
+        log.info("initiating_rollback")
+        k.rollout_undo("deployment", service)
+        k.rollout_status("deployment", service, timeout=120)
+        return False
+
+    return True
+
+
+def terraform_pr_pipeline(working_dir: str, environment: str) -> dict[str, Any]:
+    """CI pipeline: init → validate → plan → output diff."""
+    tf = Terraform(working_dir=working_dir, var_file=f"{environment}.tfvars")
+
+    # Init
+    init = tf.init(upgrade=True)
+    init.raise_on_error("Terraform init failed")
+
+    # Validate
+    validate = tf.validate()
+    validate.raise_on_error("Terraform validation failed")
+
+    # Format check
+    fmt = tf.fmt_check()
+    if not fmt.success:
+        log.warning("terraform_fmt_check_failed",
+                    hint="Run 'terraform fmt -recursive' to fix")
+
+    # Plan with detailed exit code
+    plan = tf.plan(out="tfplan")
+    # Exit code 2 = changes detected
+    has_changes = plan.exit_code == 2
+    has_errors = plan.exit_code == 1
+
+    if has_errors:
+        plan.raise_on_error("Terraform plan failed")
+
+    return {
+        "init": init.success,
+        "validate": validate.success,
+        "fmt_clean": fmt.success,
+        "has_changes": has_changes,
+        "plan_stdout": plan.stdout,
+        "plan_stderr": plan.stderr,
+    }
+```
+
+**Subprocess failure modes:**
+
+```python
+# FAILURE 1: Shell injection
+# BAD:
+cmd = f"kubectl get pods -l app={user_input}"
+subprocess.run(cmd, shell=True)
+# If user_input = "nginx; rm -rf /" → catastrophe
+# NEVER use shell=True with user input
+
+# GOOD:
+cmd = ["kubectl", "get", "pods", "-l", f"app={user_input}"]
+subprocess.run(cmd)  # No shell=True, arguments are NOT interpreted
+
+# FAILURE 2: Deadlock with capture
+# BAD:
+proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+stdout = proc.stdout.read()   # Blocks if stderr buffer fills
+stderr = proc.stderr.read()
+# If the command outputs >64KB to stderr, .stdout.read() blocks forever
+
+# GOOD:
+proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+stdout, stderr = proc.communicate(timeout=300)  # Reads both safely
+
+# BEST: Just use subprocess.run() which handles this internally
+
+# FAILURE 3: Timeout doesn't kill children
+# subprocess.run(timeout=30) sends SIGTERM to the direct child
+# But if that child spawned subprocesses, they keep running!
+# Fix: Use process groups
+import signal
+proc = subprocess.Popen(
+    cmd,
+    preexec_fn=os.setsid,  # New process group
+)
+try:
+    proc.communicate(timeout=30)
+except subprocess.TimeoutExpired:
+    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)  # Kill entire group
+    proc.communicate(timeout=10)
+
+# FAILURE 4: Environment variable leaking secrets
+env = os.environ.copy()
+env["DB_PASSWORD"] = "secret123"
+subprocess.run(cmd, env=env)
+# The password is visible in /proc/<pid>/environ on Linux!
+# Mitigate: Use stdin piping or temp files with restricted permissions
+
+# FAILURE 5: Encoding issues
+result = subprocess.run(cmd, capture_output=True, text=True)
+# 'text=True' uses locale encoding, which might not be UTF-8
+# Fix: explicit encoding
+result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                        errors="replace")  # Replace undecodable bytes
+```
+
+---
+
+## 2. LOG PARSING & DATA PROCESSING
+
+```python
+"""
+Real-world log parsing patterns for DevOps.
+Nginx access logs, application logs, CloudWatch logs, audit logs.
+"""
+from __future__ import annotations
+
+import gzip
+import re
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Generator, TextIO
+
+import structlog
+
+log = structlog.get_logger()
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 1: Nginx Access Log Parser
+# ═══════════════════════════════════════════════════════════
+
+# Standard combined log format + request_time
+NGINX_LOG_PATTERN = re.compile(
+    r'(?P<ip>\S+) '
+    r'\S+ '                                    # ident (always -)
+    r'(?P<user>\S+) '
+    r'\[(?P<timestamp>[^\]]+)\] '
+    r'"(?P<method>\S+) (?P<path>\S+) (?P<protocol>[^"]+)" '
+    r'(?P<status>\d{3}) '
+    r'(?P<bytes>\d+) '
+    r'"(?P<referer>[^"]*)" '
+    r'"(?P<user_agent>[^"]*)"'
+    r'(?: (?P<request_time>[\d.]+))?'          # Optional request_time
+)
+
+
+@dataclass
+class AccessLogEntry:
+    ip: str
+    timestamp: datetime
+    method: str
+    path: str
+    status: int
+    bytes_sent: int
+    request_time: float | None
+    user_agent: str
+
+
+def parse_nginx_log(
+    file_path: Path,
+    since: datetime | None = None,
+) -> Generator[AccessLogEntry, None, None]:
+    """
+    Parse Nginx access log, yielding structured entries.
+    Handles gzipped files transparently.
+    Skips malformed lines with warning (doesn't crash).
+    """
+    opener = gzip.open if file_path.suffix == ".gz" else open
+    parse_errors = 0
+
+    with opener(file_path, "rt", encoding="utf-8", errors="replace") as f:
+        for line_num, line in enumerate(f, 1):
+            match = NGINX_LOG_PATTERN.match(line.strip())
+            if not match:
+                parse_errors += 1
+                if parse_errors <= 10:  # Don't spam logs
+                    log.debug("unparseable_line", line_num=line_num, line=line[:100])
+                continue
+
+            g = match.groupdict()
+
+            # Parse timestamp: 15/Jan/2024:14:30:00 +0000
+            try:
+                ts = datetime.strptime(
+                    g["timestamp"], "%d/%b/%Y:%H:%M:%S %z"
+                )
+            except ValueError:
+                parse_errors += 1
+                continue
+
+            # Skip if before cutoff
+            if since and ts < since:
+                continue
+
+            yield AccessLogEntry(
+                ip=g["ip"],
+                timestamp=ts,
+                method=g["method"],
+                path=g["path"],
+                status=int(g["status"]),
+                bytes_sent=int(g["bytes"]),
+                request_time=float(g["request_time"]) if g.get("request_time") else None,
+                user_agent=g["user_agent"],
+            )
+
+    if parse_errors > 0:
+        log.warning("parse_errors", count=parse_errors, file=str(file_path))
+
+
+def analyze_access_logs(file_path: Path, since: datetime | None = None) -> dict:
+    """
+    Produce a full analysis of an Nginx access log.
+    Used for: incident investigation, traffic analysis, capacity planning.
+    """
+    status_counter: Counter[int] = Counter()
+    path_counter: Counter[str] = Counter()
+    ip_counter: Counter[str] = Counter()
+    slow_requests: list[AccessLogEntry] = []
+    error_paths: Counter[str] = Counter()
+    total_bytes = 0
+    total_requests = 0
+    latencies: list[float] = []
+
+    for entry in parse_nginx_log(file_path, since):
+        total_requests += 1
+        total_bytes += entry.bytes_sent
+        status_counter[entry.status] += 1
+        path_counter[_normalize_path(entry.path)] += 1
+        ip_counter[entry.ip] += 1
+
+        if entry.request_time is not None:
+            latencies.append(entry.request_time)
+            if entry.request_time > 2.0:  # Slow request threshold
+                slow_requests.append(entry)
+
+        if entry.status >= 500:
+            error_paths[_normalize_path(entry.path)] += 1
+
+    # Calculate percentiles
+    sorted_latencies = sorted(latencies)
+    n = len(sorted_latencies)
+
+    return {
+        "total_requests": total_requests,
+        "total_bytes": total_bytes,
+        "status_breakdown": dict(status_counter.most_common()),
+        "error_rate": sum(v for k, v in status_counter.items() if k >= 500) / max(total_requests, 1),
+        "top_paths": dict(path_counter.most_common(20)),
+        "top_error_paths": dict(error_paths.most_common(10)),
+        "top_ips": dict(ip_counter.most_common(10)),
+        "slow_requests_count": len(slow_requests),
+        "latency": {
+            "p50": sorted_latencies[int(n * 0.50)] if n else 0,
+            "p90": sorted_latencies[int(n * 0.90)] if n else 0,
+            "p95": sorted_latencies[int(n * 0.95)] if n else 0,
+            "p99": sorted_latencies[int(n * 0.99)] if n else 0,
+            "max": sorted_latencies[-1] if n else 0,
+        } if n > 0 else {},
+    }
+
+
+def _normalize_path(path: str) -> str:
+    """
+    Normalize URL paths for grouping.
+    /api/v1/users/12345 → /api/v1/users/:id
+    /api/v1/orders/abc-def-123 → /api/v1/orders/:id
+    """
+    # Replace UUIDs
+    path = re.sub(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', ':uuid', path)
+    # Replace numeric IDs
+    path = re.sub(r'/\d+', '/:id', path)
+    # Strip query string
+    path = path.split("?")[0]
+    return path
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 2: Structured JSON Log Parser (Application Logs)
+# ═══════════════════════════════════════════════════════════
+
+import json
+
+
+def parse_json_logs(
+    file_path: Path,
+    level_filter: str | None = None,
+    service_filter: str | None = None,
+    since: datetime | None = None,
+    search: str | None = None,
+) -> Generator[dict, None, None]:
+    """
+    Parse structured JSON logs (one JSON object per line).
+    Standard in K8s with Fluent Bit / Loki.
+    """
+    opener = gzip.open if file_path.suffix == ".gz" else open
+
+    with opener(file_path, "rt", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Apply filters
+            if level_filter and entry.get("level", "").upper() != level_filter.upper():
+                continue
+
+            if service_filter and entry.get("service") != service_filter:
+                continue
+
+            if search and search.lower() not in json.dumps(entry).lower():
+                continue
+
+            if since:
+                ts_str = entry.get("timestamp") or entry.get("time") or entry.get("@timestamp")
+                if ts_str:
+                    try:
+                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        if ts < since:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
+            yield entry
+
+
+def extract_error_patterns(
+    file_path: Path,
+    top_n: int = 20,
+) -> list[dict]:
+    """
+    Find the most common error patterns in application logs.
+    Groups similar errors by normalizing variable parts.
+    """
+    pattern_counter: Counter[str] = Counter()
+    pattern_examples: dict[str, dict] = {}
+
+    for entry in parse_json_logs(file_path, level_filter="ERROR"):
+        message = entry.get("message") or entry.get("msg") or str(entry.get("error", ""))
+
+        # Normalize the message to group similar errors
+        normalized = _normalize_error_message(message)
+
+        pattern_counter[normalized] += 1
+        if normalized not in pattern_examples:
+            pattern_examples[normalized] = entry  # Keep first example
+
+    results = []
+    for pattern, count in pattern_counter.most_common(top_n):
+        results.append({
+            "pattern": pattern,
+            "count": count,
+            "example": pattern_examples[pattern],
+        })
+
+    return results
+
+
+def _normalize_error_message(msg: str) -> str:
+    """Normalize error messages for grouping."""
+    # Replace IPs
+    msg = re.sub(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', '<IP>', msg)
+    # Replace ports
+    msg = re.sub(r':\d{4,5}', ':<PORT>', msg)
+    # Replace UUIDs
+    msg = re.sub(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '<UUID>', msg)
+    # Replace timestamps
+    msg = re.sub(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}', '<TIMESTAMP>', msg)
+    # Replace numbers that look like IDs
+    msg = re.sub(r'\b\d{5,}\b', '<ID>', msg)
+    # Replace hex strings
+    msg = re.sub(r'\b[0-9a-f]{16,}\b', '<HEX>', msg)
+    return msg
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 3: Multi-file Log Correlation
+# ═══════════════════════════════════════════════════════════
+
+def correlate_by_trace_id(
+    log_files: list[Path],
+    trace_id: str,
+) -> list[dict]:
+    """
+    Find all log entries matching a trace ID across multiple log files.
+    Used during incident investigation to follow a request across services.
+    """
+    entries: list[dict] = []
+
+    for file_path in log_files:
+        for entry in parse_json_logs(file_path, search=trace_id):
+            entry["_source_file"] = str(file_path)
+            entries.append(entry)
+
+    # Sort by timestamp
+    entries.sort(key=lambda e: e.get("timestamp", e.get("time", "")))
+
+    log.info("correlation_complete", trace_id=trace_id, entries_found=len(entries))
+    return entries
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 4: CloudWatch Logs Insights Query
+# ═══════════════════════════════════════════════════════════
+
+import time
+import boto3
+
+
+def query_cloudwatch_logs(
+    log_group: str,
+    query: str,
+    hours_back: int = 1,
+    limit: int = 1000,
+    region: str = "us-east-1",
+) -> list[dict]:
+    """
+    Execute a CloudWatch Logs Insights query and wait for results.
+
+    Example queries:
+        # Top 10 errors
+        fields @timestamp, @message
+        | filter @message like /ERROR/
+        | stats count(*) as cnt by @message
+        | sort cnt desc
+        | limit 10
+
+        # Slow Lambda invocations
+        filter @type = "REPORT"
+        | stats max(@duration), avg(@duration), count(*) by bin(5m)
+    """
+    client = boto3.client("logs", region_name=region)
+    now = int(time.time())
+
+    response = client.start_query(
+        logGroupName=log_group,
+        startTime=now - (hours_back * 3600),
+        endTime=now,
+        queryString=query,
+        limit=limit,
+    )
+    query_id = response["queryId"]
+    log.info("cw_query_started", query_id=query_id)
+
+    # Poll for results
+    for attempt in range(60):  # Max 5 minutes
+        result = client.get_query_results(queryId=query_id)
+        status = result["status"]
+
+        if status == "Complete":
+            # Parse results into dicts
+            rows = []
+            for result_row in result["results"]:
+                row = {field["field"]: field["value"] for field in result_row}
+                rows.append(row)
+            log.info("cw_query_complete", rows=len(rows))
+            return rows
+
+        if status in ("Failed", "Cancelled", "Timeout"):
+            raise RuntimeError(f"CloudWatch query {status}: {query_id}")
+
+        time.sleep(5)
+
+    raise TimeoutError(f"CloudWatch query {query_id} did not complete in 5 minutes")
+```
+
+---
+
+## 3. FILE OPERATIONS (pathlib)
+
+```python
+"""
+pathlib is the modern Python way to handle files.
+os.path is legacy. pathlib is cleaner, safer, and more readable.
+"""
+from pathlib import Path
+import shutil
+import tempfile
+from typing import Generator
+
+
+# ═══════════════════════════════════════════════════════════
+# BASICS — What os.path did, but better
+# ═══════════════════════════════════════════════════════════
+
+# ── Path construction ──────────────────────────────────────
+config_dir = Path("/etc/novamart")
+config_file = config_dir / "services" / "payment.yaml"  # / operator joins
+# = Path('/etc/novamart/services/payment.yaml')
+
+# Relative paths
+repo_root = Path(__file__).parent.parent.parent  # Go up 3 levels
+templates_dir = repo_root / "templates"
+
+# Home directory
+ssh_key = Path.home() / ".ssh" / "id_rsa"
+
+# Current working directory
+cwd = Path.cwd()
+
+# ── Path properties ────────────────────────────────────────
+p = Path("/var/log/nginx/access.log.2024-01-15.gz")
+p.name         # 'access.log.2024-01-15.gz'
+p.stem         # 'access.log.2024-01-15'
+p.suffix       # '.gz'
+p.suffixes     # ['.log', '.2024-01-15', '.gz']
+p.parent       # Path('/var/log/nginx')
+p.parents[1]   # Path('/var/log')
+p.parts        # ('/', 'var', 'log', 'nginx', 'access.log.2024-01-15.gz')
+
+# ── Existence and type checks ──────────────────────────────
+p.exists()
+p.is_file()
+p.is_dir()
+p.is_symlink()
+p.stat().st_size      # File size in bytes
+p.stat().st_mtime     # Modification time (epoch)
+
+# ── Reading and writing ────────────────────────────────────
+# Read
+content = Path("config.yaml").read_text(encoding="utf-8")
+binary = Path("image.png").read_bytes()
+
+# Write (creates parent dirs if needed)
+output_path = Path("/tmp/report/output.json")
+output_path.parent.mkdir(parents=True, exist_ok=True)
+output_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+# ── Globbing ───────────────────────────────────────────────
+# All YAML files in directory
+yaml_files = list(Path("manifests/").glob("*.yaml"))
+
+# Recursive glob
+all_python = list(Path("src/").rglob("*.py"))
+
+# Multiple patterns
+configs = [
+    f for f in Path("config/").rglob("*")
+    if f.suffix in (".yaml", ".yml", ".json", ".toml")
+]
+
+
+# ═══════════════════════════════════════════════════════════
+# PRODUCTION PATTERNS
+# ═══════════════════════════════════════════════════════════
+
+def find_large_files(
+    directory: Path,
+    min_size_mb: float = 100,
+    pattern: str = "*",
+) -> list[dict]:
+    """Find files larger than threshold. Used for disk cleanup."""
+    results = []
+    for f in directory.rglob(pattern):
+        if f.is_file():
+            size = f.stat().st_size
+            if size >= min_size_mb * 1024 * 1024:
+                results.append({
+                    "path": str(f),
+                    "size_mb": round(size / 1024 / 1024, 1),
+                    "modified": datetime.fromtimestamp(
+                        f.stat().st_mtime, tz=timezone.utc
+                    ).isoformat(),
+                })
+    return sorted(results, key=lambda x: x["size_mb"], reverse=True)
+
+
+def atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """
+    Write file atomically — prevents corruption on crash.
+    Writes to temp file in same directory, then renames.
+    rename() is atomic on POSIX filesystems.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=path.parent,
+        suffix=".tmp",
+        delete=False,
+        encoding=encoding,
+    ) as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())  # Force write to disk
+        tmp_path = Path(f.name)
+
+    # Set same permissions as target (if exists)
+    if path.exists():
+        tmp_path.chmod(path.stat().st_mode)
+
+    tmp_path.rename(path)  # Atomic on same filesystem
+
+
+def safe_backup(source: Path, backup_dir: Path, max_backups: int = 5) -> Path:
+    """Create a timestamped backup, pruning old ones."""
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    backup_name = f"{source.stem}.{timestamp}{source.suffix}"
+    backup_path = backup_dir / backup_name
+
+    shutil.copy2(source, backup_path)  # Preserves metadata
+
+    # Prune old backups
+    existing = sorted(
+        backup_dir.glob(f"{source.stem}.*{source.suffix}"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for old_backup in existing[max_backups:]:
+        old_backup.unlink()
+        log.info("pruned_backup", path=str(old_backup))
+
+    return backup_path
+
+
+def diff_directories(dir_a: Path, dir_b: Path) -> dict:
+    """
+    Compare two directories recursively.
+    Used for: config drift detection, deployment verification.
+    """
+    files_a = {f.relative_to(dir_a) for f in dir_a.rglob("*") if f.is_file()}
+    files_b = {f.relative_to(dir_b) for f in dir_b.rglob("*") if f.is_file()}
+
+    only_in_a = files_a - files_b
+    only_in_b = files_b - files_a
+    common = files_a & files_b
+
+    modified = []
+    for rel_path in common:
+        file_a = dir_a / rel_path
+        file_b = dir_b / rel_path
+        if file_a.read_bytes() != file_b.read_bytes():
+            modified.append(str(rel_path))
+
+    return {
+        "only_in_a": sorted(str(f) for f in only_in_a),
+        "only_in_b": sorted(str(f) for f in only_in_b),
+        "modified": sorted(modified),
+        "identical_count": len(common) - len(modified),
+    }
+
+
+def walk_k8s_manifests(
+    manifests_dir: Path,
+) -> Generator[tuple[Path, dict], None, None]:
+    """
+    Walk a directory of K8s manifests, yielding (path, parsed_yaml).
+    Handles multi-document YAML files (--- separator).
+    """
+    import yaml
+
+    for yaml_file in sorted(manifests_dir.rglob("*.yaml")):
+        try:
+            content = yaml_file.read_text(encoding="utf-8")
+            for doc in yaml.safe_load_all(content):
+                if doc:  # Skip empty documents
+                    yield yaml_file, doc
+        except yaml.YAMLError as e:
+            log.warning("invalid_yaml", file=str(yaml_file), error=str(e))
+```
+
+---
+
+## 4. YAML/JSON MANIPULATION AT SCALE
+
+```python
+"""
+Programmatic modification of K8s manifests, Helm values, Terraform configs.
+Daily use: updating image tags, modifying resource limits, generating configs.
+"""
+from __future__ import annotations
+
+import json
+import copy
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+# ─── YAML round-trip (preserve comments and formatting) ───
+# Standard pyyaml DESTROYS comments and formatting.
+# Use ruamel.yaml for round-trip editing.
+from ruamel.yaml import YAML
+
+ryaml = YAML()
+ryaml.preserve_quotes = True
+ryaml.width = 120
+
+
+def update_image_tag(
+    kustomization_path: Path,
+    service_name: str,
+    new_tag: str,
+) -> None:
+    """
+    Update image tag in kustomization.yaml preserving formatting and comments.
+    This is what CI does on every merge to main.
+    """
+    with open(kustomization_path) as f:
+        data = ryaml.load(f)
+
+    images = data.get("images", [])
+    updated = False
+
+    for image in images:
+        if image.get("name") == service_name:
+            image["newTag"] = new_tag
+            updated = True
+            break
+
+    if not updated:
+        images.append({"name": service_name, "newTag": new_tag})
+
+    with open(kustomization_path, "w") as f:
+        ryaml.dump(data, f)
+
+
+def update_helm_values(
+    values_path: Path,
+    key_path: str,
+    value: Any,
+) -> None:
+    """
+    Update a nested key in a Helm values file.
+    key_path: "prometheus.server.retention" → data["prometheus"]["server"]["retention"]
+    """
+    with open(values_path) as f:
+        data = ryaml.load(f)
+
+    keys = key_path.split(".")
+    current = data
+    for key in keys[:-1]:
+        if key not in current:
+            current[key] = {}
+        current = current[key]
+    current[keys[-1]] = value
+
+    with open(values_path, "w") as f:
+        ryaml.dump(data, f)
+
+
+def bulk_update_resource_limits(
+    manifests_dir: Path,
+    updates: dict[str, dict[str, str]],
+    dry_run: bool = True,
+) -> list[dict]:
+    """
+    Bulk update resource limits across all deployment manifests.
+    updates = {
+        "payment-service": {"cpu": "500m", "memory": "512Mi"},
+        "order-service": {"cpu": "250m", "memory": "256Mi"},
+    }
+    """
+    changes = []
+
+    for yaml_file in manifests_dir.rglob("*.yaml"):
+        with open(yaml_file) as f:
+            docs = list(yaml.safe_load_all(f.read()))
+
+        modified = False
+        for doc in docs:
+            if not doc or doc.get("kind") != "Deployment":
+                continue
+
+            name = doc.get("metadata", {}).get("name", "")
+            if name not in updates:
+                continue
+
+            containers = (
+                doc.get("spec", {})
+                .get("template", {})
+                .get("spec", {})
+                .get("containers", [])
+            )
+
+            for container in containers:
+                if container.get("name") == name:
+                    old_limits = copy.deepcopy(container.get("resources", {}).get("limits", {}))
+                    if "resources" not in container:
+                        container["resources"] = {}
+                    if "limits" not in container["resources"]:
+                        container["resources"]["limits"] = {}
+
+                    container["resources"]["limits"].update(updates[name])
+                    modified = True
+
+                    changes.append({
+                        "file": str(yaml_file),
+                        "deployment": name,
+                        "old_limits": old_limits,
+                        "new_limits": updates[name],
+                    })
+
+        if modified and not dry_run:
+            with open(yaml_file, "w") as f:
+                yaml.dump_all(docs, f, default_flow_style=False)
+
+    return changes
+
+
+def validate_k8s_manifests(manifests_dir: Path) -> list[dict]:
+    """
+    Validate K8s manifests for common issues.
+    Run in CI before ArgoCD sync.
+    """
+    issues = []
+
+    for yaml_file, doc in walk_k8s_manifests(manifests_dir):
+        kind = doc.get("kind", "Unknown")
+        name = doc.get("metadata", {}).get("name", "unnamed")
+
+        # Check: All deployments have resource limits
+        if kind == "Deployment":
+            containers = (
+                doc.get("spec", {})
+                .get("template", {})
+                .get("spec", {})
+                .get("containers", [])
+            )
+            for c in containers:
+                if not c.get("resources", {}).get("limits"):
+                    issues.append({
+                        "file": str(yaml_file),
+                        "resource": f"{kind}/{name}",
+                        "issue": f"Container '{c.get('name')}' missing resource limits",
+                        "severity": "HIGH",
+                    })
+
+                if not c.get("readinessProbe") and not c.get("livenessProbe"):
+                    issues.append({
+                        "file": str(yaml_file),
+                        "resource": f"{kind}/{name}",
+                        "issue": f"Container '{c.get('name')}' missing health probes",
+                        "severity": "MEDIUM",
+                    })
+
+            # Check: image tag is not :latest
+            for c in containers:
+                image = c.get("image", "")
+                if image.endswith(":latest") or ":" not in image:
+                    issues.append({
+                        "file": str(yaml_file),
+                        "resource": f"{kind}/{name}",
+                        "issue": f"Container '{c.get('name')}' uses :latest or untagged image: {image}",
+                        "severity": "CRITICAL",
+                    })
+
+            # Check: replicas > 1 for production
+            replicas = doc.get("spec", {}).get("replicas", 1)
+            labels = doc.get("metadata", {}).get("labels", {})
+            if labels.get("environment") == "production" and replicas < 2:
+                issues.append({
+                    "file": str(yaml_file),
+                    "resource": f"{kind}/{name}",
+                    "issue": f"Production deployment with only {replicas} replica(s)",
+                    "severity": "HIGH",
+                })
+
+        # Check: All services have standard labels
+        required_labels = {"app", "version", "team"}
+        labels = doc.get("metadata", {}).get("labels", {})
+        missing = required_labels - set(labels.keys())
+        if missing and kind in ("Deployment", "Service", "StatefulSet"):
+            issues.append({
+                "file": str(yaml_file),
+                "resource": f"{kind}/{name}",
+                "issue": f"Missing required labels: {missing}",
+                "severity": "LOW",
+            })
+
+    return issues
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+    """
+    Deep merge two dicts (like Helm values merge).
+    override values take precedence. Lists are replaced, not appended.
+    """
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+```
+
+---
+
+## 5. CONFIGURATION MANAGEMENT
+
+```python
+"""
+src/novatools/utils/config.py
+
+Production configuration management using pydantic-settings.
+Loads from: env vars → .env file → defaults
+"""
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class AWSConfig(BaseSettings):
+    """AWS-specific configuration."""
+    model_config = SettingsConfigDict(env_prefix="AWS_")
+
+    region: str = "us-east-1"
+    profile: str | None = None
+    role_arn: str | None = None
+    account_id: str | None = None
+
+
+class SlackConfig(BaseSettings):
+    """Slack integration configuration."""
+    model_config = SettingsConfigDict(env_prefix="SLACK_")
+
+    webhook_url: str | None = None
+    bot_token: str | None = None
+    default_channel: str = "#platform-alerts"
+    enabled: bool = True
+
+
+class PagerDutyConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="PAGERDUTY_")
+
+    routing_key: str | None = None
+    enabled: bool = True
+
+
+class JiraConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="JIRA_")
+
+    base_url: str = ""
+    email: str = ""
+    api_token: str = ""
+    project: str = "OPS"
+
+
+class K8sConfig(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="K8S_")
+
+    context: str | None = None
+    namespace: str = "default"
+    kubeconfig: str | None = None
+    in_cluster: bool = False
+
+
+class AppConfig(BaseSettings):
+    """
+    Root configuration — aggregates all sub-configs.
+
+    Loading priority (highest wins):
+    1. Environment variables
+    2. .env file
+    3. Field defaults
+
+    Usage:
+        config = get_config()
+        print(config.aws.region)
+        print(config.slack.webhook_url)
+    """
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",  # SLACK__WEBHOOK_URL → slack.webhook_url
+        case_sensitive=False,
+        extra="ignore",  # Don't crash on unexpected env vars
+    )
+
+    # Sub-configs
+    aws: AWSConfig = Field(default_factory=AWSConfig)
+    slack: SlackConfig = Field(default_factory=SlackConfig)
+    pagerduty: PagerDutyConfig = Field(default_factory=PagerDutyConfig)
+    jira: JiraConfig = Field(default_factory=JiraConfig)
+    k8s: K8sConfig = Field(default_factory=K8sConfig)
+
+    # App-level settings
+    environment: str = "development"
+    log_level: str = "INFO"
+    json_output: bool = False
+    dry_run: bool = False
+    debug: bool = False
+
+    # NovaMart specific
+    company: str = "novamart"
+    regions: list[str] = Field(default=["us-east-1", "us-west-2", "eu-west-1"])
+    cost_alert_threshold: float = 10000.0
+    rotation_threshold_days: int = 90
+    @field_validator("environment")
+    @classmethod
+    def validate_environment(cls, v: str) -> str:
+        allowed = {"development", "staging", "production", "test"}
+        if v not in allowed:
+            raise ValueError(f"environment must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("log_level")
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
+        v = v.upper()
+        allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if v not in allowed:
+            raise ValueError(f"log_level must be one of {allowed}, got '{v}'")
+        return v
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
+
+
+@lru_cache(maxsize=1)
+def get_config() -> AppConfig:
+    """
+    Singleton config — loaded once, cached forever.
+    lru_cache ensures we don't re-parse env vars on every call.
+    """
+    return AppConfig()
+
+
+# ═══════════════════════════════════════════════════════════
+# USAGE PATTERNS
+# ═══════════════════════════════════════════════════════════
+
+# In any module:
+# from novatools.utils.config import get_config
+# config = get_config()
+# if config.is_production:
+#     require_approval()
+# client = boto3.client("ec2", region_name=config.aws.region)
+
+# In tests — override config with env vars:
+# def test_something(monkeypatch):
+#     monkeypatch.setenv("ENVIRONMENT", "test")
+#     monkeypatch.setenv("AWS_REGION", "us-west-2")
+#     monkeypatch.setenv("SLACK__ENABLED", "false")
+#     get_config.cache_clear()  # Reset singleton
+#     config = get_config()
+#     assert config.environment == "test"
+
+
+# ═══════════════════════════════════════════════════════════
+# ENVIRONMENT-SPECIFIC CONFIG FILES
+# ═══════════════════════════════════════════════════════════
+
+def load_service_config(
+    service: str,
+    environment: str,
+    config_dir: Path = Path("config/"),
+) -> dict:
+    """
+    Load service config with environment overlay.
+    config/
+      base.yaml           ← defaults
+      production.yaml     ← production overrides
+      services/
+        payment.yaml      ← service-specific overrides
+    
+    Merge order: base → environment → service (last wins)
+    """
+    import yaml
+
+    base_file = config_dir / "base.yaml"
+    env_file = config_dir / f"{environment}.yaml"
+    svc_file = config_dir / "services" / f"{service}.yaml"
+
+    result: dict = {}
+
+    for f in [base_file, env_file, svc_file]:
+        if f.exists():
+            with open(f) as fh:
+                data = yaml.safe_load(fh)
+                if data:
+                    result = deep_merge(result, data)
+
+    return result
+```
+
+**Configuration failure modes:**
+```python
+# FAILURE 1: Env var not set, no default, no validation
+# The script runs, uses None for region, boto3 falls back to us-east-1
+# You deploy to wrong region. Outage.
+# FIX: Pydantic with required fields (no default) → crashes at startup
+
+# FAILURE 2: .env file committed to git
+# Your production DB password is in git history forever.
+# FIX: .gitignore .env, use .env.example with placeholder values
+
+# FAILURE 3: Config loaded at import time
+# config = AppConfig()  # Module level — crashes on import if env missing
+# FIX: get_config() lazy function with @lru_cache
+
+# FAILURE 4: Config singleton never refreshed in tests
+# Test A sets REGION=us-east-1, Test B expects us-west-2
+# But lru_cache returns stale config from Test A
+# FIX: get_config.cache_clear() in test fixtures
+
+# FAILURE 5: Nested env vars misunderstood
+# SLACK__WEBHOOK_URL works with env_nested_delimiter="__"
+# But SLACK_WEBHOOK_URL does NOT (pydantic-settings treats it differently)
+# Document your convention. Pick one. Stick with it.
+```
+
+---
+
+## 6. REGULAR EXPRESSIONS IN PRODUCTION
+
+```python
+"""
+Real regex patterns a Senior DevOps engineer uses weekly.
+Not academic — these solve actual operational problems.
+"""
+import re
+from typing import Any
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 1: Extract structured data from unstructured output
+# ═══════════════════════════════════════════════════════════
+
+# Terraform plan output parsing
+TERRAFORM_CHANGE = re.compile(
+    r"^\s*# (?P<address>\S+) (?:will be|must be) (?P<action>created|destroyed|updated|replaced)",
+    re.MULTILINE,
+)
+
+def parse_terraform_plan(plan_output: str) -> list[dict[str, str]]:
+    """Extract resource changes from terraform plan output."""
+    changes = []
+    for match in TERRAFORM_CHANGE.finditer(plan_output):
+        changes.append({
+            "address": match.group("address"),
+            "action": match.group("action"),
+        })
+    return changes
+
+# kubectl output parsing (when JSON is not available)
+KUBECTL_EVENT = re.compile(
+    r"(?P<last>\S+)\s+"
+    r"(?P<type>\S+)\s+"
+    r"(?P<reason>\S+)\s+"
+    r"(?P<object>\S+)\s+"
+    r"(?P<message>.+)"
+)
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 2: Log line matching with named groups
+# ═══════════════════════════════════════════════════════════
+
+# Java stack trace extraction (multi-line)
+JAVA_EXCEPTION = re.compile(
+    r"(?P<exception>[\w.]+(?:Exception|Error|Throwable)): (?P<message>[^\n]+)"
+    r"(?P<stacktrace>(?:\n\s+at .+)+)?",
+)
+
+def extract_exceptions(log_content: str) -> list[dict[str, str]]:
+    """Extract Java exceptions from log content."""
+    results = []
+    for match in JAVA_EXCEPTION.finditer(log_content):
+        results.append({
+            "exception": match.group("exception"),
+            "message": match.group("message"),
+            "stacktrace": (match.group("stacktrace") or "").strip(),
+        })
+    return results
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 3: Validation patterns
+# ═══════════════════════════════════════════════════════════
+
+# These are COMPILED once at module level — not in the function
+SEMVER = re.compile(r"^v?(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)(?:-(?P<pre>[a-zA-Z0-9.]+))?$")
+K8S_RESOURCE_NAME = re.compile(r"^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$")  # RFC 1123 subdomain
+AWS_ACCOUNT_ID = re.compile(r"^\d{12}$")
+AWS_ARN = re.compile(r"^arn:aws[a-zA-Z-]*:\S+:\S*:\d{12}:\S+$")
+DOCKER_IMAGE = re.compile(
+    r"^(?:(?P<registry>[^/]+)/)?(?P<repo>[^:@]+)(?::(?P<tag>[^@]+))?(?:@(?P<digest>sha256:[a-f0-9]{64}))?$"
+)
+IPV4 = re.compile(r"^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$")
+CIDR = re.compile(r"^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)/(?:[0-9]|[12]\d|3[0-2])$")
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+def validate_image_reference(image: str) -> dict[str, str | None]:
+    """Parse and validate a Docker image reference."""
+    match = DOCKER_IMAGE.match(image)
+    if not match:
+        raise ValueError(f"Invalid Docker image reference: {image}")
+    return {
+        "registry": match.group("registry"),
+        "repository": match.group("repo"),
+        "tag": match.group("tag"),
+        "digest": match.group("digest"),
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 4: Search and replace in config files
+# ═══════════════════════════════════════════════════════════
+
+def update_image_in_yaml(
+    content: str,
+    old_tag: str,
+    new_tag: str,
+) -> str:
+    """
+    Replace image tags in YAML content.
+    More precise than sed — matches image: lines only.
+    """
+    pattern = re.compile(
+        r"(image:\s*\S+:)" + re.escape(old_tag) + r"(\s*(?:#.*)?)$",
+        re.MULTILINE,
+    )
+    return pattern.sub(rf"\g<1>{new_tag}\2", content)
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 5: Secret detection (pre-commit, CI)
+# ═══════════════════════════════════════════════════════════
+
+SECRET_PATTERNS = [
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "AWS Access Key ID"),
+    (re.compile(r"(?i)(?:password|passwd|pwd)\s*[:=]\s*['\"]?[^\s'\"]{8,}"), "Password assignment"),
+    (re.compile(r"(?i)(?:api[_-]?key|apikey)\s*[:=]\s*['\"]?[a-zA-Z0-9]{20,}"), "API Key"),
+    (re.compile(r"(?i)(?:secret|token)\s*[:=]\s*['\"]?[a-zA-Z0-9/+=]{20,}"), "Secret/Token"),
+    (re.compile(r"-----BEGIN (?:RSA |DSA |EC )?PRIVATE KEY-----"), "Private Key"),
+    (re.compile(r"ghp_[A-Za-z0-9]{36}"), "GitHub Personal Access Token"),
+    (re.compile(r"xox[baprs]-[0-9a-zA-Z-]+"), "Slack Token"),
+]
+
+def scan_for_secrets(content: str, filename: str = "") -> list[dict[str, Any]]:
+    """Scan content for potential secrets. Used in pre-commit hooks and CI."""
+    findings = []
+    for line_num, line in enumerate(content.splitlines(), 1):
+        # Skip comments
+        stripped = line.strip()
+        if stripped.startswith("#") or stripped.startswith("//"):
+            continue
+
+        for pattern, secret_type in SECRET_PATTERNS:
+            if pattern.search(line):
+                findings.append({
+                    "file": filename,
+                    "line": line_num,
+                    "type": secret_type,
+                    "content": line[:80] + "..." if len(line) > 80 else line,
+                })
+    return findings
+```
+
+**Regex failure modes:**
+```python
+# FAILURE 1: Catastrophic backtracking (ReDoS)
+# BAD:
+evil_pattern = re.compile(r"(a+)+b")
+evil_pattern.match("a" * 30 + "c")  # Takes EXPONENTIAL time — hangs your script
+
+# GOOD: Avoid nested quantifiers. Use atomic groups if available.
+# In Python: use re2 library for guaranteed linear-time matching
+# pip install google-re2
+
+# FAILURE 2: Compiling regex inside loops
+# BAD:
+for line in million_line_file:
+    if re.match(r"ERROR.*timeout", line):  # Recompiles every iteration
+        ...
+# GOOD:
+pattern = re.compile(r"ERROR.*timeout")  # Compile ONCE
+for line in million_line_file:
+    if pattern.match(line):
+        ...
+
+# FAILURE 3: match() vs search() vs fullmatch()
+# re.match() only checks START of string
+# re.search() checks ANYWHERE in string
+# re.fullmatch() checks ENTIRE string
+
+text = "error: connection timeout at 10:30"
+re.match(r"timeout", text)      # None! (doesn't start with "timeout")
+re.search(r"timeout", text)     # Match! (found in middle)
+re.fullmatch(r"timeout", text)  # None! (not the entire string)
+
+# FAILURE 4: Greedy vs lazy quantifiers
+log_line = 'user="admin" action="delete" target="database"'
+re.findall(r'"(.+)"', log_line)     # ['"admin" action="delete" target="database"'] — GREEDY
+re.findall(r'"(.+?)"', log_line)    # ['admin', 'delete', 'database'] — LAZY (correct)
+
+# FAILURE 5: Not escaping user input
+# BAD:
+search_term = user_input  # Could be "payment.*" or "(((("
+re.search(search_term, content)  # Crashes or unexpected behavior
+# GOOD:
+re.search(re.escape(search_term), content)
+```
+
+---
+
+## 7. WEBHOOK RECEIVERS (FastAPI)
+
+```python
+"""
+src/novatools/webhooks/server.py
+
+Lightweight webhook receiver for DevOps automation.
+Receives events from: Bitbucket, PagerDuty, ArgoCD, AlertManager, GitHub Actions.
+
+FastAPI chosen over Flask because:
+- Async native (can handle concurrent webhooks)
+- Type validation with Pydantic (request bodies validated automatically)
+- Auto-generated API docs (/docs) — team can see all endpoints
+- Production-proven at our scale
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+from datetime import datetime, UTC
+from typing import Any
+
+import structlog
+from fastapi import FastAPI, Header, HTTPException, Request, BackgroundTasks
+from pydantic import BaseModel, Field
+
+log = structlog.get_logger()
+
+app = FastAPI(
+    title="NovaMart Webhook Handler",
+    version="1.0.0",
+    docs_url="/docs",       # Swagger UI
+    redoc_url=None,         # Disable redoc
+)
+
+
+# ═══════════════════════════════════════════════════════════
+# HEALTH ENDPOINTS (required for K8s probes)
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/healthz")
+async def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+@app.get("/readyz")
+async def readyz() -> dict[str, str]:
+    # Could check downstream dependencies here
+    return {"status": "ready"}
+
+
+# ═══════════════════════════════════════════════════════════
+# WEBHOOK SIGNATURE VERIFICATION
+# ═══════════════════════════════════════════════════════════
+
+def verify_signature(
+    payload: bytes,
+    signature: str,
+    secret: str,
+    algorithm: str = "sha256",
+) -> bool:
+    """
+    Verify HMAC signature from webhook provider.
+    CRITICAL: Without this, anyone can trigger your automation.
+    """
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        payload,
+        getattr(hashlib, algorithm),
+    ).hexdigest()
+
+    # Use compare_digest to prevent timing attacks
+    return hmac.compare_digest(expected, signature)
+
+
+# ═══════════════════════════════════════════════════════════
+# BITBUCKET WEBHOOK — PR merged → trigger CI
+# ═══════════════════════════════════════════════════════════
+
+class BitbucketPRPayload(BaseModel):
+    """Bitbucket PR webhook payload (simplified)."""
+    class PullRequest(BaseModel):
+        id: int
+        title: str
+        state: str
+        source: dict[str, Any]
+        destination: dict[str, Any]
+        author: dict[str, Any]
+
+    class Repository(BaseModel):
+        full_name: str
+        name: str
+
+    pullrequest: PullRequest
+    repository: Repository
+
+
+@app.post("/webhooks/bitbucket/pr")
+async def bitbucket_pr(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_event_key: str = Header(...),  # pullrequest:fulfilled, pullrequest:created, etc.
+    x_hub_signature: str = Header(None),
+) -> dict[str, str]:
+    """Handle Bitbucket PR events."""
+    body = await request.body()
+
+    # Verify signature
+    secret = os.environ.get("BITBUCKET_WEBHOOK_SECRET", "")
+    if secret and x_hub_signature:
+        sig = x_hub_signature.replace("sha256=", "")
+        if not verify_signature(body, sig, secret):
+            log.warning("invalid_webhook_signature", source="bitbucket")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+    payload = BitbucketPRPayload.model_validate_json(body)
+
+    log.info(
+        "bitbucket_webhook_received",
+        event=x_event_key,
+        repo=payload.repository.full_name,
+        pr_id=payload.pullrequest.id,
+        pr_title=payload.pullrequest.title,
+    )
+
+    # Handle different events
+    if x_event_key == "pullrequest:fulfilled":  # PR merged
+        # Process in background — return 200 immediately
+        # Webhook providers timeout after ~10s, so never do heavy work synchronously
+        background_tasks.add_task(
+            handle_pr_merged,
+            repo=payload.repository.full_name,
+            pr_id=payload.pullrequest.id,
+            branch=payload.pullrequest.destination.get("branch", {}).get("name", "main"),
+        )
+
+    return {"status": "accepted", "event": x_event_key}
+
+
+async def handle_pr_merged(repo: str, pr_id: int, branch: str) -> None:
+    """Background task: Handle PR merge → Notify → Track."""
+    log.info("processing_pr_merge", repo=repo, pr_id=pr_id, branch=branch)
+
+    # 1. Send Slack notification
+    from novatools.clients.slack import SlackClient
+    slack = SlackClient()
+    await slack_notify_pr_merged(slack, repo, pr_id, branch)
+
+    # 2. Update deployment tracker
+    # 3. Trigger any post-merge automation
+
+
+# ═══════════════════════════════════════════════════════════
+# ALERTMANAGER WEBHOOK — Alert fires → auto-remediation
+# ═══════════════════════════════════════════════════════════
+
+class AlertManagerPayload(BaseModel):
+    """AlertManager webhook payload."""
+    class Alert(BaseModel):
+        status: str  # "firing" or "resolved"
+        labels: dict[str, str]
+        annotations: dict[str, str]
+        startsAt: str
+        endsAt: str
+        generatorURL: str = ""
+        fingerprint: str = ""
+
+    version: str = "4"
+    status: str  # "firing" or "resolved"
+    receiver: str
+    alerts: list[Alert]
+    groupLabels: dict[str, str] = {}
+    commonLabels: dict[str, str] = {}
+    externalURL: str = ""
+
+
+@app.post("/webhooks/alertmanager")
+async def alertmanager(
+    payload: AlertManagerPayload,
+    background_tasks: BackgroundTasks,
+) -> dict[str, str]:
+    """
+    Handle AlertManager webhooks.
+    Auto-remediation: scale up on high CPU, restart on crash loop, etc.
+    """
+    for alert in payload.alerts:
+        log.info(
+            "alert_received",
+            alertname=alert.labels.get("alertname"),
+            severity=alert.labels.get("severity"),
+            namespace=alert.labels.get("namespace"),
+            status=alert.status,
+        )
+
+        if alert.status == "firing":
+            alertname = alert.labels.get("alertname", "")
+
+            # Auto-remediation routing
+            if alertname == "HighCPUUsage":
+                background_tasks.add_task(
+                    remediate_high_cpu,
+                    namespace=alert.labels.get("namespace", ""),
+                    deployment=alert.labels.get("deployment", ""),
+                )
+            elif alertname == "PodCrashLooping":
+                background_tasks.add_task(
+                    remediate_crash_loop,
+                    namespace=alert.labels.get("namespace", ""),
+                    pod=alert.labels.get("pod", ""),
+                )
+            elif alertname == "DiskUsageHigh":
+                background_tasks.add_task(
+                    remediate_disk_usage,
+                    node=alert.labels.get("node", ""),
+                    threshold=float(alert.annotations.get("current_value", "0")),
+                )
+
+    return {"status": "accepted", "alerts_processed": len(payload.alerts)}
+
+
+async def remediate_high_cpu(namespace: str, deployment: str) -> None:
+    """Auto-scale deployment on high CPU. Conservative — max 2x current."""
+    k = Kubectl(namespace=namespace)
+
+    # Get current replicas
+    result = k.get_json("deployment", deployment)
+    current_replicas = result["spec"]["replicas"]
+    max_replicas = min(current_replicas * 2, 20)  # Safety cap
+
+    # Check if HPA exists (don't fight the HPA)
+    hpa_result = k.get("hpa", label_selector=f"app={deployment}")
+    if hpa_result.success and hpa_result.stdout.strip() != "No resources found":
+        log.info("hpa_exists_skipping_manual_scale", deployment=deployment)
+        return
+
+    log.info("auto_scaling", deployment=deployment,
+             from_replicas=current_replicas, to_replicas=max_replicas)
+
+    k.scale("deployment", deployment, max_replicas)
+
+    # Notify — humans should know automation acted
+    # slack.send(f"⚡ Auto-scaled {deployment} from {current_replicas} → {max_replicas}")
+
+
+async def remediate_crash_loop(namespace: str, pod: str) -> None:
+    """Collect diagnostics for crash-looping pod. Don't auto-restart (K8s does that)."""
+    k = Kubectl(namespace=namespace)
+
+    # Collect diagnostics
+    describe = k._run(["describe", "pod", pod])
+    previous_logs = k.logs(pod, previous=True, tail=200)
+    events = k._run(["get", "events", "--field-selector", f"involvedObject.name={pod}",
+                      "--sort-by=.lastTimestamp"])
+
+    log.info("crash_loop_diagnostics_collected", pod=pod, namespace=namespace)
+    # Send to Slack incident channel with diagnostics attached
+
+
+async def remediate_disk_usage(node: str, threshold: float) -> None:
+    """Clean up disk on node with high usage."""
+    log.info("disk_remediation", node=node, current_usage_pct=threshold)
+    # In production: kubectl debug node/<node> -- crictl rmi --prune
+    # Or trigger Ansible playbook for disk cleanup
+
+
+# ═══════════════════════════════════════════════════════════
+# PAGERDUTY WEBHOOK — Incident events
+# ═══════════════════════════════════════════════════════════
+
+class PagerDutyWebhook(BaseModel):
+    class Event(BaseModel):
+        event_type: str  # "incident.triggered", "incident.acknowledged", etc.
+        data: dict[str, Any]
+
+    event: Event
+
+
+@app.post("/webhooks/pagerduty")
+async def pagerduty(
+    payload: PagerDutyWebhook,
+    background_tasks: BackgroundTasks,
+    x_pagerduty_signature: str = Header(None),
+) -> dict[str, str]:
+    """
+    Handle PagerDuty incident lifecycle events.
+    triggered → create Slack channel + Jira
+    acknowledged → update Slack channel topic
+    resolved → post summary to Slack
+    """
+    event_type = payload.event.event_type
+    incident_data = payload.event.data
+
+    log.info("pagerduty_event", type=event_type,
+             incident_id=incident_data.get("id"))
+
+    if event_type == "incident.triggered":
+        background_tasks.add_task(
+            create_incident_channel,
+            incident=incident_data,
+        )
+
+    return {"status": "accepted"}
+
+
+async def create_incident_channel(incident: dict[str, Any]) -> None:
+    """Auto-create Slack channel and Jira ticket for new incidents."""
+    incident_id = incident.get("id", "unknown")
+    title = incident.get("title", "Unknown incident")
+
+    log.info("creating_incident_channel",
+             incident_id=incident_id, title=title)
+
+    # 1. Create Slack channel: #inc-20240115-payment-timeout
+    # 2. Post initial context (who's on-call, runbook links, dashboards)
+    # 3. Create Jira ticket
+    # 4. Link Slack channel ↔ Jira ticket ↔ PagerDuty incident
+
+
+# ═══════════════════════════════════════════════════════════
+# ARGOCD WEBHOOK — Deployment tracking
+# ═══════════════════════════════════════════════════════════
+
+class ArgoCDNotification(BaseModel):
+    app_name: str = Field(alias="app")
+    status: str
+    message: str = ""
+    revision: str = ""
+
+
+@app.post("/webhooks/argocd")
+async def argocd_notification(
+    payload: ArgoCDNotification,
+    background_tasks: BackgroundTasks,
+) -> dict[str, str]:
+    """Track ArgoCD sync events for DORA metrics."""
+    log.info("argocd_event",
+             app=payload.app_name,
+             status=payload.status,
+             revision=payload.revision)
+
+    # Track deployment frequency, lead time, failure rate
+    # Store in DB or push as Prometheus metric
+
+    return {"status": "accepted"}
+
+
+# ═══════════════════════════════════════════════════════════
+# RUNNING THE SERVER
+# ═══════════════════════════════════════════════════════════
+
+# Development:
+#   uvicorn novatools.webhooks.server:app --reload --port 8080
+#
+# Production (in K8s):
+#   CMD ["uvicorn", "novatools.webhooks.server:app",
+#        "--host", "0.0.0.0", "--port", "8080",
+#        "--workers", "4",                  # Multiple worker processes
+#        "--access-log",                    # Access logging
+#        "--timeout-keep-alive", "65"]      # > ALB idle timeout (60s)
+#
+# Dockerfile:
+#   FROM python:3.12-slim
+#   COPY --from=builder /app /app
+#   USER nonroot
+#   EXPOSE 8080
+#   HEALTHCHECK CMD curl -f http://localhost:8080/healthz || exit 1
+#   CMD ["uvicorn", "novatools.webhooks.server:app", "--host", "0.0.0.0", "--port", "8080"]
+```
+
+**Webhook failure modes:**
+```python
+# FAILURE 1: No signature verification
+# Anyone on the internet can POST to your webhook and trigger automation.
+# Imagine: attacker POSTs fake AlertManager payload → auto-scales to 20 replicas
+# ALWAYS verify HMAC signatures.
+
+# FAILURE 2: Synchronous processing
+# Webhook providers timeout after ~10-30 seconds.
+# If your handler takes 60s (e.g., waiting for deployment), the provider retries.
+# Now you get DUPLICATE events. Deploy happens twice.
+# FIX: Return 200 immediately, process in background_tasks
+
+# FAILURE 3: No idempotency
+# Webhook providers retry on timeout/5xx. You WILL get duplicate events.
+# FIX: Use fingerprint/dedup_key from payload. Store processed IDs in Redis.
+# Check before processing:
+#   if redis.setnx(f"webhook:{fingerprint}", "1", ex=3600):
+#       process()
+#   else:
+#       log.info("duplicate_webhook_skipped", fingerprint=fingerprint)
+
+# FAILURE 4: No rate limiting
+# Noisy alert → AlertManager fires 100 webhooks/second → overwhelms your handler
+# FIX: Use fastapi-limiter or token bucket per source
+
+# FAILURE 5: Background task failure is silent
+# background_tasks exceptions are logged but don't return to caller
+# FIX: Wrap background tasks with error handling + alerting
+async def safe_background(func, **kwargs):
+    try:
+        await func(**kwargs)
+    except Exception:
+        log.exception("background_task_failed", func=func.__name__)
+        # Send to Slack/PD
+```
+
+---
+
+## 8. AWS LAMBDA HANDLERS
+
+```python
+"""
+src/novatools/lambdas/secret_rotation.py
+
+AWS Lambda patterns for DevOps automation.
+Common use cases: secret rotation, scheduled audits, event-driven responses,
+CloudWatch alarm auto-remediation, custom CloudFormation resources.
+"""
+from __future__ import annotations
+
+import json
+import os
+from typing import Any
+
+import boto3
+import structlog
+
+log = structlog.get_logger()
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 1: Lambda handler structure
+# ═══════════════════════════════════════════════════════════
+
+# Initialize clients OUTSIDE handler (reused across invocations — warm start)
+# Lambda keeps the execution environment alive for ~15-45 minutes
+ec2_client = boto3.client("ec2", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+sns_client = boto3.client("sns", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+
+# Environment variables set via Terraform/CloudFormation
+SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "production")
+
+
+def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """
+    Lambda entry point.
+
+    Args:
+        event: Trigger-specific payload (CloudWatch Event, S3, SNS, API Gateway, etc.)
+        context: Lambda runtime info (function_name, memory_limit_in_mb,
+                 get_remaining_time_in_millis(), log_group_name, aws_request_id)
+    """
+    # Always log the event for debugging (but redact secrets)
+    log.info("lambda_invoked",
+             function=context.function_name,
+             request_id=context.aws_request_id,
+             remaining_ms=context.get_remaining_time_in_millis(),
+             event_source=event.get("source", "unknown"))
+
+    try:
+        result = process_event(event)
+        log.info("lambda_completed", result=result)
+        return {
+            "statusCode": 200,
+            "body": json.dumps(result),
+        }
+    except Exception as e:
+        log.exception("lambda_failed")
+        # Don't re-raise for async invocations (goes to DLQ)
+        # DO re-raise for synchronous invocations (caller gets error)
+        raise
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 2: CloudWatch Event / EventBridge handler
+# ═══════════════════════════════════════════════════════════
+
+def handle_security_group_change(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """
+    Triggered by EventBridge rule on EC2 SG changes.
+    Auto-reverts unauthorized security group modifications.
+    
+    EventBridge rule:
+    {
+      "source": ["aws.ec2"],
+      "detail-type": ["AWS API Call via CloudTrail"],
+      "detail": {
+        "eventName": ["AuthorizeSecurityGroupIngress", "AuthorizeSecurityGroupEgress"]
+      }
+    }
+    """
+    detail = event.get("detail", {})
+    sg_id = detail.get("requestParameters", {}).get("groupId", "")
+    user = detail.get("userIdentity", {}).get("arn", "unknown")
+    event_name = detail.get("eventName", "")
+
+    log.info("sg_change_detected",
+             sg_id=sg_id, user=user, action=event_name)
+
+    # Check if the SG is in our "protected" list
+    protected_sgs = os.environ.get("PROTECTED_SGS", "").split(",")
+    if sg_id not in protected_sgs:
+        log.info("sg_not_protected_skipping", sg_id=sg_id)
+        return {"action": "skipped", "reason": "not protected"}
+
+    # Check for 0.0.0.0/0 rules
+    sg = ec2_client.describe_security_groups(GroupIds=[sg_id])["SecurityGroups"][0]
+    violations = []
+
+    for rule in sg.get("IpPermissions", []):
+        for ip_range in rule.get("IpRanges", []):
+            if ip_range.get("CidrIp") == "0.0.0.0/0":
+                violations.append({
+                    "from_port": rule.get("FromPort"),
+                    "to_port": rule.get("ToPort"),
+                    "protocol": rule.get("IpProtocol"),
+                })
+
+    if violations:
+        log.warning("unauthorized_sg_rule_detected",
+                    sg_id=sg_id, violations=violations, user=user)
+
+        # Revoke the violating rules
+        for rule in sg.get("IpPermissions", []):
+            for ip_range in rule.get("IpRanges", []):
+                if ip_range.get("CidrIp") == "0.0.0.0/0":
+                    ec2_client.revoke_security_group_ingress(
+                        GroupId=sg_id,
+                        IpPermissions=[rule],
+                    )
+                    log.info("revoked_open_rule", sg_id=sg_id, rule=str(rule))
+
+        # Notify
+        sns_client.publish(
+            TopicArn=SNS_TOPIC_ARN,
+            Subject=f"🚨 Security Group {sg_id} — unauthorized rule auto-reverted",
+            Message=json.dumps({
+                "sg_id": sg_id,
+                "user": user,
+                "violations": violations,
+                "action": "auto-reverted",
+            }, indent=2),
+        )
+
+        return {"action": "reverted", "violations": len(violations)}
+
+    return {"action": "allowed", "violations": 0}
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 3: Scheduled Lambda (EventBridge cron)
+# ═══════════════════════════════════════════════════════════
+
+def handle_cost_anomaly_check(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """
+    Daily cost check — runs via EventBridge schedule.
+    rule: rate(1 day) or cron(0 9 * * ? *)  # 9 AM UTC daily
+
+    Checks yesterday's spend against 7-day average.
+    Alerts if >20% above average.
+    """
+    import datetime
+
+    ce_client = boto3.client("ce", region_name="us-east-1")  # CE is global, use us-east-1
+
+    today = datetime.date.today()
+    yesterday = today - datetime.timedelta(days=1)
+    week_ago = today - datetime.timedelta(days=8)
+
+    # Get yesterday's cost
+    yesterday_response = ce_client.get_cost_and_usage(
+        TimePeriod={
+            "Start": yesterday.isoformat(),
+            "End": today.isoformat(),
+        },
+        Granularity="DAILY",
+        Metrics=["UnblendedCost"],
+    )
+    yesterday_cost = float(
+        yesterday_response["ResultsByTime"][0]["Total"]["UnblendedCost"]["Amount"]
+    )
+
+    # Get 7-day average
+    week_response = ce_client.get_cost_and_usage(
+        TimePeriod={
+            "Start": week_ago.isoformat(),
+            "End": yesterday.isoformat(),
+        },
+        Granularity="DAILY",
+        Metrics=["UnblendedCost"],
+    )
+    daily_costs = [
+        float(day["Total"]["UnblendedCost"]["Amount"])
+        for day in week_response["ResultsByTime"]
+    ]
+    avg_cost = sum(daily_costs) / len(daily_costs) if daily_costs else 0
+
+    deviation_pct = ((yesterday_cost - avg_cost) / avg_cost * 100) if avg_cost > 0 else 0
+
+    log.info("cost_check",
+             yesterday=yesterday_cost,
+             avg_7d=round(avg_cost, 2),
+             deviation_pct=round(deviation_pct, 1))
+
+    threshold = float(os.environ.get("COST_DEVIATION_THRESHOLD", "20"))
+    if deviation_pct > threshold:
+        # Get top spending services for investigation context
+        service_response = ce_client.get_cost_and_usage(
+            TimePeriod={
+                "Start": yesterday.isoformat(),
+                "End": today.isoformat(),
+            },
+            Granularity="DAILY",
+            Metrics=["UnblendedCost"],
+            GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+        )
+        top_services = sorted(
+            service_response["ResultsByTime"][0]["Groups"],
+            key=lambda g: float(g["Metrics"]["UnblendedCost"]["Amount"]),
+            reverse=True,
+        )[:5]
+
+        sns_client.publish(
+            TopicArn=SNS_TOPIC_ARN,
+            Subject=f"💰 Cost anomaly: ${yesterday_cost:.2f} (+{deviation_pct:.1f}% above avg)",
+            Message=json.dumps({
+                "yesterday_cost": yesterday_cost,
+                "avg_7d_cost": round(avg_cost, 2),
+                "deviation_pct": round(deviation_pct, 1),
+                "top_services": [
+                    {
+                        "service": g["Keys"][0],
+                        "cost": float(g["Metrics"]["UnblendedCost"]["Amount"]),
+                    }
+                    for g in top_services
+                ],
+            }, indent=2),
+        )
+
+    return {
+        "yesterday_cost": yesterday_cost,
+        "avg_7d": round(avg_cost, 2),
+        "deviation_pct": round(deviation_pct, 1),
+        "alerted": deviation_pct > threshold,
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 4: S3 Event trigger
+# ═══════════════════════════════════════════════════════════
+
+def handle_s3_upload(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """
+    Triggered when file uploaded to S3.
+    Use case: Log file uploaded → parse → extract metrics → push to CloudWatch.
+    """
+    s3_client = boto3.client("s3")
+
+    for record in event.get("Records", []):
+        bucket = record["s3"]["bucket"]["name"]
+        key = record["s3"]["object"]["key"]
+        size = record["s3"]["object"].get("size", 0)
+
+        log.info("s3_event", bucket=bucket, key=key, size=size)
+
+        # Download and process
+        # IMPORTANT: Lambda has 512MB /tmp (or 10GB ephemeral storage if configured)
+        # For files > 512MB, stream instead of downloading
+        if size < 100 * 1024 * 1024:  # < 100MB — download to /tmp
+            local_path = f"/tmp/{key.split('/')[-1]}"
+            s3_client.download_file(bucket, key, local_path)
+            # process(local_path)
+        else:
+            # Stream with get_object()
+            response = s3_client.get_object(Bucket=bucket, Key=key)
+            # Process body as stream: response["Body"].iter_lines()
+            pass
+
+    return {"processed": len(event.get("Records", []))}
+```
+
+**Lambda failure modes:**
+```python
+# FAILURE 1: Cold start timeout
+# Python Lambda cold starts: ~300-800ms (with boto3 imports)
+# If Lambda timeout = 3s and cold start takes 1s, only 2s for actual work
+# FIX: Set timeout appropriately (15-60s for automation lambdas)
+# Use provisioned concurrency for latency-sensitive
+
+# FAILURE 2: Clients initialized inside handler
+# BAD:
+def handler(event, context):
+    client = boto3.client("ec2")  # Created on EVERY invocation
+# GOOD: Initialize outside handler (reused on warm starts)
+client = boto3.client("ec2")
+def handler(event, context):
+    client.describe_instances()
+
+# FAILURE 3: /tmp disk exhaustion
+# Lambda reuses /tmp across warm invocations
+# If you download files to /tmp and don't clean up, disk fills
+# FIX: Clean up /tmp at start of handler, or use unique filenames
+
+# FAILURE 4: Unhandled exceptions in async invocations
+# Async Lambda (SNS, S3 triggers) retries twice on failure
+# If your Lambda throws, same event processes 3 times
+# FIX: Idempotent handlers. Or: configure DLQ for failed events.
+
+# FAILURE 5: Lambda IAM role too broad
+# Lambda gets `*` permissions "because it's easier"
+# Attacker exploits SSRF → uses Lambda role to access everything
+# FIX: Least privilege. One Lambda = one purpose = one minimal role.
+
+# FAILURE 6: Missing VPC config for private resources
+# Lambda needs VPC config to access RDS/ElastiCache in private subnets
+# But VPC Lambda = ENI creation = 10-30s cold start penalty
+# FIX: Use VPC only when needed. Use RDS Proxy (VPC Lambda → RDS Proxy → RDS)
+```
+
+---
+
+## 9. DATABASE OPERATIONS (psycopg2, redis-py)
+
+```python
+"""
+src/novatools/clients/database.py
+
+Database operations a DevOps engineer needs:
+- Health checks, connection pool monitoring
+- Query execution for operational tasks
+- Backup verification, replication lag checks
+"""
+from __future__ import annotations
+
+import time
+from contextlib import contextmanager
+from typing import Any, Generator
+
+import structlog
+
+log = structlog.get_logger()
+
+
+# ═══════════════════════════════════════════════════════════
+# POSTGRESQL (psycopg2)
+# ═══════════════════════════════════════════════════════════
+
+import psycopg2
+import psycopg2.pool
+import psycopg2.extras
+
+
+class PostgresClient:
+    """Production PostgreSQL client with connection pooling."""
+
+    def __init__(
+        self,
+        host: str,
+        port: int = 5432,
+        dbname: str = "postgres",
+        user: str = "postgres",
+        password: str = "",
+        min_connections: int = 2,
+        max_connections: int = 10,
+        connect_timeout: int = 5,
+        statement_timeout_ms: int = 30000,
+    ) -> None:
+        self._pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=min_connections,
+            maxconn=max_connections,
+            host=host,
+            port=port,
+            dbname=dbname,
+            user=user,
+            password=password,
+            connect_timeout=connect_timeout,
+            options=f"-c statement_timeout={statement_timeout_ms}",
+            # sslmode='require' in production!
+            sslmode="require",
+        )
+        log.info("pg_pool_created", host=host, dbname=dbname,
+                 min=min_connections, max=max_connections)
+
+    @contextmanager
+    def connection(self) -> Generator[Any, None, None]:
+        """Get connection from pool with automatic return."""
+        conn = self._pool.getconn()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._pool.putconn(conn)
+
+    @contextmanager
+    def cursor(self, cursor_factory=None) -> Generator[Any, None, None]:
+        """Get a cursor with automatic connection management."""
+        with self.connection() as conn:
+            cur = conn.cursor(cursor_factory=cursor_factory or psycopg2.extras.RealDictCursor)
+            try:
+                yield cur
+            finally:
+                cur.close()
+
+    def execute(self, query: str, params: tuple = ()) -> list[dict[str, Any]]:
+        """Execute query and return results as list of dicts."""
+        with self.cursor() as cur:
+            cur.execute(query, params)
+            if cur.description:  # Has results
+                return cur.fetchall()
+            return []
+
+    # ─── DevOps operational queries ────────────────────────
+
+    def health_check(self) -> dict[str, Any]:
+        """Full database health check."""
+        with self.cursor() as cur:
+            # Basic connectivity + version
+            cur.execute("SELECT version(), now() as server_time, pg_is_in_recovery() as is_replica")
+            info = cur.fetchone()
+
+            # Connection stats
+            cur.execute("""
+                SELECT
+                    count(*) as total_connections,
+                    count(*) FILTER (WHERE state = 'active') as active,
+                    count(*) FILTER (WHERE state = 'idle') as idle,
+                    count(*) FILTER (WHERE state = 'idle in transaction') as idle_in_transaction,
+                    count(*) FILTER (WHERE wait_event_type = 'Lock') as waiting_on_lock,
+                    max(extract(epoch FROM now() - query_start))
+                        FILTER (WHERE state = 'active') as longest_query_seconds
+                FROM pg_stat_activity
+                WHERE pid != pg_backend_pid()
+            """)
+            conn_stats = cur.fetchone()
+
+            # Database size
+            cur.execute("""
+                SELECT pg_database_size(current_database()) as db_size_bytes,
+                       pg_size_pretty(pg_database_size(current_database())) as db_size_pretty
+            """)
+            size = cur.fetchone()
+
+            # Replication lag (if replica)
+            replication_lag = None
+            if info["is_replica"]:
+                cur.execute("""
+                    SELECT extract(epoch FROM now() - pg_last_xact_replay_timestamp())
+                    as lag_seconds
+                """)
+                lag_row = cur.fetchone()
+                replication_lag = lag_row["lag_seconds"] if lag_row else None
+
+            return {
+                "status": "healthy",
+                "version": info["version"],
+                "server_time": str(info["server_time"]),
+                "is_replica": info["is_replica"],
+                "replication_lag_seconds": replication_lag,
+                "connections": dict(conn_stats),
+                "database_size": dict(size),
+            }
+
+    def long_running_queries(self, min_seconds: int = 60) -> list[dict]:
+        """Find queries running longer than threshold."""
+        return self.execute("""
+            SELECT
+                pid,
+                now() - query_start as duration,
+                state,
+                query,
+                usename as user,
+                application_name as app,
+                client_addr
+            FROM pg_stat_activity
+            WHERE state = 'active'
+              AND query_start < now() - interval '%s seconds'
+              AND pid != pg_backend_pid()
+            ORDER BY query_start ASC
+        """, (min_seconds,))
+
+    def table_bloat(self, min_bloat_mb: int = 100) -> list[dict]:
+        """Estimate table bloat (dead tuples not yet vacuumed)."""
+        return self.execute("""
+            SELECT
+                schemaname || '.' || relname as table,
+                n_live_tup as live_tuples,
+                n_dead_tup as dead_tuples,
+                CASE WHEN n_live_tup > 0
+                     THEN round(100.0 * n_dead_tup / n_live_tup, 1)
+                     ELSE 0
+                END as dead_pct,
+                pg_size_pretty(pg_total_relation_size(relid)) as total_size,
+                last_autovacuum,
+                last_autoanalyze
+            FROM pg_stat_user_tables
+            WHERE n_dead_tup > 10000
+            ORDER BY n_dead_tup DESC
+            LIMIT 20
+        """)
+
+    def lock_contention(self) -> list[dict]:
+        """Find blocked and blocking queries."""
+        return self.execute("""
+            SELECT
+                blocked.pid as blocked_pid,
+                blocked.query as blocked_query,
+                blocked.usename as blocked_user,
+                now() - blocked.query_start as blocked_duration,
+                blocking.pid as blocking_pid,
+                blocking.query as blocking_query,
+                blocking.usename as blocking_user
+            FROM pg_stat_activity blocked
+            JOIN pg_locks bl ON bl.pid = blocked.pid
+            JOIN pg_locks kl ON kl.locktype = bl.locktype
+                AND kl.database IS NOT DISTINCT FROM bl.database
+                AND kl.relation IS NOT DISTINCT FROM bl.relation
+                AND kl.page IS NOT DISTINCT FROM bl.page
+                AND kl.tuple IS NOT DISTINCT FROM bl.tuple
+                AND kl.pid != bl.pid
+            JOIN pg_stat_activity blocking ON blocking.pid = kl.pid
+            WHERE NOT bl.granted
+            ORDER BY blocked.query_start
+        """)
+
+    def unused_indexes(self, min_size_mb: int = 10) -> list[dict]:
+        """Find indexes that are never (or rarely) used — candidates for removal."""
+        return self.execute("""
+            SELECT
+                schemaname || '.' || relname as table,
+                indexrelname as index,
+                idx_scan as scans,
+                pg_size_pretty(pg_relation_size(indexrelid)) as size,
+                pg_relation_size(indexrelid) as size_bytes
+            FROM pg_stat_user_indexes
+            WHERE idx_scan < 50
+              AND pg_relation_size(indexrelid) > %s * 1024 * 1024
+            ORDER BY pg_relation_size(indexrelid) DESC
+        """, (min_size_mb,))
+
+    def terminate_query(self, pid: int) -> bool:
+        """Cancel or terminate a backend. Use with caution."""
+        result = self.execute("SELECT pg_terminate_backend(%s)", (pid,))
+        log.warning("terminated_backend", pid=pid)
+        return result[0]["pg_terminate_backend"] if result else False
+
+    def close(self) -> None:
+        self._pool.closeall()
+        log.info("pg_pool_closed")
+
+
+# ═══════════════════════════════════════════════════════════
+# REDIS (redis-py)
+# ═══════════════════════════════════════════════════════════
+
+import redis
+
+
+class RedisClient:
+    """Production Redis client with monitoring."""
+
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 6379,
+        db: int = 0,
+        password: str | None = None,
+        ssl: bool = True,
+        socket_timeout: float = 5.0,
+        socket_connect_timeout: float = 5.0,
+        max_connections: int = 50,
+        decode_responses: bool = True,
+    ) -> None:
+        self._pool = redis.ConnectionPool(
+            host=host,
+            port=port,
+            db=db,
+            password=password,
+            ssl=ssl,
+            socket_timeout=socket_timeout,
+            socket_connect_timeout=socket_connect_timeout,
+            max_connections=max_connections,
+            decode_responses=decode_responses,
+            retry_on_timeout=True,
+        )
+        self._client = redis.Redis(connection_pool=self._pool)
+        log.info("redis_client_created", host=host, port=port)
+
+    @property
+    def client(self) -> redis.Redis:
+        return self._client
+
+    def health_check(self) -> dict[str, Any]:
+        """Redis health check with key metrics."""
+        info = self._client.info()
+
+        return {
+            "status": "healthy" if self._client.ping() else "unhealthy",
+            "version": info.get("redis_version"),
+            "role": info.get("role"),  # master or slave
+            "connected_clients": info.get("connected_clients"),
+            "used_memory_human": info.get("used_memory_human"),
+            "used_memory_peak_human": info.get("used_memory_peak_human"),
+            "maxmemory_human": info.get("maxmemory_human"),
+            "maxmemory_policy": info.get("maxmemory_policy"),
+            "memory_usage_pct": round(
+                info.get("used_memory", 0) / max(info.get("maxmemory", 1), 1) * 100, 1
+            ) if info.get("maxmemory", 0) > 0 else "no_limit",
+            "keyspace_hits": info.get("keyspace_hits"),
+            "keyspace_misses": info.get("keyspace_misses"),
+            "hit_rate_pct": round(
+                info.get("keyspace_hits", 0) /
+                max(info.get("keyspace_hits", 0) + info.get("keyspace_misses", 0), 1) * 100, 1
+            ),
+            "evicted_keys": info.get("evicted_keys"),
+            "total_connections_received": info.get("total_connections_received"),
+            "rejected_connections": info.get("rejected_connections"),
+            "replication_lag": info.get("master_repl_offset", 0) - info.get("slave_repl_offset", 0)
+                if info.get("role") == "slave" else None,
+        }
+
+    def find_big_keys(self, sample_size: int = 100) -> list[dict]:
+        """
+        Find large keys. Approximation using SCAN + DEBUG OBJECT.
+        WARNING: DEBUG OBJECT can be slow on huge keys. Don't run in peak hours.
+        In production, prefer: redis-cli --bigkeys
+        """
+        big_keys = []
+        cursor = 0
+
+        for _ in range(sample_size):
+            cursor, keys = self._client.scan(cursor=cursor, count=100)
+            for key in keys:
+                try:
+                    key_type = self._client.type(key)
+                    if key_type == "string":
+                        size = self._client.strlen(key)
+                    elif key_type == "list":
+                        size = self._client.llen(key)
+                    elif key_type == "set":
+                        size = self._client.scard(key)
+                    elif key_type == "hash":
+                        size = self._client.hlen(key)
+                    elif key_type == "zset":
+                        size = self._client.zcard(key)
+                    else:
+                        size = 0
+
+                    if size > 1000:  # Threshold depends on type
+                        memory = self._client.memory_usage(key) or 0
+                        big_keys.append({
+                            "key": key,
+                            "type": key_type,
+                            "elements": size,
+                            "memory_bytes": memory,
+                        })
+                except redis.ResponseError:
+                    continue
+
+            if cursor == 0:
+                break
+
+        return sorted(big_keys, key=lambda x: x.get("memory_bytes", 0), reverse=True)
+
+    def key_pattern_stats(self, patterns: list[str] | None = None) -> dict[str, dict]:
+        """
+        Analyze key distribution by pattern.
+        Useful for: cache size estimation, identifying unexpected key growth.
+        """
+        if patterns is None:
+            patterns = [
+                "session:*",
+                "cache:*",
+                "rate_limit:*",
+                "lock:*",
+                "queue:*",
+            ]
+
+        stats = {}
+        for pattern in patterns:
+            count = 0
+            total_memory = 0
+            cursor = 0
+
+            while True:
+                cursor, keys = self._client.scan(cursor=cursor, match=pattern, count=1000)
+                count += len(keys)
+                for key in keys[:50]:  # Sample memory from first 50
+                    mem = self._client.memory_usage(key)
+                    if mem:
+                        total_memory += mem
+
+                if cursor == 0:
+                    break
+
+            avg_memory = total_memory // max(min(count, 50), 1)
+            stats[pattern] = {
+                "count": count,
+                "sampled_total_memory": total_memory,
+                "estimated_total_memory": avg_memory * count,
+                "avg_key_size": avg_memory,
+            }
+
+        return stats
+
+    def slowlog(self, count: int = 20) -> list[dict]:
+        """Get Redis slow log entries."""
+        entries = self._client.slowlog_get(count)
+        return [
+            {
+                "id": e.get("id"),
+                "timestamp": e.get("start_time"),
+                "duration_us": e.get("duration"),
+                "command": " ".join(str(arg) for arg in e.get("command", [])),
+                "client_addr": e.get("client_address", ""),
+            }
+            for e in entries
+        ]
+```
+
+---
+
+## 10. ADVANCED DECORATORS
+
+```python
+"""
+src/novatools/utils/decorators.py
+
+Production decorators used daily in DevOps tooling.
+"""
+from __future__ import annotations
+
+import functools
+import time
+from typing import Any, Callable, TypeVar
+
+import structlog
+
+log = structlog.get_logger()
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+# ═══════════════════════════════════════════════════════════
+# DECORATOR 1: Timing (every function in prod should be measurable)
+# ═══════════════════════════════════════════════════════════
+
+def timed(func: F) -> F:
+    """Log execution time of a function."""
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        start = time.monotonic()
+        try:
+            result = func(*args, **kwargs)
+            duration = time.monotonic() - start
+            log.info("function_completed",
+                     function=func.__name__,
+                     duration_seconds=round(duration, 3))
+            return result
+        except Exception:
+            duration = time.monotonic() - start
+            log.error("function_failed",
+                      function=func.__name__,
+                      duration_seconds=round(duration, 3))
+            raise
+    return wrapper  # type: ignore[return-value]
+
+
+# ═══════════════════════════════════════════════════════════
+# DECORATOR 2: Rate limiting
+# ═══════════════════════════════════════════════════════════
+
+def rate_limit(calls: int, period: float) -> Callable[[F], F]:
+    """
+    Limit function calls to N per period.
+    Used for: API clients, webhook handlers, remediation actions.
+    """
+    timestamps: list[float] = []
+
+    def decorator(func: F) -> F:
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            now = time.monotonic()
+            # Remove old timestamps
+            while timestamps and now - timestamps[0] > period:
+                timestamps.pop(0)
+
+            if len(timestamps) >= calls:
+                wait_time = period - (now - timestamps[0])
+                log.warning("rate_limited",
+                            function=func.__name__,
+                            wait_seconds=round(wait_time, 1))
+                time.sleep(wait_time)
+
+            timestamps.append(time.monotonic())
+            return func(*args, **kwargs)
+        return wrapper  # type: ignore[return-value]
+    return decorator
+
+
+# ═══════════════════════════════════════════════════════════
+# DECORATOR 3: Require confirmation for dangerous operations
+# ═══════════════════════════════════════════════════════════
+
+def require_confirmation(message: str = "Are you sure?") -> Callable[[F], F]:
+    """Prompt for confirmation before executing dangerous operations."""
+    def decorator(func: F) -> F:
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Skip confirmation if --yes or --force flag passed
+            if kwargs.get("yes") or kwargs.get("force") or kwargs.get("auto_approve"):
+                return func(*args, **kwargs)
+
+            # Skip in non-interactive (CI/CD)
+            import sys
+            if not sys.stdin.isatty():
+                log.warning("skipping_confirmation_non_interactive",
+                            function=func.__name__)
+                return func(*args, **kwargs)
+
+            import click
+            click.confirm(f"⚠️  {message}", abort=True)
+            return func(*args, **kwargs)
+        return wrapper  # type: ignore[return-value]
+    return decorator
+
+
+# Usage:
+# @require_confirmation("This will delete all pods in production")
+# def delete_all_pods(namespace: str, yes: bool = False) -> None:
+#     ...
+
+
+# ═══════════════════════════════════════════════════════════
+# DECORATOR 4: Audit trail (who ran what, when)
+# ═══════════════════════════════════════════════════════════
+
+def audit_logged(action: str) -> Callable[[F], F]:
+    """
+    Log an audit trail for every invocation.
+    Used for: destructive operations, secret access, production changes.
+    In production, this writes to a dedicated audit log or audit S3 bucket.
+    """
+    def decorator(func: F) -> F:
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            import getpass
+            import socket
+
+            user = getpass.getuser()
+            hostname = socket.gethostname()
+
+            # Sanitize kwargs — never log secrets
+            safe_kwargs = {
+                k: v for k, v in kwargs.items()
+                if not any(s in k.lower() for s in ("password", "secret", "token", "key"))
+            }
+
+            log.info("audit_trail",
+                     action=action,
+                     function=func.__name__,
+                     user=user,
+                     hostname=hostname,
+                     args_count=len(args),
+                     kwargs=safe_kwargs)
+
+            try:
+                result = func(*args, **kwargs)
+                log.info("audit_trail_completed",
+                         action=action,
+                         function=func.__name__,
+                         user=user,
+                         status="success")
+                return result
+            except Exception as e:
+                log.error("audit_trail_failed",
+                          action=action,
+                          function=func.__name__,
+                          user=user,
+                          status="failed",
+                          error=str(e))
+                raise
+        return wrapper  # type: ignore[return-value]
+    return decorator
+
+
+# Usage:
+# @audit_logged("secret_rotation")
+# @require_confirmation("Rotate production database password?")
+# def rotate_password(service: str, environment: str) -> None:
+#     ...
+
+
+# ═══════════════════════════════════════════════════════════
+# DECORATOR 5: Environment guard
+# ═══════════════════════════════════════════════════════════
+
+def production_guard(func: F) -> F:
+    """
+    Extra safety for production operations.
+    Requires explicit environment flag and adds delay for human review.
+    """
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        environment = kwargs.get("environment", "")
+        if environment == "production":
+            import click
+            click.echo("🔴 PRODUCTION OPERATION", err=True)
+            click.echo("   Executing in 5 seconds... Ctrl+C to abort", err=True)
+            try:
+                time.sleep(5)
+            except KeyboardInterrupt:
+                click.echo("\n❌ Aborted by user", err=True)
+                raise SystemExit(1)
+        return func(*args, **kwargs)
+    return wrapper  # type: ignore[return-value]
+
+
+# ═══════════════════════════════════════════════════════════
+# DECORATOR 6: Cache with TTL (beyond lru_cache)
+# ═══════════════════════════════════════════════════════════
+
+def ttl_cache(ttl_seconds: int = 300, maxsize: int = 256) -> Callable[[F], F]:
+    """
+    Cache with time-to-live expiration.
+    lru_cache caches forever — dangerous for dynamic data like instance lists.
+    """
+    def decorator(func: F) -> F:
+        cache: dict[str, tuple[float, Any]] = {}
+
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Create hashable key from args
+            key = str(args) + str(sorted(kwargs.items()))
+            now = time.monotonic()
+
+            if key in cache:
+                cached_time, cached_value = cache[key]
+                if now - cached_time < ttl_seconds:
+                    return cached_value
+
+            # Evict if too many entries
+            if len(cache) >= maxsize:
+                # Remove oldest entries
+                oldest = sorted(cache.items(), key=lambda x: x[1][0])
+                for old_key, _ in oldest[:maxsize // 4]:
+                    del cache[old_key]
+
+            result = func(*args, **kwargs)
+            cache[key] = (now, result)
+            return result
+
+        # Expose cache control
+        wrapper.cache_clear = lambda: cache.clear()  # type: ignore[attr-defined]
+        wrapper.cache_info = lambda: {  # type: ignore[attr-defined]
+            "size": len(cache),
+            "maxsize": maxsize,
+            "ttl": ttl_seconds,
+        }
+        return wrapper  # type: ignore[return-value]
+    return decorator
+
+# Usage:
+# @ttl_cache(ttl_seconds=60)
+# def get_running_instances(region: str) -> list[dict]:
+#     """Cached for 60s — don't hammer EC2 API."""
+#     return ec2.describe_instances(...)
+```
+
+---
+
+## 11. GIT AUTOMATION (GitPython)
+
+```python
+"""
+src/novatools/clients/git_ops.py
+
+Automated Git operations for CI/CD and GitOps workflows.
+Use cases:
+  - CI: auto-update image tags in GitOps repo after build
+  - Automation: bulk update configs across repos
+  - Compliance: audit commit history for policy violations
+"""
+from __future__ import annotations
+
+import os
+import tempfile
+from pathlib import Path
+from typing import Any
+
+import structlog
+
+log = structlog.get_logger()
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 1: GitPython for local repo operations
+# ═══════════════════════════════════════════════════════════
+
+from git import Repo, GitCommandError
+
+
+class GitOpsUpdater:
+    """
+    Update manifests in a GitOps repository.
+    This is what CI does after a successful build:
+    1. Clone GitOps repo
+    2. Update image tag in the correct overlay
+    3. Commit and push
+    4. ArgoCD detects change and deploys
+    """
+
+    def __init__(
+        self,
+        repo_url: str,
+        branch: str = "main",
+        ssh_key_path: str | None = None,
+        clone_dir: str | None = None,
+    ) -> None:
+        self.repo_url = repo_url
+        self.branch = branch
+        self.ssh_key_path = ssh_key_path
+        self._clone_dir = clone_dir
+        self._repo: Repo | None = None
+
+    @property
+    def repo(self) -> Repo:
+        if self._repo is None:
+            raise RuntimeError("Repository not cloned. Call clone() first.")
+        return self._repo
+
+    def clone(self) -> Path:
+        """Clone the repository."""
+        if self._clone_dir:
+            target = Path(self._clone_dir)
+        else:
+            target = Path(tempfile.mkdtemp(prefix="gitops-"))
+
+        env = {}
+        if self.ssh_key_path:
+            env["GIT_SSH_COMMAND"] = f"ssh -i {self.ssh_key_path} -o StrictHostKeyChecking=no"
+
+        log.info("cloning_repo", url=self.repo_url, branch=self.branch, target=str(target))
+
+        self._repo = Repo.clone_from(
+            self.repo_url,
+            str(target),
+            branch=self.branch,
+            depth=1,       # Shallow clone — we don't need history
+            env=env,
+        )
+        return target
+
+    def update_image_tag(
+        self,
+        service: str,
+        new_tag: str,
+        environment: str = "production",
+    ) -> bool:
+        """
+        Update image tag in Kustomize overlay.
+        Expects structure:
+          environments/<env>/kustomization.yaml
+            images:
+              - name: <service>
+                newTag: <tag>
+        """
+        from ruamel.yaml import YAML
+        ryaml = YAML()
+        ryaml.preserve_quotes = True
+
+        kustomization_path = (
+            Path(self.repo.working_dir) /
+            "environments" / environment / "kustomization.yaml"
+        )
+
+        if not kustomization_path.exists():
+            log.error("kustomization_not_found", path=str(kustomization_path))
+            return False
+
+        with open(kustomization_path) as f:
+            data = ryaml.load(f)
+
+        images = data.get("images", [])
+        updated = False
+        old_tag = None
+
+        for image in images:
+            if image.get("name") == service:
+                old_tag = image.get("newTag", "unknown")
+                image["newTag"] = new_tag
+                updated = True
+                break
+
+        if not updated:
+            # Service not in images list yet — add it
+            images.append({"name": service, "newTag": new_tag})
+            data["images"] = images
+            old_tag = "none"
+            updated = True
+
+        with open(kustomization_path, "w") as f:
+            ryaml.dump(data, f)
+
+        log.info("image_tag_updated",
+                 service=service, old_tag=old_tag, new_tag=new_tag,
+                 environment=environment)
+        return updated
+
+    def commit_and_push(
+        self,
+        message: str,
+        author_name: str = "NovaMart CI",
+        author_email: str = "ci@novamart.com",
+    ) -> str | None:
+        """Commit changes and push. Returns commit SHA or None if nothing to commit."""
+        repo = self.repo
+
+        # Check for changes
+        if not repo.is_dirty(untracked_files=True):
+            log.info("no_changes_to_commit")
+            return None
+
+        # Stage all changes
+        repo.git.add(A=True)
+
+        # Commit
+        repo.config_writer().set_value("user", "name", author_name).release()
+        repo.config_writer().set_value("user", "email", author_email).release()
+
+        commit = repo.index.commit(message)
+        sha = commit.hexsha[:8]
+
+        log.info("committed", sha=sha, message=message)
+
+        # Push
+        env = {}
+        if self.ssh_key_path:
+            env["GIT_SSH_COMMAND"] = f"ssh -i {self.ssh_key_path} -o StrictHostKeyChecking=no"
+
+        try:
+            origin = repo.remotes.origin
+            origin.push(env=env)
+            log.info("pushed", sha=sha, branch=self.branch)
+            return commit.hexsha
+        except GitCommandError as e:
+            log.error("push_failed", error=str(e))
+            raise
+
+    def cleanup(self) -> None:
+        """Remove cloned directory."""
+        import shutil
+        if self._repo and self._repo.working_dir:
+            shutil.rmtree(self._repo.working_dir, ignore_errors=True)
+            log.info("cleanup_complete")
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 2: Bitbucket/GitHub API for PR creation
+# ═══════════════════════════════════════════════════════════
+
+import requests
+
+
+class BitbucketClient:
+    """Bitbucket Cloud API client for automated PR creation."""
+
+    def __init__(
+        self,
+        workspace: str,
+        username: str,
+        app_password: str,
+    ) -> None:
+        self.workspace = workspace
+        self.base_url = f"https://api.bitbucket.org/2.0/repositories/{workspace}"
+        self._session = requests.Session()
+        self._session.auth = (username, app_password)
+        self._session.headers["Content-Type"] = "application/json"
+
+    def create_pull_request(
+        self,
+        repo_slug: str,
+        title: str,
+        source_branch: str,
+        destination_branch: str = "main",
+        description: str = "",
+        reviewers: list[str] | None = None,
+        close_source_branch: bool = True,
+    ) -> dict:
+        """Create a pull request."""
+        payload: dict[str, Any] = {
+            "title": title,
+            "source": {"branch": {"name": source_branch}},
+            "destination": {"branch": {"name": destination_branch}},
+            "description": description,
+            "close_source_branch": close_source_branch,
+        }
+
+        if reviewers:
+            payload["reviewers"] = [{"uuid": r} for r in reviewers]
+
+        response = self._session.post(
+            f"{self.base_url}/{repo_slug}/pullrequests",
+            json=payload,
+            timeout=(5, 30),
+        )
+        response.raise_for_status()
+
+        pr = response.json()
+        log.info("pr_created",
+                 repo=repo_slug,
+                 pr_id=pr["id"],
+                 url=pr["links"]["html"]["href"])
+        return pr
+
+    def add_pr_comment(
+        self,
+        repo_slug: str,
+        pr_id: int,
+        content: str,
+    ) -> dict:
+        """Add comment to a PR (used for CI results, plan output, etc.)."""
+        response = self._session.post(
+            f"{self.base_url}/{repo_slug}/pullrequests/{pr_id}/comments",
+            json={"content": {"raw": content}},
+            timeout=(5, 30),
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+# ═══════════════════════════════════════════════════════════
+# USAGE: CI deploys image via GitOps
+# ═══════════════════════════════════════════════════════════
+
+def ci_update_gitops(
+    service: str,
+    version: str,
+    environment: str,
+    gitops_repo_url: str,
+    ssh_key_path: str,
+) -> str | None:
+    """
+    Called by Jenkins after successful build + scan + sign.
+    Updates GitOps repo → ArgoCD detects → deploys.
+    """
+    updater = GitOpsUpdater(
+        repo_url=gitops_repo_url,
+        branch="main",
+        ssh_key_path=ssh_key_path,
+    )
+
+    try:
+        updater.clone()
+        updater.update_image_tag(service, version, environment)
+
+        commit_sha = updater.commit_and_push(
+            message=f"deploy({environment}): {service}:{version}\n\n"
+                    f"Automated by NovaMart CI\n"
+                    f"Service: {service}\n"
+                    f"Version: {version}\n"
+                    f"Environment: {environment}",
+        )
+
+        return commit_sha
+    finally:
+        updater.cleanup()
+```
+
+---
+
+## 12. DOCKER SDK (docker-py)
+
+```python
+"""
+src/novatools/clients/docker_ops.py
+
+Docker SDK for Python — programmatic container and image management.
+Use cases: local dev tooling, CI image management, cleanup automation.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import docker
+import structlog
+
+log = structlog.get_logger()
+
+
+class DockerManager:
+    """Docker operations for DevOps automation."""
+
+    def __init__(self) -> None:
+        self._client = docker.from_env()
+        log.info("docker_client_initialized",
+                 version=self._client.version().get("Version"))
+
+    # ─── Image operations ──────────────────────────────────
+
+    def build_image(
+        self,
+        path: str,
+        tag: str,
+        dockerfile: str = "Dockerfile",
+        build_args: dict[str, str] | None = None,
+        no_cache: bool = False,
+        target: str | None = None,
+    ) -> str:
+        """Build Docker image with streaming output."""
+        log.info("building_image", tag=tag, path=path, target=target)
+
+        image, build_logs = self._client.images.build(
+            path=path,
+            tag=tag,
+            dockerfile=dockerfile,
+            buildargs=build_args or {},
+            nocache=no_cache,
+            target=target,
+            rm=True,        # Remove intermediate containers
+        )
+
+        for chunk in build_logs:
+            if "stream" in chunk:
+                line = chunk["stream"].strip()
+                if line:
+                    log.debug("build_log", line=line)
+
+        log.info("image_built", tag=tag, image_id=image.short_id)
+        return image.id
+
+    def push_image(self, tag: str, registry_auth: dict | None = None) -> None:
+        """Push image to registry."""
+        log.info("pushing_image", tag=tag)
+
+        for line in self._client.images.push(tag, stream=True, decode=True):
+            if "error" in line:
+                raise RuntimeError(f"Push failed: {line['error']}")
+            if "status" in line:
+                log.debug("push_status", status=line["status"],
+                          progress=line.get("progress", ""))
+
+        log.info("image_pushed", tag=tag)
+
+    def prune_images(
+        self,
+        dangling_only: bool = False,
+        older_than: str = "",
+    ) -> dict[str, Any]:
+        """
+        Clean up unused Docker images.
+        older_than: "24h", "72h", etc.
+        """
+        filters: dict[str, Any] = {}
+        if dangling_only:
+            filters["dangling"] = True
+        if older_than:
+            filters["until"] = older_than
+
+        result = self._client.images.prune(filters=filters)
+
+        deleted = result.get("ImagesDeleted") or []
+        space = result.get("SpaceReclaimed", 0)
+
+        log.info("images_pruned",
+                 deleted_count=len(deleted),
+                 space_reclaimed_mb=round(space / 1024 / 1024, 1))
+
+        return {
+            "deleted_count": len(deleted),
+            "space_reclaimed_bytes": space,
+            "space_reclaimed_mb": round(space / 1024 / 1024, 1),
+        }
+
+    def list_images_by_age(self, repo_filter: str = "") -> list[dict]:
+        """List images sorted by creation date. For cleanup decisions."""
+        from datetime import datetime, UTC
+
+        images = self._client.images.list()
+        result = []
+
+        for img in images:
+            tags = img.tags
+            if repo_filter and not any(repo_filter in t for t in tags):
+                continue
+
+            created = img.attrs.get("Created", "")
+            try:
+                # Docker returns ISO 8601 with nanoseconds
+                created_dt = datetime.fromisoformat(created.split(".")[0].replace("Z", "+00:00"))
+                age_days = (datetime.now(UTC) - created_dt).days
+            except (ValueError, TypeError):
+                age_days = -1
+
+            result.append({
+                "id": img.short_id,
+                "tags": tags,
+                "size_mb": round(img.attrs.get("Size", 0) / 1024 / 1024, 1),
+                "created": created,
+                "age_days": age_days,
+            })
+
+        return sorted(result, key=lambda x: x["age_days"], reverse=True)
+
+    # ─── Container operations ──────────────────────────────
+
+    def run_ephemeral(
+        self,
+        image: str,
+        command: str | list[str],
+        environment: dict[str, str] | None = None,
+        volumes: dict[str, dict] | None = None,
+        network: str | None = None,
+        timeout: int = 300,
+        memory_limit: str = "512m",
+        cpu_limit: float = 1.0,
+    ) -> tuple[int, str]:
+        """
+        Run a one-shot container and return (exit_code, output).
+        Used for: migration scripts, data processing, tool execution.
+        """
+        log.info("running_container", image=image, command=str(command))
+
+        try:
+            container = self._client.containers.run(
+                image=image,
+                command=command,
+                environment=environment or {},
+                volumes=volumes or {},
+                network=network,
+                detach=True,
+                mem_limit=memory_limit,
+                nano_cpus=int(cpu_limit * 1e9),
+                remove=False,  # Don't auto-remove — we need exit code
+            )
+
+            # Wait for completion
+            result = container.wait(timeout=timeout)
+            exit_code = result["StatusCode"]
+            output = container.logs(stdout=True, stderr=True).decode("utf-8")
+
+            log.info("container_completed",
+                     image=image, exit_code=exit_code,
+                     output_length=len(output))
+
+            container.remove()
+            return exit_code, output
+
+        except docker.errors.ContainerError as e:
+            log.error("container_error", image=image, error=str(e))
+            return e.exit_status, e.stderr.decode("utf-8") if e.stderr else str(e)
+
+    def container_stats(self) -> list[dict]:
+        """Get resource usage of all running containers."""
+        containers = self._client.containers.list()
+        stats = []
+
+        for c in containers:
+            raw = c.stats(stream=False)
+
+            # CPU calculation
+            cpu_delta = (
+                raw["cpu_stats"]["cpu_usage"]["total_usage"] -
+                raw["precpu_stats"]["cpu_usage"]["total_usage"]
+            )
+            system_delta = (
+                raw["cpu_stats"]["system_cpu_usage"] -
+                raw["precpu_stats"]["system_cpu_usage"]
+            )
+            num_cpus = raw["cpu_stats"].get("online_cpus",
+                        len(raw["cpu_stats"]["cpu_usage"].get("percpu_usage", [1])))
+            cpu_pct = (cpu_delta / max(system_delta, 1)) * num_cpus * 100.0
+
+            # Memory
+            mem_usage = raw["memory_stats"].get("usage", 0)
+            mem_limit = raw["memory_stats"].get("limit", 1)
+            mem_pct = (mem_usage / mem_limit) * 100.0
+
+            stats.append({
+                "name": c.name,
+                "id": c.short_id,
+                "image": c.image.tags[0] if c.image.tags else c.image.short_id,
+                "cpu_pct": round(cpu_pct, 1),
+                "memory_mb": round(mem_usage / 1024 / 1024, 1),
+                "memory_limit_mb": round(mem_limit / 1024 / 1024, 1),
+                "memory_pct": round(mem_pct, 1),
+            })
+
+        return sorted(stats, key=lambda x: x["cpu_pct"], reverse=True)
+
+    def cleanup_all(self, force: bool = False) -> dict[str, Any]:
+        """Full Docker cleanup — containers, images, volumes, networks."""
+        results = {}
+
+        if force:
+            # Stop all containers
+            for c in self._client.containers.list():
+                c.stop(timeout=10)
+                c.remove()
+            results["containers_removed"] = True
+
+        # Prune everything
+        results["containers"] = self._client.containers.prune()
+        results["images"] = self.prune_images(dangling_only=True)
+        results["volumes"] = self._client.volumes.prune()
+        results["networks"] = self._client.networks.prune()
+
+        return results
+```
+
+---
+
+## 13. DATE/TIME OPERATIONS
+
+```python
+"""
+src/novatools/utils/timeutil.py
+
+Time operations for DevOps: maintenance windows, schedule checks,
+age calculations, timezone conversions.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone, UTC
+from typing import Any
+from zoneinfo import ZoneInfo  # Python 3.9+ (replaces pytz)
+
+
+# ═══════════════════════════════════════════════════════════
+# RULE 1: ALWAYS use timezone-aware datetimes
+# ═══════════════════════════════════════════════════════════
+
+def now_utc() -> datetime:
+    """Current time in UTC. THE standard for all DevOps tooling."""
+    return datetime.now(UTC)
+
+def parse_timestamp(ts: str) -> datetime:
+    """
+    Parse any common timestamp format to timezone-aware datetime.
+    Handles: ISO 8601, AWS format, K8s format, common log formats.
+    """
+    # Try ISO 8601 first (most common)
+    formats = [
+        "%Y-%m-%dT%H:%M:%S%z",           # 2024-01-15T10:30:00+00:00
+        "%Y-%m-%dT%H:%M:%SZ",            # 2024-01-15T10:30:00Z (K8s)
+        "%Y-%m-%dT%H:%M:%S.%f%z",        # 2024-01-15T10:30:00.123456+00:00
+        "%Y-%m-%dT%H:%M:%S.%fZ",         # 2024-01-15T10:30:00.123456Z
+        "%Y-%m-%d %H:%M:%S",             # 2024-01-15 10:30:00 (naive → assume UTC)
+        "%d/%b/%Y:%H:%M:%S %z",          # 15/Jan/2024:10:30:00 +0000 (nginx)
+    ]
+
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(ts, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            return dt
+        except ValueError:
+            continue
+
+    # Last resort: fromisoformat (Python 3.11+ handles more formats)
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt
+    except ValueError:
+        raise ValueError(f"Cannot parse timestamp: {ts}")
+
+
+def human_duration(seconds: float) -> str:
+    """Convert seconds to human-readable duration."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        return f"{seconds / 60:.1f}m"
+    elif seconds < 86400:
+        return f"{seconds / 3600:.1f}h"
+    else:
+        return f"{seconds / 86400:.1f}d"
+
+
+def age_from_timestamp(ts: str | datetime) -> dict[str, Any]:
+    """Calculate age from a timestamp. Used everywhere in DevOps."""
+    if isinstance(ts, str):
+        dt = parse_timestamp(ts)
+    else:
+        dt = ts
+
+    delta = now_utc() - dt
+    return {
+        "age_seconds": int(delta.total_seconds()),
+        "age_human": human_duration(delta.total_seconds()),
+        "age_days": delta.days,
+        "timestamp": dt.isoformat(),
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# MAINTENANCE WINDOWS
+# ═══════════════════════════════════════════════════════════
+
+def is_in_maintenance_window(
+    window_start_hour: int = 2,   # 2 AM UTC
+    window_end_hour: int = 6,     # 6 AM UTC
+    timezone_name: str = "UTC",
+) -> bool:
+    """Check if current time is within maintenance window."""
+    tz = ZoneInfo(timezone_name)
+    now = datetime.now(tz)
+    return window_start_hour <= now.hour < window_end_hour
+
+
+def next_maintenance_window(
+    window_start_hour: int = 2,
+    timezone_name: str = "UTC",
+) -> datetime:
+    """Calculate next maintenance window start."""
+    tz = ZoneInfo(timezone_name)
+    now = datetime.now(tz)
+
+    next_window = now.replace(hour=window_start_hour, minute=0, second=0, microsecond=0)
+    if next_window <= now:
+        next_window += timedelta(days=1)
+
+    return next_window
+
+
+def is_business_hours(
+    timezone_name: str = "America/New_York",
+    start_hour: int = 9,
+    end_hour: int = 17,
+) -> bool:
+    """
+    Check if it's business hours.
+    Used to: suppress noisy alerts, defer non-urgent automation,
+    avoid deploying during peak traffic.
+    """
+    tz = ZoneInfo(timezone_name)
+    now = datetime.now(tz)
+    # Weekday: 0=Monday, 6=Sunday
+    if now.weekday() >= 5:  # Weekend
+        return False
+    return start_hour <= now.hour < end_hour
+
+
+# ═══════════════════════════════════════════════════════════
+# CERTIFICATE / RESOURCE EXPIRY
+# ═══════════════════════════════════════════════════════════
+
+def check_expiry(
+    expiry_time: str | datetime,
+    warn_days: int = 30,
+    critical_days: int = 7,
+) -> dict[str, Any]:
+    """
+    Check if a resource (cert, secret, key) is approaching expiry.
+    Returns severity level and days remaining.
+    """
+    if isinstance(expiry_time, str):
+        expiry_dt = parse_timestamp(expiry_time)
+    else:
+        expiry_dt = expiry_time
+
+    remaining = expiry_dt - now_utc()
+    days_remaining = remaining.days
+
+    if days_remaining < 0:
+        severity = "EXPIRED"
+    elif days_remaining <= critical_days:
+        severity = "CRITICAL"
+    elif days_remaining <= warn_days:
+        severity = "WARNING"
+    else:
+        severity = "OK"
+
+    return {
+        "expiry": expiry_dt.isoformat(),
+        "days_remaining": days_remaining,
+        "severity": severity,
+        "human": human_duration(remaining.total_seconds()) if days_remaining >= 0 else "EXPIRED",
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# SCHEDULING AND INTERVALS
+# ═══════════════════════════════════════════════════════════
+
+def parse_duration(duration_str: str) -> timedelta:
+    """
+    Parse human-friendly duration strings.
+    '5m' → 5 minutes, '2h' → 2 hours, '7d' → 7 days, '1w' → 1 week
+    Matches Prometheus duration format.
+    """
+    import re
+    match = re.match(r"^(\d+)([smhdw])$", duration_str.strip())
+    if not match:
+        raise ValueError(f"Invalid duration: {duration_str}. Use format: 5m, 2h, 7d, 1w")
+
+    value = int(match.group(1))
+    unit = match.group(2)
+
+    units = {
+        "s": timedelta(seconds=value),
+        "m": timedelta(minutes=value),
+        "h": timedelta(hours=value),
+        "d": timedelta(days=value),
+        "w": timedelta(weeks=value),
+    }
+    return units[unit]
+```
+
+---
+
+## 14. CSV/REPORTING (pandas basics for DevOps)
+
+```python
+"""
+pandas for DevOps — just enough for cost reports, capacity planning, 
+and data processing. Not data science. Not ML. Operational reporting.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import structlog
+
+log = structlog.get_logger()
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 1: AWS Cost and Usage Report analysis
+# ═══════════════════════════════════════════════════════════
+
+def analyze_aws_costs(
+    cur_csv_path: Path,
+    group_by: str = "lineItem/ProductCode",
+) -> dict[str, Any]:
+    """
+    Analyze AWS CUR (Cost and Usage Report) CSV.
+    CUR files can be 100MB+ — pandas handles this efficiently.
+    """
+    # Read only needed columns (CUR has 100+ columns)
+    usecols = [
+        "lineItem/UsageStartDate",
+        "lineItem/ProductCode",
+        "lineItem/UsageType",
+        "lineItem/UnblendedCost",
+        "lineItem/UsageAmount",
+        "resourceTags/user:team",
+        "resourceTags/user:environment",
+        "resourceTags/user:service",
+    ]
+
+    df = pd.read_csv(
+        cur_csv_path,
+        usecols=lambda c: c in usecols,  # Only load columns that exist
+        low_memory=False,
+        parse_dates=["lineItem/UsageStartDate"],
+    )
+
+    # Rename for readability
+    df.columns = [c.split("/")[-1] for c in df.columns]
+
+    # Basic aggregation
+    total_cost = df["UnblendedCost"].sum()
+
+    # Cost by service
+    by_service = (
+        df.groupby("ProductCode")["UnblendedCost"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(20)
+    )
+
+    # Cost by team tag
+    by_team = (
+        df.groupby("user:team")["UnblendedCost"]
+        .sum()
+        .sort_values(ascending=False)
+    )
+
+    # Untagged spend (visibility gap)
+    untagged = df[df["user:team"].isna()]["UnblendedCost"].sum()
+    untagged_pct = (untagged / total_cost * 100) if total_cost > 0 else 0
+
+    # Daily trend
+    daily = (
+        df.groupby(df["UsageStartDate"].dt.date)["UnblendedCost"]
+        .sum()
+    )
+
+    return {
+        "total_cost": round(total_cost, 2),
+        "by_service": by_service.to_dict(),
+        "by_team": by_team.to_dict(),
+        "untagged_cost": round(untagged, 2),
+        "untagged_pct": round(untagged_pct, 1),
+        "daily_trend": {str(k): round(v, 2) for k, v in daily.items()},
+        "top_cost_driver": by_service.index[0] if len(by_service) > 0 else "N/A",
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 2: Instance inventory analysis
+# ═══════════════════════════════════════════════════════════
+
+def generate_capacity_report(instances: list[dict]) -> dict[str, Any]:
+    """
+    Analyze EC2 instance fleet for capacity planning.
+    Input: list of dicts from boto3 describe_instances.
+    """
+    df = pd.DataFrame(instances)
+
+    if df.empty:
+        return {"total": 0}
+
+    return {
+        "total_instances": len(df),
+        "by_type": df["type"].value_counts().to_dict(),
+        "by_az": df["az"].value_counts().to_dict() if "az" in df else {},
+        "by_state": df["state"].value_counts().to_dict() if "state" in df else {},
+        "age_stats": {
+            "avg_age_days": round(df["age_days"].mean(), 1) if "age_days" in df else 0,
+            "max_age_days": int(df["age_days"].max()) if "age_days" in df else 0,
+            "over_180_days": int((df["age_days"] > 180).sum()) if "age_days" in df else 0,
+        },
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 3: Export reports in multiple formats
+# ═══════════════════════════════════════════════════════════
+
+def export_report(
+    data: list[dict],
+    output_path: Path,
+    fmt: str = "csv",
+) -> None:
+    """Export structured data to CSV, Excel, or JSON."""
+    df = pd.DataFrame(data)
+
+    if fmt == "csv":
+        df.to_csv(output_path, index=False)
+    elif fmt == "excel":
+        df.to_excel(output_path, index=False, engine="openpyxl")
+    elif fmt == "json":
+        df.to_json(output_path, orient="records", indent=2)
+    else:
+        raise ValueError(f"Unsupported format: {fmt}")
+
+    log.info("report_exported", path=str(output_path), format=fmt, rows=len(df))
+```
+
+---
+
+## 15. PROMETHEUS CLIENT (Custom Metrics)
+
+```python
+"""
+src/novatools/utils/metrics.py
+
+Expose custom Prometheus metrics from Python services.
+Used for: webhook handler metrics, CLI tool duration tracking,
+batch job monitoring, custom business metrics.
+"""
+from __future__ import annotations
+
+from prometheus_client import (
+    Counter,
+    Gauge,
+    Histogram,
+    Info,
+    start_http_server,
+    generate_latest,
+    REGISTRY,
+)
+
+# ═══════════════════════════════════════════════════════════
+# Define metrics at module level (registered once)
+# ═══════════════════════════════════════════════════════════
+
+# Webhook processing
+WEBHOOK_RECEIVED = Counter(
+    "novatools_webhook_received_total",
+    "Total webhooks received",
+    ["source", "event_type"],  # Labels
+)
+
+WEBHOOK_PROCESSING_DURATION = Histogram(
+    "novatools_webhook_processing_duration_seconds",
+    "Webhook processing duration",
+    ["source", "event_type"],
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
+)
+
+WEBHOOK_ERRORS = Counter(
+    "novatools_webhook_errors_total",
+    "Webhook processing errors",
+    ["source", "event_type", "error_type"],
+)
+
+# Tool execution
+TOOL_EXECUTION = Histogram(
+    "novatools_tool_execution_duration_seconds",
+    "CLI tool execution duration",
+    ["tool", "subcommand", "environment"],
+    buckets=[1, 5, 10, 30, 60, 120, 300, 600],
+)
+
+TOOL_ERRORS = Counter(
+    "novatools_tool_errors_total",
+    "CLI tool errors",
+    ["tool", "subcommand", "error_type"],
+)
+
+# Active operations gauge
+ACTIVE_DEPLOYMENTS = Gauge(
+    "novatools_active_deployments",
+    "Currently running deployments",
+    ["environment"],
+)
+
+# Build info
+BUILD_INFO = Info(
+    "novatools_build",
+    "Build information",
+)
+
+
+# ═══════════════════════════════════════════════════════════
+# Usage in webhook handler
+# ═══════════════════════════════════════════════════════════
+
+def handle_webhook_with_metrics(source: str, event_type: str, payload: dict) -> None:
+    """Example of instrumenting a webhook handler."""
+    WEBHOOK_RECEIVED.labels(source=source, event_type=event_type).inc()
+
+    with WEBHOOK_PROCESSING_DURATION.labels(
+        source=source, event_type=event_type
+    ).time():  # Automatically measures duration
+        try:
+            process_webhook(payload)
+        except Exception as e:
+            WEBHOOK_ERRORS.labels(
+                source=source,
+                event_type=event_type,
+                error_type=type(e).__name__,
+            ).inc()
+            raise
+
+
+# ═══════════════════════════════════════════════════════════
+# FastAPI integration
+# ═══════════════════════════════════════════════════════════
+
+from fastapi import Response
+
+# Add to your FastAPI app:
+# @app.get("/metrics")
+# async def metrics():
+#     return Response(
+#         content=generate_latest(REGISTRY),
+#         media_type="text/plain; version=0.0.4; charset=utf-8",
+#     )
+
+# Then add ServiceMonitor in K8s:
+# apiVersion: monitoring.coreos.com/v1
+# kind: ServiceMonitor
+# metadata:
+#   name: novatools-webhook
+# spec:
+#   selector:
+#     matchLabels:
+#       app: novatools-webhook
+#   endpoints:
+#   - port: http
+#     path: /metrics
+#     interval: 30s
+```
+
+---
+
+## 16. MIGRATION SCRIPTS PATTERNS
+
+```python
+"""
+Data migration script patterns — one-off but must be reliable.
+Used for: database migrations, data backfills, configuration migrations,
+service cutover scripts.
+"""
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import structlog
+
+log = structlog.get_logger()
+
+
+@dataclass
+class MigrationState:
+    """
+    Track migration progress — survives script restart.
+    Written to disk/S3 so migration can resume from where it stopped.
+    """
+    total_items: int = 0
+    processed: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    last_processed_id: str = ""
+    failed_items: list[str] = field(default_factory=list)
+    start_time: str = ""
+    checkpoint_time: str = ""
+
+    @property
+    def progress_pct(self) -> float:
+        return (self.processed / max(self.total_items, 1)) * 100
+
+    def save(self, path: Path) -> None:
+        """Persist state to disk."""
+        path.write_text(json.dumps(self.__dict__, indent=2))
+
+    @classmethod
+    def load(cls, path: Path) -> "MigrationState":
+        """Load state from disk (for resume)."""
+        if path.exists():
+            data = json.loads(path.read_text())
+            return cls(**data)
+        return cls()
+
+
+def run_migration_with_checkpointing(
+    items: list[dict],
+    process_fn: Any,
+    state_file: Path,
+    batch_size: int = 100,
+    checkpoint_interval: int = 50,
+    dry_run: bool = False,
+) -> MigrationState:
+    """
+    Generic migration runner with:
+    - Resumability (checkpoint file)
+    - Batch processing
+    - Progress tracking
+    - Failed item collection (for retry)
+    - Dry-run mode
+    """
+    state = MigrationState.load(state_file)
+
+    # Resume support
+    if state.last_processed_id:
+        log.info("resuming_migration",
+                 last_id=state.last_processed_id,
+                 processed=state.processed)
+        # Skip already processed items
+        skip_until = state.last_processed_id
+        items = [
+            i for i in items
+            if i.get("id", "") > skip_until
+        ]
+
+    state.total_items = state.processed + len(items)
+    state.start_time = state.start_time or datetime.now(UTC).isoformat()
+
+    from novatools.utils.timeutil import now_utc
+    from datetime import datetime, UTC
+
+    for i, item in enumerate(items):
+        item_id = item.get("id", str(i))
+
+        try:
+            if dry_run:
+                log.debug("dry_run_skip", item_id=item_id)
+            else:
+                process_fn(item)
+
+            state.succeeded += 1
+        except Exception as e:
+            log.error("migration_item_failed", item_id=item_id, error=str(e))
+            state.failed += 1
+            state.failed_items.append(item_id)
+
+        state.processed += 1
+        state.last_processed_id = item_id
+
+        # Checkpoint periodically
+        if state.processed % checkpoint_interval == 0:
+            state.checkpoint_time = now_utc().isoformat()
+            state.save(state_file)
+            log.info("checkpoint_saved",
+                     progress=f"{state.progress_pct:.1f}%",
+                     processed=state.processed,
+                     failed=state.failed)
+
+        # Rate limiting — don't overwhelm downstream
+        if i > 0 and i % batch_size == 0:
+            time.sleep(0.5)
+
+    # Final save
+    state.checkpoint_time = now_utc().isoformat()
+    state.save(state_file)
+
+    log.info("migration_complete",
+             total=state.total_items,
+             succeeded=state.succeeded,
+             failed=state.failed,
+             failed_items=state.failed_items[:20])  # Log first 20
+
+    return state
+```
+
+---
+
+## 17. CACHING PATTERNS (beyond lru_cache)
+
+```python
+"""
+Caching patterns for DevOps tooling.
+When to cache, what to cache, cache invalidation strategies.
+"""
+from __future__ import annotations
+
+import time
+import hashlib
+import json
+from functools import lru_cache
+from typing import Any
+
+import structlog
+
+log = structlog.get_logger()
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 1: lru_cache for pure functions
+# ═══════════════════════════════════════════════════════════
+
+@lru_cache(maxsize=128)
+def parse_arn(arn: str) -> dict[str, str]:
+    """Parse AWS ARN — pure function, safe to cache forever."""
+    # arn:partition:service:region:account-id:resource
+    parts = arn.split(":")
+    if len(parts) < 6:
+        raise ValueError(f"Invalid ARN: {arn}")
+    return {
+        "partition": parts[1],
+        "service": parts[2],
+        "region": parts[3],
+        "account_id": parts[4],
+        "resource": ":".join(parts[5:]),
+    }
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 2: TTL cache for API responses
+# ═══════════════════════════════════════════════════════════
+
+from cachetools import TTLCache, cached
+import threading
+
+# Thread-safe TTL cache
+_instance_cache = TTLCache(maxsize=500, ttl=60)  # 60 second TTL
+_cache_lock = threading.Lock()
+
+@cached(cache=_instance_cache, lock=_cache_lock)
+def get_instance_info(instance_id: str, region: str = "us-east-1") -> dict:
+    """
+    Cache EC2 instance info for 60 seconds.
+    Without cache: 50 calls = 50 API calls = throttling.
+    With cache: 50 calls = 1 API call.
+    """
+    import boto3
+    ec2 = boto3.client("ec2", region_name=region)
+    response = ec2.describe_instances(InstanceIds=[instance_id])
+    return response["Reservations"][0]["Instances"][0]
+
+
+# ═══════════════════════════════════════════════════════════
+# PATTERN 3: File-based cache for expensive computations
+# ═══════════════════════════════════════════════════════════
+
+from pathlib import Path
+
+
+class FileCache:
+    """
+    Persistent cache backed by filesystem.
+    Survives process restart. Used for:
+    - Expensive API calls during incident (don't re-fetch)
+    - Cost report data (compute once, render multiple times)
+    - Build artifacts (skip if inputs unchanged)
+    """
+
+    def __init__(self, cache_dir: Path = Path("/tmp/novatools-cache")) -> None:
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _key_path(self, key: str) -> Path:
+        hashed = hashlib.sha256(key.encode()).hexdigest()[:16]
+        return self.cache_dir / f"{hashed}.json"
+
+    def get(self, key: str, max_age_seconds: int = 3600) -> Any | None:
+        path = self._key_path(key)
+        if not path.exists():
+            return None
+
+        age = time.time() - path.stat().st_mtime
+        if age > max_age_seconds:
+            path.unlink()
+            return None
+
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def set(self, key: str, value: Any) -> None:
+        path = self._key_path(key)
+        path.write_text(json.dumps(value))
+
+    def invalidate(self, key: str) -> None:
+        path = self._key_path(key)
+        if path.exists():
+            path.unlink()
+
+    def clear(self) -> int:
+        """Clear all cache entries. Returns count deleted."""
+        count = 0
+        for f in self.cache_dir.glob("*.json"):
+            f.unlink()
+            count += 1
+        return count
+
+
+# Usage:
+# cache = FileCache()
+# key = f"cost-report-{region}-{date}"
+# data = cache.get(key, max_age_seconds=3600)
+# if data is None:
+#     data = expensive_cost_calculation()
+#     cache.set(key, data)
+```
+
+---
+
+Now. That's all 17 missing scenarios delivered. Let me give you the honest updated self-evaluation.
+
+
+## UPDATED QUICK REFERENCE CARD
+
+```
+╔═══════════════════════════════════════════════════════════════╗
+║         PYTHON FOR DEVOPS — COMPLETE CHEAT SHEET             ║
+╠═══════════════════════════════════════════════════════════════╣
+║                                                               ║
+║ PROJECT STRUCTURE:                                            ║
+║   src/novatools/                                              ║
+║     clients/  (aws, slack, jira, pagerduty, git, docker, db) ║
+║     utils/    (config, logging, shell, timeutil, decorators)  ║
+║     webhooks/ (FastAPI server)                                ║
+║     lambdas/  (Lambda handlers)                               ║
+║     scripts/  (CLI tools)                                     ║
+║   tests/      (mirrors src/)                                  ║
+║   pyproject.toml + ruff + mypy --strict                       ║
+║                                                               ║
+║ SUBPROCESS (daily):                                           ║
+║   subprocess.run(cmd_list, capture_output=True, text=True,    ║
+║                  timeout=300)                                 ║
+║   NEVER shell=True with user input                            ║
+║   Wrap kubectl/terraform/helm/argocd in typed classes         ║
+║                                                               ║
+║ FILE OPS:                                                     ║
+║   Path (not os.path) — / operator, .read_text(), .glob()     ║
+║   atomic_write() for config changes (temp + rename)           ║
+║   gzip.open() for compressed logs                             ║
+║   ruamel.yaml for round-trip YAML editing (preserves fmt)     ║
+║                                                               ║
+║ CONFIG:                                                       ║
+║   pydantic-settings: env vars → .env → defaults               ║
+║   @lru_cache(maxsize=1) singleton                             ║
+║   Validate at startup, fail fast                              ║
+║                                                               ║
+║ REGEX:                                                        ║
+║   Compile at module level, not in loops                       ║
+║   re.search() not re.match() (unless anchored)               ║
+║   re.escape(user_input) always                                ║
+║   Named groups: (?P<name>...)                                 ║
+║                                                               ║
+║ WEBHOOKS (FastAPI):                                           ║
+║   HMAC signature verification on ALL endpoints                ║
+║   BackgroundTasks for heavy processing (return 200 fast)      ║
+║   Idempotency via fingerprint/dedup_key + Redis               ║
+║   /healthz + /readyz + /metrics                               ║
+║                                                               ║
+║ LAMBDA:                                                       ║
+║   Clients OUTSIDE handler (warm start reuse)                  ║
+║   Clean /tmp on start (reused across invocations)             ║
+║   Idempotent handlers (retries happen)                        ║
+║   Least privilege IAM role per function                       ║
+║                                                               ║
+║ DATABASE:                                                     ║
+║   Connection pooling (ThreadedConnectionPool / redis pool)    ║
+║   statement_timeout to prevent runaway queries                ║
+║   sslmode=require in production                               ║
+║   Health: connections, replication lag, bloat, locks           ║
+║                                                               ║
+║ TIME:                                                         ║
+║   datetime.now(UTC) — ALWAYS timezone-aware                   ║
+║   ZoneInfo("America/New_York") not pytz                       ║
+║   parse_timestamp() handles all common formats                ║
+║   check_expiry() for cert/secret monitoring                   ║
+║                                                               ║
+║ CACHING:                                                      ║
+║   lru_cache — pure functions (parse_arn, etc.)                ║
+║   TTLCache — API responses (60-300s TTL)                      ║
+║   FileCache — expensive computations (survive restart)        ║
+║   NEVER cache without TTL for dynamic data                    ║
+║                                                               ║
+║ DECORATORS:                                                   ║
+║   @timed — measure everything                                 ║
+║   @audit_logged("action") — who did what when                 ║
+║   @require_confirmation — safety for destructive ops          ║
+║   @production_guard — extra delay for prod                    ║
+║   @rate_limit(calls=10, period=60) — API protection           ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+```
+
+
+---
+
+## RETENTION QUESTIONS
+
+Same 4 questions from before stand — they were well-designed and cover the right dimensions:
+
+**Q1** — Architecture: Design `novatools secrets audit` (multi-region, cross-K8s, concurrent)
+**Q2** — Debugging: Find all bugs in the broken inventory script
+**Q3** — Production Code: Write error-rate checker (Prometheus + retry + tests)
+**Q4** — Concurrency: Compare sequential vs ThreadPool vs asyncio for 500 health checks
+
+When you're ready, answer all four. Then we move to **Phase 9 Lesson 3: Go for DevOps**.
+
