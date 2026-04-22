@@ -1,11 +1,11 @@
-# PHASE 8 SIMULATION — HANDOFF DOCUMENT (v5)
-# CHAOS ENGINE EDITION
+# PHASE 8 SIMULATION — HANDOFF DOCUMENT (v6)
+# CHAOS ENGINE EDITION — REVISED TAXONOMY
 
 ---
 
 ## SIMULATION VERSION: v2 — CHAOS ENGINE ACTIVE
 
-All 12 Chaos Engine rules in effect. Consequence branching is compounding. Multiple unresolved threads active simultaneously.
+All 12 Chaos Engine rules in effect. Consequence branching is compounding. Revised incident taxonomy in effect for remaining 90 incidents.
 
 ---
 
@@ -40,26 +40,24 @@ RULE 12: GENUINE STUCK POINTS — Moments where the obvious
 
 ---
 
-## INCIDENTS/ISSUES COVERED SO FAR: 9 of 100
-
-*(Incident 9 is RESOLVED. Potential security incident emerging — legacy Jenkins unauthorized access from peered VPC. Not yet numbered.)*
+## INCIDENTS/ISSUES COVERED: 10 of 100
 
 ---
 
 ## INCIDENT TRACKER
 
-| # | Severity | Type | Description | Status | Grade |
-|---|----------|------|-------------|--------|-------|
-| 1 | **SEV2** | Deploy-induced timeout | Order service 504s from aggressive inventory_client_timeout (800ms) at peak traffic. | ✅ RESOLVED — Interim fix 2000ms. Follow-up: circuit breaker. | **A+** |
-| 2 | **SEV4** | Stale Terraform lock | Alex blocked by stale DynamoDB state lock from crashed Jenkins job. | ✅ RESOLVED — Guided Alex to self-resolve. | **A** |
-| 3 | **SEV3** | Capacity — Redis memory pressure | Quarterly catalog refresh exceeded Redis maxmemory. Hit rate dropped 94%→87%. | ✅ RESOLVED — Node upgraded r6g.large→r6g.xlarge overnight. | **A+ / A** |
-| 4 | **SEV3** | Shadow infrastructure | Unmanaged Kafka cluster + full data pipeline. Scope expanded by audit: Kafka Connect, ETL CronJob, MongoDB Atlas, S3 PII exports. | ✅ MITIGATED — NetworkPolicy v3, S3 hardened, Atlas blocked. PCI review complete. GDPR notification filed. | **A- → A+** |
-| 5 | **SEV2** | CI/CD — Zombie Jenkins agents | Jenkins agent pods stuck running 3-6+ hours, consuming entire Karpenter CI pool. | ✅ RESOLVED — Build discard config + heap monitoring. | **[Grade from session]** |
-| 6 | **SEV2** | Deploy-induced code bug | Payment service BigDecimal.divide() without RoundingMode. GBP/SEK/DKK/NOK→EUR 100% failing. | ✅ RESOLVED — Rolled back, corrected fix deployed sha-c4d82e1. | **A+** |
-| 7 | **SEV2** | Elasticsearch outage | ES data node evicted (ephemeral storage), StatefulSet blocked by ResourceQuota, scheduling constrained by PVC node affinity. | ✅ RESOLVED — Quota fixed, node freed, cluster GREEN. | **Pending** |
-| 8 | **SEV2** | RDS connection exhaustion | analytics_reader with no connection limit, 256 connections from analytics dashboard + manual report pod with 12 parallel workers. | ✅ RESOLVED — Dashboard scaled to 0, queries killed, CONNECTION LIMIT 20 set. | **Pending** |
-| 9 | **SEV3** | TLS cert renewal failure | Wildcard cert for *.novamart.com failing renewal for 23 days. IAM key deactivated by security automation. 7 days to expiry when caught. | ✅ RESOLVED — New IAM key, cert renewed. IRSA migration planned. | **Pending** |
-| — | **TBD** | Potential security incident | Legacy Jenkins with admin/admin, repeated logins from peered VPC (172.31.4.89). Most recent: today 9:14 AM. | 🔴 ACTIVE — Password changed, investigation starting. | **—** |
+| # | Severity | Type | Category | Description | Status | Grade |
+|---|----------|------|----------|-------------|--------|-------|
+| 1 | **SEV2** | Deploy-induced timeout | Deploy/Release | Order service 504s from aggressive inventory_client_timeout (800ms) at peak traffic. | ✅ RESOLVED — Interim fix 2000ms. CB deployed. | **A+** |
+| 2 | **SEV4** | Stale Terraform lock | IaC/Terraform | Alex blocked by stale DynamoDB state lock from crashed Jenkins job. | ✅ RESOLVED — Guided Alex to self-resolve. | **A** |
+| 3 | **SEV3** | Capacity — Redis memory pressure | Database | Quarterly catalog refresh exceeded Redis maxmemory. Hit rate dropped 94%→87%. | ✅ RESOLVED — Node upgraded r6g.large→r6g.xlarge. | **A+ / A** |
+| 4 | **SEV3** | Shadow infrastructure | Cross-team/Process | Unmanaged Kafka cluster + full data pipeline. Scope expanded: Kafka Connect, ETL CronJob, MongoDB Atlas, S3 PII exports. | ✅ MITIGATED — NetworkPolicy v3, S3 hardened, Atlas blocked. PCI review complete. GDPR notification filed. | **A- → A+** |
+| 5 | **SEV2** | Zombie Jenkins agents | CI/CD | Jenkins agent pods stuck running 3-6+ hours, consuming entire Karpenter CI pool. | ✅ RESOLVED — Build discard config + heap monitoring. | **[Grade from session]** |
+| 6 | **SEV2** | Deploy-induced code bug | Deploy/Release | Payment service BigDecimal.divide() without RoundingMode. GBP/SEK/DKK/NOK→EUR 100% failing. | ✅ RESOLVED — Rolled back, corrected fix deployed sha-c4d82e1. | **A+** |
+| 7 | **SEV2** | Elasticsearch outage | Kubernetes/Stateful | ES data node evicted (ephemeral storage), StatefulSet blocked by ResourceQuota, scheduling constrained by PVC node affinity. | ✅ RESOLVED — Quota fixed, node freed, cluster GREEN. ILM deployed. | **Pending** |
+| 8 | **SEV2** | RDS connection exhaustion | Database | analytics_reader with no connection limit, 256 connections from analytics dashboard + manual report pod. | ✅ RESOLVED — Dashboard scaled to 0, queries killed, CONNECTION LIMIT 20 set. | **Pending** |
+| 9 | **SEV3** | TLS cert renewal failure | Certificate/Secrets | Wildcard cert for *.novamart.com failing renewal for 23 days. IAM key deactivated by security automation. | ✅ RESOLVED — New IAM key, cert renewed. IRSA migration planned. | **Pending** |
+| 10 | **SEV1** | Data exfiltration — former employee | Security | 4-month unauthorized access campaign. 284,847 customers. Confirmed exfiltration to transfer.sh. | ✅ CONTAINED — Investigation phase. GDPR Art. 33 × 2 filed. Art. 34 sent. Board briefed. Law enforcement engaged. | **Pending** |
 
 ---
 
@@ -69,9 +67,9 @@ RULE 12: GENUINE STUCK POINTS — Moments where the obvious
 
 ```
 TRIGGER:      PagerDuty — HighErrorBudgetBurn_OrderService (3.2x 1h burn rate)
-FIRED:        Mon 8:47 AM
-ACKED:        Mon 9:04 AM
-RESOLVED:     Mon 9:30 AM
+FIRED:        Mon Wk1 8:47 AM
+ACKED:        Mon Wk1 9:04 AM
+RESOLVED:     Mon Wk1 9:30 AM
 TTR:          ~26 min from ack
 BUDGET BURN:  74% → 65.2% (8.8% consumed)
 
@@ -82,26 +80,36 @@ ROOT CAUSE:
 
 FIX: inventory_client_timeout_ms: 2000ms, retries: 1
 
-FOLLOW-UP TICKETS:
-  PLAT-915 — Circuit breaker (Derek PR) — MERGED, DEPLOYED TO PRODUCTION Mon
-  PLAT-916 — Canary analysis improvements — DONE ✅ (Lisa merged Fri)
-  PLAT-917 — Investigate inventory p99 (assigned Nina)
+FOLLOW-UP STATUS (all complete):
+  PLAT-915 — Circuit breaker: DEPLOYED TO PRODUCTION (Thu Wk2) ✅
+    Config: failureRateThreshold: 25, slowCallDurationThreshold: 2000ms,
+    slidingWindowSize: 100 (COUNT_BASED).
+    Low-confidence fallback: available:true (product-approved).
+    stockCache: PR approved (#354), deploying Fri Wk2.
+    Three-tier fallback: live → cached stock → blind accept.
+    Metrics: orders_with_cached_stock_total (tier 2)
+             orders_without_stock_verification_total (tier 3)
+    Production metrics after 16h at 100%:
+      Error rate: 0.018% (improved from 0.03% baseline)
+      p99: 395ms (improved from 438ms baseline)
+      CB opens: 0. Degraded responses: 0.
 
-CIRCUIT BREAKER STATUS:
-  PR merged Thu. Staging tested Fri. Production canary deploy Mon 2:43 PM.
-  Config: failureRateThreshold: 25, slowCallDurationThreshold: 2000ms,
-  slidingWindowSize: 100 (TIME_BASED 60s recommended, Derek used COUNT).
-  Low-confidence fallback: available:true (product-approved business decision).
-  stockCache: TODO (PLAT-923), follow-up PR from Derek.
-  Metric: orders_accepted_without_stock_verification_total.
+  PLAT-916 — Canary analysis improvements: DONE ✅ (Lisa merged Fri Wk1)
+  PLAT-917 — Investigate inventory p99: assigned Nina (not started)
+  PLAT-923 — stockCache: PR #354 approved, staging validated, deploying Fri Wk2
+
+  Lisa dual-SLI (platform-infra#353):
+    Primary SLI: error rate + latency (existing)
+    Secondary SLI: orders_degraded_mode_ratio (2% threshold, 7-day window)
+    MERGED AND DEPLOYED ✅
 ```
 
 ### INCIDENT 2: Terraform State Lock (SEV4) ✅
 
 ```
 TRIGGER:      Slack — Alex Kim
-REPORTED:     Mon 9:01 AM
-RESOLVED:     Mon 9:42 AM
+REPORTED:     Mon Wk1 9:01 AM
+RESOLVED:     Mon Wk1 9:42 AM
 ROOT CAUSE:   Jenkins CI job crashed at 2:14 AM, DynamoDB lock held.
 FIX:          force-unlock after verifying no active applies.
 ```
@@ -110,79 +118,88 @@ FIX:          force-unlock after verifying no active applies.
 
 ```
 TRIGGER:      Slack — Ryan Mitchell
-REPORTED:     Mon 11:02 AM
-RESOLVED:     Tue 2:15 AM (node upgrade r6g.large→r6g.xlarge)
-CONFIRMED:    Tue 8:55 AM
+REPORTED:     Mon Wk1 11:02 AM
+RESOLVED:     Tue Wk1 2:15 AM (node upgrade r6g.large→r6g.xlarge)
+CONFIRMED:    Tue Wk1 8:55 AM
 
 ROOT CAUSE:   Quarterly catalog refresh: 182K products → 435K 
               cache keys exceeded Redis maxmemory.
 
-POST-UPGRADE (as of Mon Wk2):
+POST-UPGRADE STATUS (as of Thu Wk2):
   Hit rate: 94.1%, Evictions: 0/min, Memory: 54%
   Cost: +$183/month
 
-FOLLOW-UP:
-  PLAT-918 — Scale Redis ✅
-  PLAT-919 — Redis alerting ✅ (confirmed correctly scoped Thu)
-  PLAT-920 — Quarterly refresh capacity planning gate
+FOLLOW-UP STATUS:
+  PLAT-918 — Scale Redis: DONE ✅
+  PLAT-919 — Redis alerting: DONE ✅ (confirmed correctly scoped)
+  PLAT-920 — Quarterly refresh capacity planning gate: To Do
 ```
 
-### INCIDENT 4: Shadow Kafka / Data Pipeline (SEV3) ✅ Mitigated — GDPR FILED
+### INCIDENT 4: Shadow Kafka / Data Pipeline (SEV3) ✅ Fully Mitigated — GDPR FILED
 
 ```
 TRIGGER:      Jake Torres discovered unknown StatefulSets
-REPORTED:     Mon 2:38 PM
-MITIGATED:    Wed 12:15 PM (NetworkPolicy v3, S3 hardened, Atlas blocked)
-PCI REVIEW:   Thu 2:00-2:38 PM — COMPLETED
-GDPR FILED:   Fri 1:15 PM — SA-2024-0119-NM
+REPORTED:     Mon Wk1 2:38 PM
+MITIGATED:    Wed Wk1 12:15 PM (NetworkPolicy v3, S3 hardened, Atlas blocked)
+PCI REVIEW:   Thu Wk1 2:00-2:38 PM — COMPLETED
+GDPR FILED:   Fri Wk1 1:15 PM — SA-2024-0119-NM
+SA RESPONSE:  Thu Wk2 3:47 AM CET — acknowledged, requesting 4 items
+              Response due: Feb 5
 
-FULL PIPELINE SCOPE:
+FULL PIPELINE STATUS (as of Thu Wk2):
   Component 1: Kafka brokers (6) + ZooKeeper (3)
-    - Bitnami images from Docker Hub (ECR migration in progress Mon Wk2)
-    - Deployed Nov 9 by tom.chen@novamart.com
-    - PDB applied, NetworkPolicy v3 restricting access
+    ✅ ECR images (migrated Tue Wk2)
+    ✅ Linkerd mesh injection (Wed Wk2)
+    ✅ NetworkPolicy v3 restricting access
+    ✅ PDB applied
+    Running stable on approved infrastructure.
 
   Component 2: Kafka Connect (confluent cp-kafka-connect:7.5.3)
-    - orders-sink-s3: RUNNING ✅ (orders + order_items → S3)
-    - payments-sink-mongo: FAILED (blocked by NetworkPolicy v3)
+    ✅ ECR image (migrated Tue Wk2)
+    ✅ Linkerd mesh injection (Wed Wk2)
+    orders-sink-s3: RUNNING ✅
+    payments-sink-mongo: FAILED (blocked by NetworkPolicy — expected)
 
-  Component 3: ETL CronJob (etl-daily-aggregation, daily 2 AM)
-    - Reads from production orders RDS (analytics_reader user)
-    - Writes to Kafka topics → S3 and Atlas sinks
-    - STATUS: RUNNING (exit code 1 expected — Atlas sink health check)
-    - Alertmanager silence applied (7-day, expired Mon Jan 25)
+  Component 3: ETL CronJob (etl-daily-aggregation)
+    STATUS: RUNNING (exit code 1 expected — Atlas sink blocked)
+    Alertmanager silence applied (7-day rolling)
 
   Component 4: Analytics Dashboard
-    - novamart-analytics-dashboard:latest (Docker Hub)
-    - Direct connection to production orders RDS
-    - ⚠️ CAUSED INCIDENT 8 (Mon Wk2) — excessive connections
-    - Currently: 1 replica, HPA frozen at max 1
-    - analytics_reader CONNECTION LIMIT 20 applied
+    1 replica, HPA frozen at max 1
+    analytics_reader PASSWORD ROTATED (Mon Wk2 night)
+    Currently broken (expected — Metabase connection uses old password)
+    Needs reconnection after security investigation stabilizes.
 
   Component 5: MongoDB Atlas (EXTERNAL) — 🔴 BLOCKED + PRESERVED
-    - Free-tier personal account (tom_chen_dev)
-    - 42,847 documents, ~25-30K unique EU customers
-    - GDPR Art. 4(1) personal data (email, name, billing country)
-    - No encryption at rest, no VPC peering, public internet
-    - STATUS: BLOCKED (NetworkPolicy egress deny since Wed Wk1)
-    - LEGAL HOLD: Do not purge until Rachel Torres clears
+    42,847 documents, ~25-30K unique EU customers
+    LEGAL HOLD: Do not purge until Rachel Torres clears
+    STATUS: BLOCKED (NetworkPolicy egress deny since Wed Wk1)
 
   Component 6: Order Data Export CronJob (order-prod namespace)
-    - Originally deployed by Nina Petrov (Dec 20)
-    - ✅ ONBOARDED to ArgoCD by Nina (Sat Jan 20)
-    - ✅ Migrated to KMS-encrypted bucket path
-    - ✅ Tested (2 AM run successful)
+    ✅ ONBOARDED to ArgoCD by Nina (Sat Wk1)
+    ✅ Migrated to KMS-encrypted bucket path
+    ✅ Running successfully
 
-CONTAINMENT STATUS (as of Mon Wk2):
+R-6a MILESTONE STATUS (committed Fri Jan 26):
+  ✅ ECR migration (Tue Wk2)
+  ✅ Mesh injection (Wed Wk2)
+  ✅ Terraform imports — 3 S3 buckets (Wed Wk2, ahead of schedule)
+  ⏳ Monitoring dashboards (Tom, Fri Wk2)
+  ⏳ Runbook (Tom, Fri Wk2)
+  ON TRACK — completing Friday.
+
+CONTAINMENT STATUS (as of Thu Wk2):
   ✅ Atlas egress: BLOCKED + data preserved per Legal
   ✅ S3 exports: ENCRYPTED (KMS/CMK, logging, versioning)
+  ✅ S3 buckets: ALL THREE IMPORTED TO TERRAFORM ✅
   ✅ Kafka network: RESTRICTED (NetworkPolicy v3)
-  ✅ All S3 writers: KMS permissions verified and fixed
-  ✅ analytics_reader: CONNECTION LIMIT 20
+  ✅ Kafka images: ECR (Docker Hub eliminated)
+  ✅ Kafka mesh: Linkerd mTLS between all pods
+  ✅ All S3 writers: KMS permissions verified
+  ✅ analytics_reader: CONNECTION LIMIT 20, password rotated
   ✅ data-analytics namespace: ALL non-platform users read-only (RBAC)
   ✅ Nina's CronJob: onboarded to ArgoCD
   ⚠️ RDS egress: ipBlock CIDR-based (fragile on Multi-AZ failover)
-  ⚠️ ECR migration: in progress (Tom, Mon-Tue Wk2)
 
 KMS KEY:
   Alias: alias/novamart-data-exports
@@ -190,83 +207,78 @@ KMS KEY:
     platform-admin (full),
     order-data-export-role (encrypt/generate),
     data-analytics-role (decrypt),
-    kafka-connect-s3-writer (encrypt/generate) ← added Thu Wk1
+    kafka-connect-s3-writer (encrypt/generate)
 
-S3 BUCKETS:
+S3 BUCKETS (all three now in Terraform):
   novamart-data-exports:
     ✅ Public access blocked, KMS/CMK, logging, versioning
+    ✅ Imported to Terraform (Wed Wk2)
     ❌ No lifecycle/retention policy
-    ❌ Not in Terraform
 
   novamart-analytics-datalake:
     ✅ Public access blocked, KMS/CMK, logging, versioning
+    ✅ Imported to Terraform (Wed Wk2)
     ❌ No lifecycle policy
-    ❌ Not in Terraform
+
+  novamart-db-backups:
+    ✅ Public access blocked, KMS/CMK, logging, versioning
+    ✅ Imported to Terraform (Wed Wk2)
+    ⚠️ EVIDENCE HOLD — no lifecycle rules, no object deletion
+
+SUPERVISORY AUTHORITY RESPONSE (SA-2024-0119-NM):
+  Received: Thu Wk2 3:47 AM CET
+  Requesting:
+    1. Technical description of drift detection system
+    2. Evidence it's tested and operational
+    3. Complete list of ALL personal data processing involving 
+       external or unmanaged infrastructure
+    4. Timeline for all remediation items
+  Response due: February 5
+  STATUS: Rachel drafting. AWS audit table (Marcus) feeds item 3.
+  NOTE: SA is reviewing both filings (Atlas + Jenkins) together.
 
 GDPR STATUS:
-  - Art. 33 supervisory notification: FILED Fri 1:15 PM
-    Reference: SA-2024-0119-NM
-    Filed by: Rachel Torres (Legal)
-    Includes: full remediation table, containment actions,
-              search cluster (C-5), prevention timeline
-  - Art. 34 (customer notification): prepared, holding pending
-    supervisory authority guidance
-  - 48-hour acknowledgment expected from supervisory authority
-  - Supervisory authority may request on-site technical review
-    within 30 days — all controls must be demonstrable
+  Art. 33 #1 (Atlas): FILED Fri Wk1. SA-2024-0119-NM. SA acknowledged.
+  Art. 33 #2 (Jenkins/exfiltration): FILED Tue Wk2. SA-2024-0122-NM-002.
+  Art. 34 (customer notification): SENT Thu Wk2 10:00 AM. 284,847 emails.
+  UK ICO: FILED Thu Wk2. ICO-2024-NM-0122.
 
-PCI MEETING OUTCOMES (Thu Wk1):
-  James approved GDPR notification.
-  Atlas stays blocked + preserved.
-  ETL CronJob keeps running.
-  Drift detection committed Monday.
-  Tom meeting scheduled Monday 10 AM.
-  Board presentation: James presenting remediation timeline.
-
-COMMITTED REMEDIATION TIMELINE (board-visible):
+COMMITTED REMEDIATION TIMELINE (board-approved):
   ┌────────────────────────────────┬──────────────┬─────────┬──────────────┐
   │ Control                        │ Date         │ Owner   │ Status       │
   ├────────────────────────────────┼──────────────┼─────────┼──────────────┤
   │ Drift detection CronJob        │ Mon Jan 22   │ User    │ ✅ DONE      │
-  │ Kafka pipeline SECURED (R-6a)  │ Fri Jan 26   │ User    │ In progress  │
-  │ Image admission (warn mode)    │ Fri Jan 26   │ User    │ Not started  │
-  │ Image admission (enforce mode) │ Fri Feb 2    │ User    │ Not started  │
-  │ Kafka FULLY ONBOARDED (R-6b)   │ Fri Feb 9    │ User    │ Not started  │
+  │ Kafka pipeline SECURED (R-6a)  │ Fri Jan 26   │ User    │ ✅ On track  │
+  │ Image admission (warn mode)    │ Fri Jan 26   │ Jake    │ ⏳ Prod Fri  │
+  │ Image admission (enforce mode) │ Fri Feb 2    │ Jake    │ Staging ✅   │
+  │ Kafka FULLY ONBOARDED (R-6b)   │ Fri Feb 9    │ Tom     │ In progress  │
   │ Self-service pipeline template │ Mid-Feb      │ User    │ Not started  │
   │ Default-deny NetworkPolicy     │ Mid-Feb      │ User    │ Not started  │
+  │ IAM lifecycle automation       │ End Feb      │ Aisha   │ Not started  │
+  │ SSH key mgmt through IdP       │ End Feb      │ Aisha   │ Not started  │
   │ Egress gateway                 │ End of Q1    │ User    │ Not started  │
+  │ AWS resource tagging enforce   │ End of Q1    │ Marcus  │ Not started  │
   └────────────────────────────────┴──────────────┴─────────┴──────────────┘
 
-TOM CHEN ONBOARDING (Mon Wk2):
-  Meeting completed Mon 10:00-10:55 AM. Productive. 
-  Tom energized, has clear sprint plan:
-    Tue: ECR image migration (Kafka, ZK, Connect)
-    Wed: Linkerd mesh injection
-    Thu-Fri: Monitoring dashboards, backup config, runbook
-  Tom has existing Grafana dashboards (never deployed — no access).
-  Atlas decommission: pending Legal clearance from Rachel.
-  Tom's RBAC: read-only in data-analytics until Legal hold lifted.
-  Wei's RBAC: read-only in data-analytics (restricted Mon after Incident 8).
-
-GAPS IN HANDLING:
-  - Initial NetworkPolicy (Mon Wk1) exposed ZK port
-  - MongoDB Atlas block was accidental
-  - NetworkPolicy v3 RDS egress uses ipBlock CIDR (fragile)
-  - KMS key policy missed kafka-connect-s3-writer (fixed Thu, self-identified)
-  - analytics_reader CONNECTION LIMIT not set until Incident 8 forced it
-  - Wei's RBAC not restricted until after he created a pod in preserved namespace
-  - HALF_EVEN rounding not proactively flagged to finance (caught Fri by Martha)
+TOM CHEN SPRINT STATUS (Wk2):
+  ✅ Tue: ECR image migration (Kafka, ZK, Connect)
+  ✅ Wed: Linkerd mesh injection
+  ✅ Wed: Terraform imports (3 S3 buckets, ahead of schedule)
+  ⏳ Thu: Monitoring dashboards (Grafana, Marcus reviewed labels)
+  ⏳ Fri: Runbook + R-6a milestone close
+  Tom quote: "This has been the most productive three days 
+  I've had at NovaMart."
 ```
 
 ### INCIDENT 5: Zombie Jenkins Agents / CI Pool Exhaustion (SEV2) ✅
 
 ```
 TRIGGER:      David Okafor reports builds failing since 7 AM
-REPORTED:     Tue 7:45 AM
-RESOLVED:     Tuesday
+REPORTED:     Tue Wk1 7:45 AM
+RESOLVED:     Tue Wk1
 ROOT CAUSE:   JVM memory leak in Jenkins agent pods.
 FIX:          Build discard config + heap monitoring.
-STATUS:       Jenkins heap stable. 6 agent pods (normal).
+STATUS:       Jenkins heap stable (5+ days). 6 agent pods (normal).
 ⚠️ UNVERIFIED: Build discard may be too aggressive for >30 builds.
 ```
 
@@ -274,10 +286,10 @@ STATUS:       Jenkins heap stable. 6 agent pods (normal).
 
 ```
 TRIGGER:      PagerDuty — PaymentServiceHighErrorRate
-FIRED:        Wed 2:47 PM
-ACKED:        Wed 2:48 PM
-ROLLBACK:     Wed 2:53-2:58 PM
-FIX DEPLOYED: Wed 4:28 PM (sha-c4d82e1)
+FIRED:        Wed Wk1 2:47 PM
+ACKED:        Wed Wk1 2:48 PM
+ROLLBACK:     Wed Wk1 2:53-2:58 PM
+FIX DEPLOYED: Wed Wk1 4:28 PM (sha-c4d82e1)
 TTR:          ~13 min ack-to-baseline (rollback)
 BUDGET BURN:  91.3% → 87.1% (4.2% consumed)
 
@@ -287,25 +299,15 @@ BLAST RADIUS:
 
 ROOT CAUSE:   BigDecimal.divide() without RoundingMode in 
               CurrencyService.convertAmount(). Non-terminating 
-              decimal pairs (GBP/SEK/DKK/NOK→EUR) throw 
-              ArithmeticException.
+              decimal pairs throw ArithmeticException.
 
-CORRECTED FIX (sha-c4d82e1):
-  Three BigDecimal.divide() sites fixed: HALF_EVEN, scale 2
-  36 new tests covering all 14 EU currency pairs
-  Finance confirmed HALF_EVEN for EU compliance
+CORRECTED FIX: HALF_EVEN, scale 2, all three call sites.
+  36 new tests covering all 14 EU currency pairs.
 
-ROUNDING RECONCILIATION (discovered Fri Wk1):
-  $47.23 discrepancy across 847 retried transactions.
-  Three rounding behaviors in one week's data:
-    1. Pre-Wednesday: double arithmetic (IEEE 754)
-    2. Wednesday rollback window (2:58-4:28 PM): same double arithmetic
-    3. Post-Wednesday 4:28 PM: BigDecimal HALF_EVEN
-  Martha Reeves (Finance) handled reconciliation with David Okafor.
-  One-time adjustment entry. All future transactions: HALF_EVEN consistent.
-  ⚠️ USER GAP: Should have flagged this to finance Wednesday.
-     Noted in personal log but didn't close the loop. Martha found 
-     it in reconciliation Friday. Credibility hit was avoidable.
+ROUNDING RECONCILIATION: COMPLETE ✅
+  $47.23 discrepancy resolved. Martha/David one-time adjustment.
+  Three rounding behaviors in one week's data documented.
+  All future transactions: HALF_EVEN consistent.
 
 VELOCITY FREEZE: Payment-service budget 86.0%. Freeze in effect.
 ```
@@ -314,72 +316,45 @@ VELOCITY FREEZE: Payment-service budget 86.0%. Freeze in effect.
 
 ```
 TRIGGER:      PagerDuty — SearchServiceHighErrorRate (>10% for 5 min)
-FIRED:        Fri 5:47 AM
-ACKED:        Fri 5:53 AM (waking up)
-ROOT CAUSE:   Fri 6:06 AM (13 min from ack)
-ES-DATA-3 BACK: Fri 6:22 AM
-CLUSTER YELLOW: Fri 6:28 AM (error rate 3.8%)
-CLUSTER GREEN:  Fri 6:52 AM (error rate 0.2%)
+FIRED:        Fri Wk1 5:47 AM
+ACKED:        Fri Wk1 5:53 AM
+CLUSTER GREEN: Fri Wk1 6:52 AM
 TTR:           ~65 min ack-to-GREEN
 PEAK ERROR:    19.8%
 
 ROOT CAUSE CHAIN:
-  1. No ILM policy (7-month-old TODO from Carlos Mendez)
-     → unbounded index growth → ephemeral storage exhaustion
-  2. Node ip-10-0-42-44 evicted es-data-3 (ephemeral-storage pressure)
-  3. Karpenter preempted es-data-3 for its own workload
-  4. StatefulSet tried to recreate → ResourceQuota blocked (64Gi limit)
-  5. Quota fix → pod created but PENDING (no node capacity in AZ)
-  6. PVC node affinity locked to ip-10-0-42-44 (gp2 EBS AZ-bound)
-  7. Freed capacity by evicting Kibana + 2 Jenkins agents from node
-  8. es-data-3 scheduled → 127 local shards recovered, 14 corrupt 
-     (peer recovery from replicas)
+  1. No ILM policy → unbounded index growth → ephemeral storage exhaustion
+  2. Node evicted es-data-3
+  3. Karpenter preempted for its own workload
+  4. StatefulSet blocked by ResourceQuota (64Gi limit)
+  5. Quota fix → PVC AZ-locked to original node
+  6. Freed capacity by evicting Kibana + 2 Jenkins agents
 
 CRITICAL MOMENT:
   es-data-2 had 4/5 consecutive readiness probe failures.
-  Scaled search-service from 6→2 replicas to reduce query pressure.
-  es-data-2's 5th probe PASSED (by one cycle). 
-  If it had failed → cascade to 40-60% errors.
+  Scaled search-service 6→2 to reduce query pressure.
+  es-data-2's 5th probe PASSED (by one cycle).
 
-STUCK POINT (RULE 12):
-  Quota was obstacle 1 (cleared). 
-  AZ-bound PVC scheduling was obstacle 2 (cleared by freeing node).
-  Corrupt segments were obstacle 3 (handled by peer recovery).
+FOLLOW-UP STATUS (as of Thu Wk2):
+  ✅ ILM policy DEPLOYED (Wed Wk2, Priya)
+     Hot: 30 days, Warm: read-only + force merge, Delete: 180 days (pending legal)
+     34 indices transitioned to warm
+     Heap: es-data-2 81% → 53% ✅
+     p99 latency: 1.1s → 680ms ✅
+     Incident 7 root cause PERMANENTLY RESOLVED
 
-COLLATERAL:
-  - Alex's Jenkins build killed (40 min requeue)
-  - catalog-service 2/3 replicas (unrelated eviction, recovered)
-  - PDB applied with wrong labels on first attempt (wasted ~60 sec)
-
-TRIAGE (RULE 3 — RED HERRINGS):
-  Signal 1: Search errors — PRIMARY (incident)
-  Signal 2: Kafka consumer lag — PARKED (recovery from Thu connector restart)
-  Signal 3: Redis hit rate 91.2% — PARKED (low-traffic noise)
-  Both correctly identified as unrelated within 60 seconds.
-
-SYSTEM CONTEXT:
-  Search cluster deployed by Carlos Mendez (departed Sep 2023).
-  No ArgoCD, no ILM, gp2 storage, stale runbook (Jun 2023).
-  Helm chart (elasticsearch-7.17.x). Nobody formally assigned 
-  ownership after Carlos left. Wei's team "kept an eye on it."
-  RULE 10: Haunted Forest — stale docs, departed owner.
-
-CLEANUP COMPLETED (Fri 7:15 AM):
   ✅ PDB replaced with correct labels (maxUnavailable: 1)
-  ✅ ResourceQuota right-sized (80Gi requests, annotated with reason)
-  ✅ Kibana rescheduled and running
-  ✅ catalog-service 3/3 recovered
-  ✅ search-service 6/6 running
+  ✅ ResourceQuota right-sized (80Gi requests, annotated)
+  ✅ ILM monitoring dashboard (Priya building)
 
-FOLLOW-UP NEEDED:
-  - ILM policy (root cause of storage exhaustion)
-  - Search cluster ownership (platform team interim, effective Mon)
-  - ArgoCD onboarding for search namespace
-  - gp2 → gp3 migration
-  - ES pod PriorityClass (prevent Karpenter preemption)
-  - Ephemeral storage limits on stateful workloads
-  - Pod topology spread for catalog-service
-  - EKS upgrade: exclude search namespace until onboarded (Priya informed)
+  ⏳ Search cluster interim ownership proposal: drafted, sent to Sarah
+     Primary: Priya. Secondary: User.
+  ⏳ ArgoCD onboarding for search namespace (Priya, by Feb 2)
+  ⏳ gp2 → gp3 migration (Jake, next sprint)
+  ⏳ ES pod PriorityClass (prevent Karpenter preemption)
+  ⏳ Ephemeral storage limits on stateful workloads
+  ⏳ Search SLO definition (Priya + Lisa, post-incident)
+  ⏳ Runbook update (replace Carlos's stale Jun 2023 doc)
 ```
 
 ### INCIDENT 8: RDS Connection Exhaustion (SEV2) ✅
@@ -388,76 +363,31 @@ FOLLOW-UP NEEDED:
 TRIGGER:      PagerDuty — RDSHighConnectionCount (>350)
 FIRED:        Mon Wk2 11:07 AM
 ACKED:        Mon Wk2 11:11 AM
-ROOT CAUSE:   Mon Wk2 11:15 AM (4 min from ack)
-MITIGATED:    Mon Wk2 11:17 AM (dashboard scaled to 0, queries killed)
-RECOVERED:    Mon Wk2 11:22 AM (connections 183, latency baseline)
+RECOVERED:    Mon Wk2 11:22 AM
 TTR:          ~11 min from ack
-BUDGET BURN:  Order-service: 64.5% → 61.8% (2.7% consumed in 25 min)
-              Payment-service: held at 86.0% (latency below error threshold)
+BUDGET BURN:  Order-service: 64.5% → 61.8% (2.7% consumed)
 
 ROOT CAUSE:
-  analytics_reader user: NO CONNECTION LIMIT.
-  All service users had limits (order: 100, payment: 50, inventory: 30).
-  analytics_reader was the only one without.
-  
-  Monday morning analyst reports via analytics dashboard:
-    - 2 dashboard replicas (HPA scaled from 1 to 2 on CPU)
-    - No connection pooling — each query opens new connection
-    - Heavy analytical queries: multi-table JOINs, full table scans
-    - All waiting on IO (DataFileRead — sequential scans)
-  
-  Tipping point: Wei's manual report pod (created 10:52 AM):
-    - weekly_summary.py spawns 12 parallel workers for export
-    - 12 simultaneous full-table-scan queries hit at 11:00 AM
-    - Combined: 256 analytics_reader connections (184 active, 72 idle)
-    - Total: 459/500 connections, climbing ~4/min toward limit
+  analytics_reader: NO CONNECTION LIMIT.
+  Dashboard HPA scaled to 2 replicas, no connection pooling.
+  Wei's manual report pod: 12 parallel workers.
+  Combined: 256 analytics_reader connections.
+  Feedback loop: more queries → HPA scales → more connections.
 
-  Feedback loop: more queries → higher CPU → HPA scales up → 
-  more replicas → more connections → more IO → slower queries → 
-  connections held longer → count climbs faster
+FIX: Dashboard scaled to 0, queries killed, CONNECTION LIMIT 20.
 
-CONNECTION SPIKE:
-  10:50 AM  187 (normal)
-  11:00 AM  243 (+51 in 5 min — 12 parallel workers start)
-  11:07 AM  418 (alert fires)
-  11:13 AM  447
-  11:17 AM  Fix applied
-  11:22 AM  183 (recovered)
+DISCOVERY CHAIN (led to Incident 10):
+  47 NAT gateway connections → traced to Metabase EC2 →
+  found legacy Jenkins EC2 → found admin/admin credentials →
+  found unauthorized logins from peered VPC →
+  SECURITY INCIDENT
 
-FIX APPLIED (parallel execution):
-  Terminal 1: kubectl scale deployment analytics-dashboard --replicas=0
-  Terminal 2: pg_terminate_backend on all analytics_reader active sessions
-  Terminal 3: ALTER ROLE analytics_reader CONNECTION LIMIT 20
-
-ADDITIONAL DISCOVERY:
-  47 connections from 10.0.43.22 (NAT Gateway) → traced to 
-  Metabase EC2 instance (analytics-metabase, t3.medium) also 
-  using analytics_reader. Shadow infrastructure item #9.
-  
-  Also found: novamart-jenkins-legacy (t3.large) in same subnet.
-  Shadow infrastructure item #10. admin/admin credentials.
-  → LED TO POTENTIAL SECURITY INCIDENT (see below).
-
-POST-INCIDENT ACTIONS:
+POST-INCIDENT STATUS:
   ✅ analytics_reader CONNECTION LIMIT 20
+  ✅ analytics_reader PASSWORD ROTATED (Mon Wk2 night — security incident)
   ✅ Dashboard restored at 1 replica, HPA frozen at max 1
   ✅ Wei's RBAC restricted to read-only in data-analytics
-  ✅ Wei's partial report salvaged + export re-run safely (single-threaded)
-  ⚠️ Wei's manual pod created in Legal-hold namespace (documented, not escalated)
-
-WEI CONTEXT:
-  Wei ran kubectl run to generate a VP report. Dashboard was slow.
-  Script spawns 12 parallel workers (Tom wrote it for speed).
-  Wei didn't realize the parallel mode existed.
-  Same pattern: "reasonable action without full context."
-  Wei acknowledged: "I did exactly what I was worried Tom would do."
-
-USER GAP:
-  analytics_reader CONNECTION LIMIT was on TODO list since Wed Wk1.
-  Committed to Rachel's table as R-7 (Wed Jan 24). Incident happened 
-  Mon Jan 22 — two days before the committed date. ALTER ROLE takes 
-  2 seconds. Should have done it immediately when identified, not 
-  deferred. Priority order ≠ exposure order for database-level fixes.
+  ✅ Wei's report re-run completed (single-threaded)
 ```
 
 ### INCIDENT 9: TLS Certificate Renewal Failure (SEV3) ✅
@@ -465,227 +395,328 @@ USER GAP:
 ```
 TRIGGER:      Slack — CertificateExpiringWithin7Days
 FIRED:        Mon Wk2 2:00 PM
-EXPIRY:       Jan 29, 2024 (7 days from discovery)
 CERT RENEWED: Mon Wk2 2:27 PM
 NEW EXPIRY:   Apr 21, 2024
 
-CERTIFICATE:
-  Name: novamart-tls-wildcard
-  Domains: *.novamart.com, novamart.com
-  Issuer: Let's Encrypt (letsencrypt-prod ClusterIssuer)
-  Challenge: DNS-01 via Route53
-  Secret: novamart-tls-wildcard (production namespace)
-  ACME account: registered to carlos.mendez@novamart.com
+ROOT CAUSE:   Security automation deactivated cert-manager IAM key
+              (58 days since last use, >30 day threshold).
+              Renewal failing silently for 23 days.
+              No alert for renewal failure — only expiry alert.
 
-ROOT CAUSE CHAIN:
-  Jun 15, 2023  — Carlos creates IAM user + static access key
-  Sep 2023      — Carlos departs. No cert infra handover.
-  Oct 31        — Last successful renewal
-  Nov 15        — Security automation policy updated: last-used 
-                   threshold reduced 90→30 days
-  Dec 28        — security-automation deactivates key (58 days 
-                   since last use, >30 day threshold)
-  Dec 30        — cert-manager renewal attempt: rate limited (429)
-                   (prior failed authorizations from key failure)
-  Jan 6         — retry: DNS-01 challenge timeout (key inactive)
-  Jan 10        — retry 5/5 exhausted. "Manual intervention required."
-  Jan 22        — 7-day expiry alert fires (first human notification)
+FIX: New IAM key, updated secret + ClusterIssuer, cert renewed.
 
-  RULE 2: Security automation did the right thing (deactivate 
-  old key). Policy change in November set a tighter threshold. 
-  Nobody audited existing keys against the new threshold.
-
-ALERT GAP:
-  CertificateExpiringSoon alert: fires at 7 days before expiry.
-  No alert for renewal FAILURE. Renewal has been failing for 23 
-  days with zero human notification.
-
-FIX:
-  1. Created new IAM access key for cert-manager-dns01 user
-  2. Updated K8s secret (route53-credentials)
-  3. Updated ClusterIssuer (new accessKeyID)
-  4. Verified Route53 permissions via policy simulation
-  5. Cleared failed CertificateRequest/Order objects
-  6. Triggered renewal via annotation
-  7. Cert issued in 2 minutes (DNS propagation + validation)
-  8. Verified live cert via openssl s_client
-
-BACKUP PLANS (documented but not needed):
-  Plan B: Switch to HTTP-01 (can't do wildcards)
-  Plan C: New ACME account (clean rate limit history)
-  Plan D: Manual certbot generation + secret upload
-
-FOLLOW-UP:
-  - IRSA migration for cert-manager (eliminate static keys) — this week
-  - Alert for renewal failures (not just expiry) — this week
-  - Document cert infrastructure ownership
-  - Aisha adding pre-deactivation notification to security automation
-    (7-day warning before key deactivation, sent to owner + manager)
-  - Update ACME account registration to current employee email
-
-AISHA CONTEXT ON SECURITY AUTOMATION:
-  Policy checks: key age >180 days AND last used >threshold.
-  Threshold was 90 days, changed to 30 days Nov 15.
-  cert-manager key: 58 days since last use at time of deactivation.
-  Would have survived under old policy. Caught by new threshold.
-  Nobody audited existing keys when threshold changed.
-  Aisha adding pre-deactivation warnings.
+FOLLOW-UP STATUS:
+  ⏳ IRSA migration for cert-manager (this week — not started)
+  ⏳ Alert for renewal failures (not just expiry)
+  ✅ Aisha adding pre-deactivation notification to security automation
+  ⏳ ACME account: update from Carlos email to current employee
 ```
 
-### POTENTIAL SECURITY INCIDENT: Legacy Jenkins Unauthorized Access (ACTIVE)
+### INCIDENT 10: Data Exfiltration — Former Employee (SEV1) ✅ CONTAINED
 
 ```
 TRIGGER:      Marcus Webb investigation of legacy EC2 instances
 DISCOVERED:   Mon Wk2 2:42 PM
-STATUS:       🔴 ACTIVE — UNDER INVESTIGATION
+IR DECLARED:  Mon Wk2 2:50 PM (Aisha)
+CONTAINED:    Mon Wk2 6:58 PM (all credentials rotated, all paths severed)
+INVESTIGATION: CrowdStrike — final report delivered Wed Wk2 5:45 AM
+GDPR Art. 33:  FILED Tue Wk2 12:03 PM (SA-2024-0122-NM-002)
+GDPR Art. 34:  SENT Thu Wk2 10:00 AM (284,847 emails)
+UK ICO:        FILED Thu Wk2 (ICO-2024-NM-0122)
+LAW ENFORCEMENT: Police report filed Tue Wk2. FBI CFAA referral by Fri Wk2.
+BOARD:         Briefed Thu Wk2 3:00 PM. Remediation approved.
 
-LEGACY JENKINS INSTANCE:
-  Name: novamart-jenkins-legacy
-  Instance: i-0e8g3f..., t3.large, Amazon Linux 2
-  IP: 10.0.43.201 (private subnet, routes through NAT)
-  Launched: March 2, 2022 (~2 years old)
-  Launched by: former-devops@novamart.com (account disabled)
-  Jenkins version: 2.361 (current: 2.426, 65 versions behind)
-  Credentials: admin/admin (DEFAULT — changed by Marcus at ~2:40 PM)
-  Security group: SSH + 8080 from 10.0.0.0/8 (entire VPC)
+REFERENCE: SEC-2024-0122-001
+
+ACTOR PROFILE (CrowdStrike assessment):
+  Single actor. Former employee or contractor with pre-existing 
+  system knowledge. "Technically competent but not sophisticated."
+  Strong circumstantial evidence: Carlos Mendez (departed Sep 2023,
+  went to competitor). Personal IAM key + personal SSH key + 
+  personal infrastructure + system knowledge + targeted EU data.
+  Not formally attributed pending law enforcement.
+
+COMPLETE TIMELINE:
+  Jun 2023      Carlos creates IAM user, SSH keys, cert-manager infra
+  Aug 14 2023   Carlos creates: staging VPC, VPC peering, NAT/IGW,
+                staging Metabase, carlos-dev-scratch S3 bucket,
+                reporting-db-prod RDS, report-generator Lambda,
+                etl-trigger Lambda, production Metabase (analytics)
+  Sep 15 2023   Carlos departs. Okta disabled, email disabled.
+                IAM user NOT deactivated. SSH keys NOT deleted.
+                Infrastructure NOT decommissioned.
+                Exit interview: mentions "staging stuff to clean up."
+                Wei says "we'll handle it." No follow-up.
+  Oct 8         Actor launches temp EC2 from staging Metabase (172.31.4.89)
+                Using carlos-staging-key. First post-departure activity.
+  Oct 10        Direct psql to orders-db-prod (customers table)
+  Oct 12        pg_dump customers → local CSV
+  Oct 15        CSV uploaded to carlos-dev-scratch (4.2 MB)
+                Exfiltrated via NAT gateway (6.8 MB spike confirmed)
+                Metabase export: EU customers (168,442 rows)
+                Metabase export: full customer profiles (271,384 rows)
+  Oct 18        Temporary EC2 terminated
+  Nov 8         Metabase export: high-value customers (12,847 rows)
+  Nov 11        Actor connects to reporting-db-prod
+                Metabase export: support tickets (4,291 rows)
+  Nov 12        customer_orders CSV exported + exfiltrated (31.2 MB spike)
+  Jan 8 2024    Actor logs into Jenkins (2 sessions)
+  Jan 14        Metabase export: stripe webhook payment methods (7,104 rows)
+                Metabase export: product reviews (18,934 rows)
+                Metabase query: stripe_webhook_events LIMIT 100
+  Jan 15        ESCALATION: Full DB dumps downloaded via Jenkins + Metabase
+                3 dumps (Sep, Oct, Nov) downloaded twice (Jenkins role + Metabase role)
+                Exfiltrated via transfer.sh (1.16 GB NAT spike)
+                curl -T uploads to transfer.sh (public file sharing)
+  Jan 19        November dump re-downloaded + exfiltrated (524 MB spike)
+                curl -T to transfer.sh
+                Carlos personal IAM key last used (s3:GetObject)
+  Jan 22 9:14a  Last Jenkins login. No API activity recorded.
+  Jan 22 2:40p  Marcus changes Jenkins password (access cut)
+  Jan 22 2:50p  Aisha declares security incident (SEC-2024-0122-001)
+  Jan 22 3:01p  backup_admin password rotated + CONN LIMIT 0
+  Jan 22 3:15p  James bridge call. Full scope briefed.
+  Jan 22 3:22p  carlos-dev-key deleted from EC2
+  Jan 22 3:24p  VPC peering DELETED (production network path severed)
+  Jan 22 3:26p  Staging Metabase + Jenkins SGs locked to platform IPs
+  Jan 22 5:41p  VPC flow logs enabled on legacy-staging VPC
+  Jan 22 6:00p  CrowdStrike call. David Park begins imaging.
+  Jan 22 6:47p  Production Metabase SG locked to platform IPs
+  Jan 22 6:55p  reporting-db-prod: password rotated, staging VPC CIDR revoked
+  Jan 22 6:58p  analytics_reader password rotated
+  Jan 23 12:14a orders-db-prod MASTER password rotated (Aisha — never rotated before)
+  Jan 23 12:22a jenkins-deployer IAM key DEACTIVATED (AdministratorAccess — unused by actor, LUCKY)
+  Jan 23 12:24a jenkins-deployer: confirmed no usage from attacker IPs
+  Jan 23 6:00a  CrowdStrike full report delivered (94 pages)
+  Jan 23 9:17a  reporting-db-prod assessed: NO full card numbers, NOT PCI
+  Jan 23 10:03a Carlos personal IAM key deactivated (Marcus found, Aisha deactivated)
+  Jan 23 10:44a Secondary ENI on staging Metabase: public SSH revoked (missed in initial lockdown)
+  Jan 23 10:51a Staging Metabase STOPPED
+  Jan 23 10:51a Legacy Jenkins STOPPED
+  Jan 23 10:54a Production Metabase STOPPED
+  Jan 23 12:03p GDPR Art. 33 #2 FILED (SA-2024-0122-NM-002)
+  Jan 24 4:00a  UK ICO FILED (ICO-2024-NM-0122)
+  Jan 24 10:00a Customer notification sent (284,847 emails, staggered over 2h)
+  Jan 24 3:00p  Board briefed. Remediation approved. 2 headcount approved.
+
+EXFILTRATION — CONFIRMED:
+  Method: curl -T to transfer.sh (public file sharing service)
+  NAT gateway metrics correlate to every known access event:
+    Oct 15 3PM:   6.8 MB  (matches customer_emails CSV — 4.2 MB + overhead)
+    Nov 12 2PM:   31.2 MB (matches customer_orders CSV — 28.7 MB)
+    Jan 15 3-4PM: 1.16 GB (matches 3x database dumps)
+    Jan 19 10AM:  524 MB  (matches 1x database dump re-download)
+  transfer.sh links expire 14 days. Jan 15 links expired.
+  Jan 19 link may still be live (~expires Feb 2). Cannot take down.
+
+DATA SCOPE:
+  Confirmed accessed and exported:
+    284,847 unique customers (union of Sep/Oct/Nov backup dumps)
+      EU: 168,442 (59.1%)
+      UK: 41,207 (14.5%)
+      US: 58,934 (20.7%)
+      Other: 16,264 (5.7%)
+    Additional Metabase exports:
+      EU customers filtered by country (168,442 rows)
+      High-value customers >$500 orders (12,847 rows)
+      Customer support tickets since Sep (4,291 rows)
+      Stripe webhook payment methods (7,104 rows — billing details)
+      Product reviews (18,934 rows)
+      Full customer profiles (271,384 rows)
+
+  PII categories: names, emails, phones, shipping addresses,
+    billing addresses (from Stripe webhooks), order history,
+    purchase amounts, customer support ticket contents,
+    product reviews, customer segmentation/lifetime value,
+    partial card info (last4, brand, expiry — NOT full PAN)
+
+  NOT exposed:
+    Full payment card numbers (PANs) — Stripe never sends in webhooks
+    CVV/CVC codes
+    Bank account information
+    Customer passwords/authentication tokens
+    Payment-service or inventory-service databases (read-only access
+      via Metabase but no evidence of export beyond confirmed items)
+
+REPORTING-DB-PROD ASSESSMENT:
+  PostgreSQL, db.t3.medium, 100GB, UNENCRYPTED
+  Created: Aug 14, 2023 by Carlos
+  14 tables: customer_profiles, customer_orders_summary,
+    customer_support_tickets, daily_revenue, inventory_snapshots,
+    monthly_cohort_analysis, order_items_denormalized,
+    payment_transactions, product_performance, product_reviews,
+    refund_history, shipping_events, stripe_webhook_events,
+    supplier_catalog
+  stripe_webhook_events: 147,283 raw payloads (jsonb)
+    Contain billing_details (name, email, phone, physical address)
+    31,847 unique Stripe customers with billing details
+    NO full card numbers (Stripe design — never sends PANs)
+  PCI ASSESSMENT: NOT A PCI INCIDENT ✅
+  Actor queried payment data (Q-227, Jan 14) and EXPORTED via
+    Metabase CSV (7,104 rows) — initial "no export" assessment
+    was WRONG (corrected within 2 hours, Rule 4)
+
+CREDENTIALS COMPROMISED AND ROTATED (9 total):
+  ✅ backup_admin (orders-db-prod) — rotated + CONN LIMIT 0
+  ✅ analytics_reader (orders-db-prod) — rotated + CONN LIMIT 20
+  ✅ reporting_admin (reporting-db-prod) — rotated via RDS
+  ✅ orders-db-prod root/master — rotated (Aisha, midnight)
+  ✅ etl_processor (orders-db-prod) — rotated + CONN LIMIT 0
+  ✅ metabase_reader (inventory-db-prod) — rotated + CONN LIMIT 0
+  ✅ jenkins-deployer IAM key — DEACTIVATED (AdministratorAccess)
+  ✅ carlos.mendez IAM key — DEACTIVATED
+  ✅ carlos-dev-key SSH key — DELETED from EC2
+
+INFRASTRUCTURE LOCKED DOWN:
+  ✅ Legacy Jenkins (i-0e8g3f): SG locked → STOPPED
+  ✅ Staging Metabase (i-0c4d5e6f): SG locked, secondary ENI revoked → STOPPED
+  ✅ Production Metabase (i-0d7f2e): SG locked → STOPPED
+  ✅ VPC peering: DELETED (permanent)
+  ✅ reporting-db-prod: staging VPC CIDR revoked from SG
+  ✅ All three instances: EBS snapshots preserved for forensics
+  ✅ carlos-dev-scratch S3: evidence hold, CrowdStrike has contents
+  ✅ novamart-db-backups S3: hardened (KMS, logging), evidence hold
+
+  Remaining SSH keys (SG-blocked, deletion pending CrowdStrike clearance):
+    carlos-staging-key (used by Jenkins + staging Metabase)
+    novamart-analytics-key (used by production Metabase)
+
+CROWDSTRIKE FINDINGS SUMMARY:
+  Report: 94 pages + 12-page exec summary + evidence appendix
+  Status: FINAL (Wed Wk2)
   
-  14 configured jobs, all disabled except:
-    - monthly-db-backup: dumps production orders database → S3
-      Last successful: November 1, 2023
-      Last attempted: December 1, 2023 — FAILED
-      Failing silently for 2 months (no alerts)
+  Key findings:
+  - Single actor, strong Carlos attribution
+  - 203.0.113.47: residential ISP IP, SSH source for all sessions
+  - Access path: Home → Elastic IP → public subnet ENI → staging Metabase
+    → VPC peering → production resources
+  - bash_history: psql commands, pg_dump, aws s3 cp, curl -T transfer.sh
+  - Metabase H2 database: 347 saved queries, 58 post-departure
+    - 31 against orders-db-prod
+    - 22 against reporting-db-prod
+    - 5 against inventory-db-prod (same RDS as inventory service — NOT shadow)
+  - 7 Metabase CSV exports (post-departure)
+  - Deliberate targeting: EU customers (Q-201 filters by country code),
+    high-value customers (Q-215 filters orders >$500),
+    support tickets (Q-238), payment methods (Q-227)
+  - "Consistent with data collection for potential sale or competitive use"
+  - Actor left extensive forensic traces (bash_history not cleared,
+    transfer.sh for exfil = low sophistication indicator)
+  - jenkins-deployer IAM key (AdministratorAccess) found but NOT USED
+    by actor. Lucky break — would have been full AWS account compromise.
+  - Terminated instance (Oct 8-18): launched from staging Metabase,
+    carlos-staging-key, first post-departure infra activity
+  - Carlos personal IAM key used for Jan 15+19 S3 downloads
+    (not just instance profiles)
+  - David Park closing note: "The technical response by the NovaMart 
+    team was among the fastest and most thorough we've seen."
 
-UNAUTHORIZED ACCESS EVIDENCE:
-  Jenkins audit log — last 30 days:
+CUSTOMER NOTIFICATION RESULTS (Thu Wk2):
+  Emails sent: 284,847
+  Emails delivered: 276,102 (97.1%)
+  Bounced: ~8,745 (postal mail notification for those with addresses)
+  Kroll enrollments (first day): 24,847 (8.7%)
+  Support contacts (first day): 8,291 (2.9%)
+  Press inquiries: 3 (handled with holding statement)
+  Social media mentions: ~40 (neutral to sympathetic)
+  Customer sentiment: measured, no viral backlash
+  Credit monitoring vendor: Kroll, $2.80/customer, ~$797K total
 
-  Date       User    Source IP       Notes
-  Dec 3      admin   10.0.43.201    Localhost (cron? maintenance?)
-  Dec 5      admin   10.0.41.33     EKS node (internal)
-  Dec 12     admin   10.0.42.88     EKS node (internal)
-  Jan 8      admin   10.0.41.33     EKS node (internal, 2 logins)
-  Jan 15     admin   172.31.4.89    ⚠️ PEERED VPC (2 logins)
-  Jan 19     admin   172.31.4.89    ⚠️ PEERED VPC
-  Jan 22     admin   172.31.4.89    ⚠️ PEERED VPC (TODAY, 9:14 AM)
+BOARD MEETING OUTCOMES (Thu Wk2 3:00 PM):
+  Remediation timeline: APPROVED
+  2 new platform engineering headcount: APPROVED
+  30-day follow-up board update: SCHEDULED
+  CEO quote (via EA): "This is the most competent incident response 
+    I've seen from a company this size."
+  Ex-CTO director: "Whoever that engineer is, don't lose them."
+  James: putting in headcount request for 2 more platform engineers.
 
-  172.31.4.89 is NOT in our VPC CIDR (10.0.0.0/16).
-  Traced to VPC peering connection to vpc-0f8a3c... tagged 'legacy-staging'.
-  Peering created August 2023.
-  
-  4 logins from peered VPC in last 7 days. Most recent: 4 hours ago.
+FINANCIAL EXPOSURE:
+  Credit monitoring (Kroll): ~$797K
+  CrowdStrike forensics: $150-250K
+  Legal fees: $200-400K
+  Customer support surge: $50-100K
+  Regulatory fines (est.): €500K-€2M
+  Total (excl. fines): $1.2-1.55M
 
-RISK ASSESSMENT:
-  Through Jenkins admin access, attacker could:
-  - Execute arbitrary code on the instance
-  - Access monthly-db-backup job credentials (production RDS dump creds)
-  - Access anything the instance's IAM role can reach
-  - Access production RDS, internal services via network
-  - View build history/configuration of all 14 jobs
-  
-  UNKNOWN:
-  - Identity of 172.31.4.89 (person? compromised instance? automation?)
-  - What actions were taken after login (Jenkins activity log detail?)
-  - Whether db-backup credentials were accessed
-  - Whether legacy-staging VPC is legitimate infrastructure
-  - Whether the peered VPC route tables allow production access
-  - Whether the 10.0.4x.xx (EKS node) logins were from pods or humans
+HR / ATTRIBUTION:
+  Carlos Mendez departure records:
+    Voluntary resignation, effective Sep 15, 2023
+    Accepted position at competitor (name redacted)
+    NDA: 2-year non-compete + perpetual confidentiality
+    Exit interview (Wei Liu): Carlos mentioned "staging stuff 
+      that could be cleaned up." Wei: "we'll handle it." No follow-up.
+    IT offboarding: laptop returned, Okta disabled, email forwarded 30 days.
+      NO mention of AWS access, SSH keys, infrastructure audit.
+  Criminal: police report filed Tue Wk2. FBI CFAA referral by Fri Wk2.
+  Civil: outside counsel evaluating NDA breach action.
 
-PASSWORD CHANGED: ~2:40 PM Mon by Marcus (attacker locked out)
-SECURITY GROUP: Being restricted by Marcus (platform team IPs only)
-
-STATUS: 
-  Marcus found this at 2:42 PM. 
-  User has been informed.
-  User has NOT YET responded to Marcus.
-  Aisha has NOT YET been informed.
-  No formal incident declared yet.
-
->>> THIS IS THE ACTIVE SITUATION <<<
+USER GAPS IN HANDLING:
+  - Assessed webhook data as "no evidence of export" based on bash 
+    history only. Wrong — Metabase H2 export log showed CSV export.
+    Corrected within 2 hours. (Rule 4)
+  - Missed secondary ENI on staging Metabase during initial SG lockdown.
+    Found by CrowdStrike report next morning. 16-hour window where actor 
+    could have SSH'd in (flow logs show they didn't — lucky).
+  - Seven-day gap between K8s audit (Jan 15) and AWS audit (Jan 22).
+    Should have generalized threat model to AWS resources immediately 
+    after finding K8s shadow infrastructure.
+  - analytics_reader CONNECTION LIMIT was known gap since Wed Wk1, 
+    caused Incident 8 on Mon Wk2. Two-second fix deferred to ticket.
 ```
 
----
-
-### SERVICEPROFILE TIMEOUT ISSUE (not numbered — consequence of approved change)
+### ServiceProfile Timeout Issue (consequence, not numbered)
 
 ```
 TIMELINE:
-  Wed Wk1 10:47 PM — Derek's ServiceProfile merged (isRetryable changes)
-  Wed Wk1 10:47 PM — Derek ALSO added timeout: 5s on all 4 routes (post-approval)
-  Thu Wk1 3:25 PM  — Derek notices NR flags, reports to user
-  Thu Wk1 3:36 PM  — User: remove all timeouts
+  Wed Wk1 10:47 PM — Derek's ServiceProfile merged (isRetryable + unauthorized timeout)
+  Thu Wk1 3:25 PM  — Derek notices NR flags
   Thu Wk1 3:46 PM  — ArgoCD syncs fix
-  Thu Wk1 3:54 PM  — NR rate back to zero ✅
+  Thu Wk1 3:54 PM  — NR rate zero ✅
 
 IMPACT: 17 hours, 0.3% NR, error rate 0.09%→0.41%
   Budget: payment-service 87.1% → 86.0% (1.1% consumed)
-
-ROOT CAUSE: Derek added timeout: 5s post-approval. Payment 
-  gateway tail latency 6-7s during slow periods.
-
-USER GAP: Approved based on Slack description, not final merged diff.
-PROCESS FIX: Review merged commit, not PR description.
-  "Any commit after approval gets a re-review ping."
-  Derek acknowledged.
-
-PATTERN: Static per-route timeouts are a recurring anti-pattern.
-  Appeared twice in one day (payment ServiceProfile, then 
-  inventory in CB PR review). CB is the correct tool.
+ROOT CAUSE: Derek added timeout: 5s post-approval.
+PROCESS FIX: "Any commit after approval gets a re-review ping."
 ```
 
 ---
 
-### ADDITIONAL EC2 DISCOVERIES (Mon Wk2)
-
-```
-ANALYTICS-METABASE (i-0d7f2e...)
-  Launched: August 14, 2023
-  Launched by: carlos.mendez@novamart.com (CloudTrail)
-  t3.medium, Ubuntu 22.04
-  Metabase 0.47.2 (current: 0.48.x)
-  Connected to:
-    1. orders-db-prod (analytics_reader) — confirmed source of 
-       47 NAT gateway connections during Incident 8
-    2. reporting-db-prod — UNKNOWN RDS INSTANCE, NOT IN TERRAFORM
-  Security group: inbound 3000 from 10.0.0.0/8, 443 from 0.0.0.0/0
-    ALB: metabase.internal.novamart.com (internal, not internet-facing)
-    0.0.0.0/0 rule is stale — bad hygiene but not currently exploitable
-  Users: 7 accounts (Carlos admin, Wei, Tom, 4 unknown — likely product/finance)
-  Auth: local Metabase passwords, no MFA, no SSO
-  Shadow infrastructure item #9
-
-REPORTING-DB-PROD (RDS, unknown):
-  Connected to by Metabase. Not in Terraform. Not in any inventory.
-  Investigation pending.
-  Shadow infrastructure item #11
-
-NOVAMART-JENKINS-LEGACY (i-0e8g3f...):
-  See "Potential Security Incident" section above.
-  Shadow infrastructure item #10
-```
-
----
-
-## SHADOW INFRASTRUCTURE TALLY
+## SHADOW INFRASTRUCTURE TALLY (FINAL — as of Thu Wk2)
 
 ```
 # | Type | Location | Owner | Status
-1  | Kafka brokers (6) | K8s: data-analytics | Tom Chen | Containment, ECR migration Mon
-2  | ZooKeeper (3) | K8s: data-analytics | Tom Chen | Containment, ECR migration Mon  
-3  | Kafka Connect | K8s: data-analytics | Tom Chen | Containment
-4  | ETL CronJob | K8s: data-analytics | Tom Chen | Running (expected exit 1)
-5  | Analytics Dashboard | K8s: data-analytics | Tom Chen | 1 replica, HPA frozen
-6  | MongoDB Atlas | External (free-tier) | Tom Chen | BLOCKED + Legal hold
-7  | ES cluster (master+data) | K8s: search | Carlos (departed) | Platform interim ownership
-8  | Kibana | K8s: search | Carlos (departed) | Running
-9  | Metabase EC2 | EC2: analytics-metabase | Carlos (departed) | Under investigation
-10 | Legacy Jenkins EC2 | EC2: novamart-jenkins-legacy | former-devops (departed) | 🔴 SECURITY INCIDENT
-11 | Reporting DB | RDS: reporting-db-prod | Unknown | Under investigation
--- | S3: novamart-data-exports | AWS S3 | Tom/Nina | Hardened, not in Terraform
--- | S3: novamart-analytics-datalake | AWS S3 | Tom | Hardened, not in Terraform
+1  | Kafka brokers (6) | K8s: data-analytics | Tom | ✅ ECR, meshed, contained
+2  | ZooKeeper (3) | K8s: data-analytics | Tom | ✅ ECR, meshed, contained
+3  | Kafka Connect | K8s: data-analytics | Tom | ✅ ECR, meshed, contained
+4  | ETL CronJob | K8s: data-analytics | Tom | Running (expected exit 1)
+5  | Analytics Dashboard | K8s: data-analytics | Tom | 1 replica, broken (pwd rotated)
+6  | MongoDB Atlas | External (free-tier) | Tom | BLOCKED + Legal hold
+7  | ES cluster | K8s: search | Priya (interim) | ✅ ILM deployed, stabilized
+8  | Kibana | K8s: search | Priya (interim) | Running, Docker Hub image (Jake ECR list)
+9  | Metabase EC2 (prod) | EC2 | Carlos (departed) | STOPPED, forensic hold
+10 | Legacy Jenkins EC2 | EC2 | former-devops | STOPPED, forensic hold
+11 | Reporting DB | RDS | Carlos (departed) | Password rotated, investigation complete
+-- | S3: novamart-data-exports | AWS S3 | Tom/Nina | ✅ Hardened, IN TERRAFORM
+-- | S3: novamart-analytics-datalake | AWS S3 | Tom | ✅ Hardened, IN TERRAFORM
+-- | S3: novamart-db-backups | AWS S3 | legacy | ✅ Hardened, IN TERRAFORM, evidence hold
+-- | S3: carlos-dev-scratch | AWS S3 | Carlos | Evidence hold
 -- | Order data export CronJob | K8s: order-prod | Nina | ✅ ONBOARDED to ArgoCD
+-- | Lambda: novamart-etl-trigger | AWS Lambda | Carlos | Documented, dormant
+-- | Lambda: novamart-report-generator | AWS Lambda | Carlos | Documented, dormant since Nov 29
 
-Total: 11 active shadow items + 2 unmanaged S3 buckets
-Onboarded: 1 (Nina's CronJob)
-Three departed owners. One security incident.
+AWS AUDIT FINAL (Marcus, 52 resources):
+  37 managed (Terraform/ArgoCD)
+  8 known-unmanaged (all have owners + remediation dates)
+  4 decommissioned this week
+  3 evidence-hold (stopped instances)
+
+DECOMMISSIONED THIS WEEK:
+  ✅ load-test-runner EC2 (terminated)
+  ✅ novamart-temp-uploads S3 (deleted — empty)
+  ✅ grafana-cloud-metrics IAM key (deactivated)
+  ✅ datadog-trial IAM key (deactivated)
+  ✅ intern.analytics console access (disabled)
 ```
 
 ---
@@ -696,250 +727,174 @@ Three departed owners. One security incident.
 WEEK 1 — MONDAY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 09:00  On-call shift starts
-09:04  ACK PagerDuty                                        [INC-1 START]
-09:05  Dashboard + PromQL investigation
-09:06  ArgoCD/rollout, GitOps diff
-09:08  Unblock Alex (state lock)                             [INC-2 START]
-09:10  Hypothesis: 800ms timeout too aggressive
-09:13  CONFIRMED via trace
-09:14  Decision: 2000ms
-09:15  GitOps hotfix pushed
-09:30  RESOLVED                                              [INC-1 END]
-09:42  Alex self-resolved                                    [INC-2 END]
-09:45  CB meeting scheduled
-09:50  EKS 1.29 upgrade research
-11:02  Ryan reports catalog slowness                         [INC-3 START]
-11:37  Root cause: Redis memory
-11:40  Maxmemory bumped                                      [INC-3 MITIGATED]
-12:00  Lunch
-13:00  Sarah Q1 priorities
-13:20  Priya Linkerd PR review
+09:04  ACK PagerDuty                                   [INC-1 START]
+09:08  Unblock Alex (state lock)                        [INC-2 START]
+09:13  Root cause confirmed: 800ms timeout
+09:15  GitOps hotfix pushed (2000ms)
+09:30  RESOLVED                                         [INC-1 END]
+09:42  Alex self-resolved                               [INC-2 END]
+11:02  Ryan reports catalog slowness                    [INC-3 START]
+11:40  Redis maxmemory bumped                           [INC-3 MITIGATED]
 14:00  Circuit breaker design meeting
-14:48  Kafka investigation                                   [INC-4 START]
-15:06  Redis/catalog alerts deployed (PLAT-919)
-15:15  PDB + NetworkPolicy for Kafka                         [INC-4 MITIGATED]
-15:30  Redis staging failover test
-16:15  EOD
+14:48  Kafka investigation                              [INC-4 START]
+15:15  PDB + NetworkPolicy for Kafka                    [INC-4 MITIGATED]
 
 MONDAY NIGHT / TUESDAY EARLY AM
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-01:50  NetworkPolicy v2 fix (ZK port). EBS encryption check.
-02:00  Redis upgrade                                         [INC-3 RESOLVED]
-02:22  Terraform updated
+01:50  NetworkPolicy v2 fix (ZK port)
+02:00  Redis upgrade                                    [INC-3 RESOLVED]
 
 TUESDAY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-07:45  David reports builds failing                          [INC-5 START]
-~AM    Jenkins zombie pods resolved                          [INC-5 RESOLVED]
+07:45  David reports builds failing                     [INC-5 START]
+~AM    Jenkins zombie pods resolved                     [INC-5 RESOLVED]
 
 WEDNESDAY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-10:00  Standup (James present) — PCI insertion               [STANDUP — A+]
-10:35  Aisha security response, audit coordination
+10:00  Standup — PCI insertion
 10:45  Cluster audit (scripted sweep)
-11:45  Audit: 9 unmanaged workloads, 4 PCI critical
-12:15  NetworkPolicy v3. Atlas blocked. S3 remediation.
-12:42  Aisha: PCI review Thu 2 PM
-13:00  S3 KMS encryption + hardening
-14:00  PCI findings document drafting
-14:47  PagerDuty: PaymentServiceHighErrorRate                [INC-6 START]
-14:48  ACK. Root cause 4 min.
+12:15  NetworkPolicy v3, Atlas blocked, S3 remediation  [INC-4 MITIGATED v3]
+14:47  PagerDuty: PaymentServiceHighErrorRate           [INC-6 START]
 14:53  Rollback initiated
-14:58  Rollback complete
-15:01  Baseline restored
-15:22  David: scope all BigDecimal fixes
-15:45  PR review (caught applyDiscount scale bug)
-16:08  sha-c4d82e1 deployed
-16:21  Promoted to 100%
-16:43  Watch clean                                           [INC-6 RESOLVED]
-16:50  Sarah: EKS runbook → Monday
-16:55  PCI document 40%→75%
-18:00  EOD
-
-WEDNESDAY NIGHT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-20:30  Aisha: Atlas free-tier details. GDPR implications.
+16:08  sha-c4d82e1 deployed                             [INC-6 RESOLVED]
 22:47  Derek ServiceProfile merged (+unauthorized timeout)
-23:45  Wei: Atlas credentials, logging in
 
 THURSDAY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-08:30  Login. Overnight clean.
-08:33  Aisha: document language adjustments
-08:38  Priya: namespace ordering for dry-run
-08:40  Derek: CB PR up
-08:42  James email: wants exposure/notification/remediation/prevention
-08:45  PCI document final push (75%→100%)
-09:50  Pre-dry-run verification
-10:00  Linkerd staging dry-run with Priya                    [DRY-RUN]
-       Four namespaces clean ✅
-11:05  Priya: draft production runbook
-11:30  Wei: Atlas data fields (42,847 docs, PII confirmed)
-12:15  PCI document complete (100%)
-12:50  Pre-read distributed
-14:00  PCI Emergency Review Meeting                          [PCI MEETING]
-14:04  James asks prevention + timeline questions
-14:04  Phone buzzes: ETL alert
-14:04  Answers James: 5 prevention controls, "wall and door"
-14:10  Nina validates "make the right thing easy"
-14:18  Rachel: specific dates + evidence by 10 AM Fri
-14:28  Revised timeline with self-service
-14:32  James: "Do that."
-14:38  Meeting ends
-14:39  Pull out phone — ETL alert 35 min old
-14:41  ETL investigation begins
-       - Alert from KubeJobFailed (12h delay), NOT PLAT-919
-       - ETL data processing succeeded
-       - "Failure" = Atlas sink health check (intentionally blocked)
-       - KMS PERMISSION GAP: kafka-connect-s3-writer missing from key policy
-       - S3 writes working by accident (bucket default encryption)
-14:56  Investigation complete
-15:00  KMS key policy fix: added kafka-connect-s3-writer
-15:05  Verified ✅
-15:08  Wei: full transparency about KMS gap
-15:12  Alertmanager silence for ETL (7-day)
-15:18  Sarah: "Wei used the word 'refreshing.'"
-       Board presentation: remediation timeline going to CEO.
-15:25  Derek: 0.3% NR flags on payment authorize
-15:27  Investigation — NR from ServiceProfile timeout
-15:36  User: remove timeouts. Derek pushes fix.
-15:46  ArgoCD syncs
-15:54  NR rate zero ✅
-15:58  CB PR review (platform-infra#347)                     [PR REVIEW]
-16:18  Review: 3 blocking, 1 should-fix, 1 non-blocking
-16:22  Derek agrees on timeout + stockCache
-16:25  Nina pushback on overselling fallback (business math)
-16:28  User: unblocks #2 with conditions (metric + code comment)
-       Converts to should-fix. Blockers: timeout + stockCache.
-16:33  Tells Derek: merge with TODO, stockCache follow-up Monday
-16:35  Rachel's remediation dates table drafted
-17:15  Drift detection CronJob skeleton written
-17:47  EOD posted
-17:50  Personal notes
+10:00  Linkerd staging dry-run with Priya
+12:15  PCI document complete
+14:00  PCI Emergency Review Meeting
+14:56  ETL alert investigation (KMS gap found + fixed)
+15:25  ServiceProfile timeout investigation + fix
+15:58  CB PR review (3 blocking, 1 should-fix, 1 non-blocking)
 
 FRIDAY
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-05:47  SearchServiceHighErrorRate fires                      [INC-7 START]
-05:53  Acked (waking up)
-05:57  Three signals triaged (search=real, Kafka=parked, Redis=parked)
-05:58  #incidents posted
-06:00  Investigation: ES cluster YELLOW → RED, 1 data node missing
-06:06  Root cause: eviction → quota → scheduling chain
-06:07  ResourceQuota increased (64Gi→80Gi requests)
-06:08  PDB applied (wrong labels — FIXED on second attempt)
-06:15  Stuck: PVC AZ-locked, no node capacity                [RULE 12]
-06:17  Parallel execution: scale search to 2 + evict pods from node
-06:19  es-data-3 scheduling. es-data-2 passes readiness (by 1 cycle).
-06:22  es-data-3 in cluster, shards recovering
-06:28  Cluster YELLOW, error rate 3.8%
-06:29  Scale search-service back to 4
-06:31  Comms: Alex, Sarah, Ryan, Lisa
-06:35  Monitor recovery loop
-06:45  Scale search to 6
-06:52  Cluster GREEN                                         [INC-7 END]
-06:53  #incidents RESOLVED
-07:15  Cleanup: PDB, quota, Kibana, catalog
-08:00  Cluster stable 1h at GREEN
+05:47  SearchServiceHighErrorRate                       [INC-7 START]
+06:52  Cluster GREEN                                    [INC-7 END]
 08:05  Drift detection script development
-09:20  Drift detection tested against cluster (9 findings, all correct)
-09:28  Rachel's comments on remediation table
-09:33  Finance: $47.23 reconciliation discrepancy             [HALF_EVEN]
-09:35  Finance response: full explanation + apology
-09:40  Rachel's table revision (4 issues addressed)
-09:58  Email to Rachel: R-3 enforcement approach, R-6 split,
-       Note 4 reframing, search cluster C-5 added
-10:02  Derek: merge CB PR with TODO
-10:05  Drift detection finishing touches
+09:28  Rachel remediation table
+09:33  Finance $47.23 reconciliation
+10:02  Derek merges CB PR
 10:30  Deploy drift detection to staging
-10:45  Status check — all clear
-10:50  Rachel: approved with one change (C-5 needs interim owner date)
-10:53  Fixed: platform team interim effective Mon Jan 22
-10:58  Rachel: "Filed at 1. Thank you."
-11:02  Finance follow-up (Martha: one-time adjustment, future clean)
-11:04  David: three-rounding-behavior question
-11:30  EKS runbook polish
-12:00  Lunch
-13:15  Rachel files GDPR Art. 33 — SA-2024-0119-NM           [GDPR FILED]
-14:00  Lisa's canary AnalysisTemplate PR review + approved    [PLAT-916 DONE]
-14:30  Derek merges CB PR
-15:00  Derek staging load test (clean)
-16:30  EOD / weekly summary posted
-       7 incidents. All resolved. Budgets tight.
+13:15  Rachel files GDPR Art. 33 — SA-2024-0119-NM
+14:00  Lisa's canary AnalysisTemplate PR approved       [PLAT-916 DONE]
 
-FRIDAY NIGHT / SATURDAY / SUNDAY (QUIET)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-No pages Fri night / Sat / Sun.
-Nina: added order-data-export to ArgoCD (Sat, self-initiated).
-Marcus: added node-problem-detector to ArgoCD (Sun 11:42 PM).
-
-Sun 15:47  Wei DM: Tom wants to access data-analytics namespace
-           User responds: call Tom (Wei), restrict RBAC (user)
-           Tom's RBAC reduced to read-only
-           Aisha informed
-           Tom called by Wei — understood, waiting for meeting
-           Wei: "He asked if he's in trouble. I told him no."
+WEEKEND (QUIET)
+  Nina: added order-data-export to ArgoCD (Sat)
+  Marcus: node-problem-detector to ArgoCD (Sun)
+  Sun: Wei DM re Tom → RBAC restricted, Tom called
 
 WEEK 2 — MONDAY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-07:45  Login. Overnight clean.
-07:20  Priya: EKS runbook ready, search namespace question
-07:31  Tom: pre-meeting message (apology, read all Slack, Atlas context)
-08:00  DRIFT DETECTION FIRST PRODUCTION RUN                  [COMMITTED DELIVERABLE]
-       8 CRITICAL, 0 HIGH (node-problem-detector resolved)
-       Nina's CronJob correctly identified as MANAGED ✅
-       Sarah: "This is exactly what James wanted to see."
-08:15  Tom response: not an ambush, framing, context
-08:18  Priya: exclude search from EKS upgrade
-08:20  Nina: ArgoCD onboarding acknowledged, asked for README
-09:45  Meeting prep (1-page agenda)
-10:00  Tom Chen Onboarding Meeting                           [TOM MEETING]
-       Sarah, Wei, Tom, User. Productive.
-       Tom: pipeline well-engineered, no self-service path existed.
-       Sprint plan: ECR Tue, mesh Wed, monitoring Thu-Fri.
-       Atlas: decommission when Legal clears.
-10:55  Meeting ends. Sarah: "That went well."
-11:07  PagerDuty: RDSHighConnectionCount                     [INC-8 START]
-11:08  OrderServiceLatencyP99High
-11:09  PaymentServiceLatencyP99High
-11:10  InventoryServiceLatencyP99High
-11:11  Acked. Investigation.
-11:15  Root cause: analytics_reader 256 connections, no limit
-11:17  Dashboard scaled to 0, queries killed, HPA frozen
-11:18  CONNECTION LIMIT 20 set
-11:22  Database recovered                                    [INC-8 RESOLVED]
-11:24  Wei: admits manual report pod caused spike
-11:25  Marcus: mystery pod is Wei's. Also found Metabase EC2.
-11:27  Sarah: needs answers for James 11:30 meeting
-11:29  Wei handled: honest, not punitive, RBAC restricted
-11:30  Sarah briefed (one-liner for James)
-11:31  #incidents posted
-11:33  RBAC lockdown: all non-platform read-only in data-analytics
-11:36  Wei's partial report salvaged
-11:40  Dashboard restored at 1 replica, HPA frozen at max 1
-12:15  Marcus findings: Metabase, legacy Jenkins, unknown RDS
-       Jenkins: admin/admin, 7 users, monthly-db-backup (failing 2mo)
-13:15  Wei export re-run (single-threaded, 14 min, database stable)
-14:00  CertificateExpiringWithin7Days alert                  [INC-9 START]
-       *.novamart.com expires Jan 29. Renewal failing 23 days.
-14:08  Root cause: IAM key deactivated by security-automation Dec 28
-14:10  New IAM key created
-14:15  Cert-manager secret + ClusterIssuer updated
-14:25  Renewal triggered
-14:27  Certificate issued ✅                                  [INC-9 RESOLVED]
-14:30  #platform-engineering update
-14:35  Aisha: security-automation policy context
-14:40  Marcus: Jenkins lockdown. Password changed.
-14:42  Marcus: UNAUTHORIZED LOGINS from peered VPC           [SECURITY INCIDENT?]
-       172.31.4.89 — legacy-staging VPC, 4 logins in 7 days
-       Most recent: today 9:14 AM
-14:43  Derek: CB canary at 5%, looking clean
-14:44  Tom: ECR images ready, wants to do rolling restart
+08:00  Drift detection first production run (8 CRITICAL) [DELIVERABLE ✅]
+10:00  Tom Chen onboarding meeting                      [MEETING — productive]
+11:07  PagerDuty: RDSHighConnectionCount                [INC-8 START]
+11:22  Database recovered                               [INC-8 RESOLVED]
+12:15  Marcus: Metabase, legacy Jenkins, unknown RDS found
+14:00  CertificateExpiringWithin7Days                   [INC-9 START]
+14:27  Certificate renewed                              [INC-9 RESOLVED]
+14:42  Marcus: unauthorized Jenkins logins from peered VPC [INC-10 START]
+14:50  Aisha: security incident declared (SEC-2024-0122-001)
+15:15  James bridge call
+15:24  VPC peering DELETED
+15:30  Rachel + Aisha + User: investigation coordination
+17:00  Rachel working session (GDPR notification planning)
+17:28  Aisha: CrowdStrike CloudTrail — S3 GetObject from staging Metabase
+17:30  Marcus: carlos-dev-scratch S3 bucket, Oct/Nov CSV exports
+17:33  Exfiltration assessment: "possible" → "probable"
+17:41  VPC flow logs enabled
+17:58  NAT gateway metrics: CONFIRMED exfiltration (4 data spikes match)
+18:00  CrowdStrike call (David Park)                    [FORENSICS START]
+18:22  VPC peering route: full production CIDR (10.0.0.0/16) reachable
+18:28  Production Metabase uses Carlos SSH key — added to forensic scope
+18:44  Containment: production Metabase SG, reporting-db-prod, analytics_reader
+19:00  All known credentials rotated, all network paths severed
+19:12  Handed night watch to Aisha + CrowdStrike
 
->>> CURRENT TIME: Monday 2:44 PM <<<
->>> POTENTIAL SECURITY INCIDENT ACTIVE <<<
->>> Marcus waiting for guidance <<<
->>> Derek's CB canary running <<<
->>> Tom wants to restart StatefulSets in Legal-hold namespace <<<
+TUESDAY (Wk2)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+06:58  SearchServiceHighLatency alert (p99 >2s)
+06:59  Delegated to Priya (secondary on-call)
+07:00  CrowdStrike overnight findings review:
+         bash_history: psql, pg_dump, curl -T transfer.sh
+         Jenkins credentials store: RDS master pwd, IAM admin key
+         jenkins-deployer: AdministratorAccess (DEACTIVATED by Aisha 12:22 AM)
+         orders-db-prod master: ROTATED (Aisha 12:14 AM)
+         H2 Metabase DB: 347 queries, 58 post-departure
+07:15  Priya: search GREEN, heap 79%, chronic ILM issue (not incident)
+08:30  James sync: breach scope briefed, all questions answered
+09:04  reporting-db-prod card data check (PRIORITY)
+09:17  Results: NO full card numbers. NOT PCI. ✅
+09:35  Rachel + James updated. Noon filing clean.
+10:01  Marcus: Carlos personal IAM user still ACTIVE, key last used Jan 19
+10:03  Aisha deactivates Carlos IAM key
+10:01  Marcus + Tom: ECR rolling restart begins
+10:14  Derek: CB at 25%, clean
+10:38  CrowdStrike report full review (94 pages)
+10:44  MISSED: secondary ENI with public SSH — REVOKED
+10:51  All three forensic instances STOPPED
+11:01  CORRECTION: webhook data WAS exported via Metabase (not just viewed)
+11:15  Marcus: ECR restart complete, Lambdas found, intern account disabled
+11:40  Derek: CB at 50%
+12:03  Rachel: Art. 33 #2 FILED (SA-2024-0122-NM-002)
+14:00  Derek: CB at 100% ✅ (clean deploy, metrics improved)
+15:00  Marcus: AWS audit 90% complete
+15:30  Tom: S3 bucket Terraform imports
+15:40  Derek: stockCache design decision (Option A — write-through)
+15:42  Lisa: budget update, dual-SLI proposal
+16:30  Board materials draft sent to James/Sarah
+17:50  EOD
+
+WEDNESDAY (Wk2)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+06:00  Marcus: AWS audit table complete (52 resources)
+06:30  Rachel: Art. 34 draft, UK ICO draft, Kroll vendor selected ($797K)
+06:45  Tom: mesh injection ready
+07:00  Jake: Kyverno staging clean (3 violations, all expected)
+07:30  Board materials: 3 revisions (Controls Assessment, fine exposure, Day 1 vs Day 2)
+08:35  Rachel Art. 34 review (added phishing specificity)
+09:10  Marcus AWS audit review + Rachel handoff
+10:00  Priya: ILM policy deployed                       [INC-7 ROOT CAUSE FIXED]
+         34 indices → warm, heap 81%→53%, p99 1.1s→680ms
+10:05  Tom: mesh injection deployed (all Kafka pods meshed)
+10:38  Tom: all components running with Linkerd mTLS ✅
+11:12  Sarah: James approved board materials. "Day 1 vs Day 2 is the money slide."
+         James wants User to present Controls Assessment + Day 1/Day 2 directly.
+11:20  Aisha: HR file — Carlos exit interview, Wei context
+11:25  Derek: stockCache PR #354 (approved, staging Fri)
+12:00  Lunch
+12:40  Derek stockCache PR review (2 non-blocking comments)
+13:05  Priya: EKS runbook approved (PLAT-892 DONE)
+14:00  Customer support briefing (Rachel-led, User 10 min technical Q&A)
+15:00  Search cluster ownership proposal sent to Sarah
+15:30  Tom: all 3 S3 buckets imported to Terraform ✅
+16:00  Wei: offboarding infrastructure walkthrough proposal
+16:30  Jake: image admission production approved for Thu AM
+17:00  EOD
+
+THURSDAY (Wk2)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+04:00  UK ICO filed (ICO-2024-NM-0122)
+06:15  Jake: image admission production audit mode deployed
+06:30  Tom: dashboards finalized, runbook 80%
+08:00  Office. Customer notification preparation.
+10:00  CUSTOMER NOTIFICATION SENT (284,847 emails)       [ART. 34]
+10:12  Support queue active. Volume moderate. FAQ handling bulk.
+10:30  Wei: message about exit interview, offboarding proposal
+15:00  BOARD PRESENTATION                                [BOARD MEETING]
+         James 15 min (breach/impact) → User 10 min (controls/remediation) → Q&A
+         Board approves remediation. 2 headcount approved.
+         CEO: sustainability question (answered honestly)
+15:32  Meeting ends.
+17:00  EOD
+
+FRIDAY (Wk2) — PLANNED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Tom: R-6a milestone close (dashboards + runbook)
+  Derek: stockCache production deploy
+  Jake: image admission validation report
+  R-6a DEADLINE: Kafka secured ✅ (on track)
+  Image admission warn mode DEADLINE ✅ (on track)
+  FBI CFAA referral (Rachel/counsel)
+
+>>> SIMULATION PAUSED: Thursday Wk2 5:30 PM <<<
+>>> RESUME: Friday Wk2 morning <<<
 ```
 
 ---
@@ -947,74 +902,113 @@ WEEK 2 — MONDAY
 ## LIVE SYSTEM CHANGES — CONSEQUENCE TRACKING
 
 ```
-CHANGE                              APPLIED         VERIFIED?
+CHANGE                              APPLIED         STATUS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-NetworkPolicy v3                    Wed Wk1         PARTIALLY
-  (data-analytics namespace)                        ✅ Kafka ingress
-                                                    ✅ S3 sink
-                                                    ✅ Atlas blocked
-                                                    ❓ RDS egress CIDR (fragile)
-                                                    ❓ Analytics dashboard ext
+NetworkPolicy v3                    Wed Wk1         ✅ Verified
+  (data-analytics namespace)                        ⚠️ RDS egress CIDR (fragile)
 
-KMS key policy                      Wed+Thu Wk1     ✅ FULLY VERIFIED
-  (all 4 writer roles added)                        ✅ All S3 writes clean
+KMS key policy (all 4 roles)        Wed+Thu Wk1     ✅ Fully verified
 
-S3 encryption + hardening           Wed Wk1         ✅ VERIFIED
-  (both buckets, KMS/CMK)
+S3 encryption + hardening           Wed Wk1         ✅ Verified
+  (all buckets, KMS/CMK)
 
-Payment sha-c4d82e1                 Wed Wk1         ✅ Running stable
-                                                    ✅ HALF_EVEN reconciliation 
-                                                       handled with finance
+S3 Terraform imports                Wed Wk2         ✅ All 3 buckets imported
+  (data-exports, datalake, db-backups)               No drift on terraform plan
 
-Jenkins build discard               Tue Wk1         ✅ Stable 5+ days
-                                                    ❓ Aggressive discard limit
+Payment sha-c4d82e1                 Wed Wk1         ✅ Stable
+  (HALF_EVEN reconciliation complete)
+
+Jenkins build discard               Tue Wk1         ✅ Stable 8+ days
+                                                    ⚠️ Aggressive discard limit unverified
 
 Redis r6g.xlarge                    Tue Wk1         ✅ Stable (94.1%, 54% mem)
-                                                    ❓ Terraform PR merged?
 
-PLAT-919 PrometheusRule             Mon Wk1         ✅ Correctly scoped (confirmed)
+PLAT-919 PrometheusRule             Mon Wk1         ✅ Correctly scoped
 
-Derek ServiceProfile                Thu Wk1         ✅ Timeout removed, NR zero
-  (isRetryable only, no timeout)
+Derek ServiceProfile (timeout fix)  Thu Wk1         ✅ NR zero
 
-ResourceQuota (search ns)           Fri Wk1         ✅ 80Gi, annotated
-  (64Gi → 80Gi requests)
+ResourceQuota (search ns, 80Gi)     Fri Wk1         ✅ Annotated
 
-PDB (search ns)                     Fri Wk1         ✅ maxUnavailable: 1
-  (replaced emergency PDB)
+PDB (search ns)                     Fri Wk1         ✅ Correct labels
 
-analytics_reader CONN LIMIT 20      Mon Wk2         ✅ Applied, tested
-                                                    ✅ Dashboard at 1 replica stable
+ILM policy (search ns)              Wed Wk2         ✅ DEPLOYED
+  hot: 30d, warm: read-only+merge                   Heap 81%→53%
+  delete: 180d (pending legal)                       p99 1.1s→680ms
+                                                    34 indices in warm tier
 
-RBAC: Tom read-only (data-analytics) Sun Wk2        ✅ Applied, verified
+analytics_reader CONN LIMIT 20      Mon Wk2         ✅ Applied
+analytics_reader PASSWORD ROTATED   Mon Wk2         ✅ Applied
+
+RBAC: Tom read-only (data-analytics) Sun Wk2        ✅ Applied
 RBAC: Wei read-only (data-analytics) Mon Wk2        ✅ Applied
+RBAC: All non-platform read-only     Mon Wk2        ✅ Applied
 
 Dashboard HPA frozen (max 1)        Mon Wk2         ✅ Applied
 
-Cert-manager IAM key rotation       Mon Wk2         ✅ New key active
-                                                    ✅ Cert renewed (Apr 21)
-                                                    ❓ Old key still exists (inactive)
+Cert-manager IAM key rotation       Mon Wk2         ✅ Cert renewed (Apr 21)
 
-Jenkins admin password changed      Mon Wk2 ~2:40   ✅ Marcus applied
-                                                    ❓ SG restriction in progress
+Drift detection CronJob             Mon Wk2         ✅ Running daily, 8 findings → resolving
 
-Drift detection CronJob             Mon Wk2 8:00    ✅ First production run clean
-  (monitoring namespace)                             ✅ 8 findings, all correct
+Circuit breaker (PLAT-915)          Thu Wk2         ✅ 100% production, clean metrics
+                                                    Error rate improved (0.018%)
+                                                    p99 improved (395ms)
 
-CB deployed to staging              Fri Wk1         ✅ Load test clean
-CB canary in production             Mon Wk2 2:43    ⏳ In progress (5%, 10 min in)
+Dual-SLI (Lisa #353)                Wed Wk2         ✅ Merged, recording rules active
+
+stockCache (Derek #354)             Wed Wk2         ✅ PR approved, staging Thu
+                                                    Production deploy Fri Wk2
+
+Image admission (Kyverno)           Thu Wk2         ✅ Production audit mode
+  Staging: 3 violations (all expected)               No unexpected violations
+  Production: 3 violations (Kibana, Grafana, nginx:latest)
+  Enforce mode: Feb 2
+
+Linkerd mesh (data-analytics)       Wed Wk2         ✅ All pods meshed, mTLS verified
+
+ECR migration (Kafka/ZK/Connect)    Tue Wk2         ✅ Docker Hub eliminated
+
+SECURITY INCIDENT CONTAINMENT:
+  All credentials rotated            Mon-Tue Wk2    ✅ 9 credentials
+  All network paths severed          Mon Wk2        ✅ VPC peering deleted
+  All SGs locked                     Mon-Tue Wk2    ✅ Including secondary ENI
+  All forensic instances stopped     Tue Wk2        ✅ EBS snapshots preserved
+  VPC flow logs enabled              Mon Wk2        ✅ Prospective only
+  Carlos IAM user deactivated        Tue Wk2        ✅ Key deactivated
+  jenkins-deployer IAM deactivated   Tue Wk2        ✅ (Aisha, midnight)
+  intern.analytics disabled          Tue Wk2        ✅ Console access removed
+  grafana-cloud-metrics deactivated  Wed Wk2        ✅
+  datadog-trial deactivated          Wed Wk2        ✅
 
 STILL UNVERIFIED:
   ❓ Jenkins build discard aggressive limit
-  ❓ Redis Terraform PR merged?
-  ❓ RDS egress CIDR fragility
-  ❓ Analytics dashboard external access (NetworkPolicy v3)
-  ❓ Metabase EC2 full assessment (Marcus investigating)
-  ❓ reporting-db-prod (unknown RDS instance)
-  ❓ Legacy Jenkins: what did the 172.31.4.89 logins do?
-  ❓ Legacy-staging VPC: what is it, who owns it?
-  ❓ Tom's ECR rolling restart: safe in Legal-hold namespace?
+  ❓ RDS egress CIDR fragility (NetworkPolicy v3)
+  ❓ carlos-staging-key SSH key (SG-blocked, pending CrowdStrike clearance to delete)
+  ❓ novamart-analytics-key SSH key (SG-blocked, pending CrowdStrike clearance)
+```
+
+---
+
+## ERROR BUDGETS (as of Thu Wk2 EOD)
+
+```
+SERVICE          BUDGET    TREND    NOTES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Order-service    61.2%     ↑        CB p99 improvement earning ~0.04%/day
+                                    Projected window end: ~59.6%
+                                    THIN. One more incident → freeze.
+                                    CB deployed (risk reduction).
+                                    stockCache deploying Fri (further reduction).
+
+Payment-service  86.0%     →        Velocity freeze in effect.
+                                    Exception: corrective deploys only.
+                                    sha-c4d82e1 stable.
+                                    HALF_EVEN reconciliation complete.
+
+Search-service   No SLO    —        ILM deployed. Heap stable. p99 680ms.
+                                    SLO definition: Priya + Lisa, next week.
+
+Inventory-svc    Not tracked separately (part of order-service SLI)
 ```
 
 ---
@@ -1024,168 +1018,140 @@ STILL UNVERIFIED:
 ### Active Tickets
 
 ```
-PLAT-892  [In Progress]  EKS 1.28→1.29 upgrade runbook — mostly done, due today
+PLAT-892  [Done ✅]     EKS 1.28→1.29 upgrade runbook — approved Wed Wk2
 PLAT-901  [In Review]   Linkerd PR #347 — needs re-review (Priya updates)
 PLAT-910  [To Do]       GP3 EBS migration (next sprint, skip data-analytics + search)
-PLAT-915  [Done ✅]     Circuit breaker — merged, staging tested, prod canary active
-PLAT-916  [Done ✅]     Canary analysis — Lisa's AnalysisTemplate merged Fri
+PLAT-915  [Done ✅]     Circuit breaker — 100% production
+PLAT-916  [Done ✅]     Canary analysis — Lisa's AnalysisTemplate merged
 PLAT-917  [To Do]       Investigate inventory p99 (Nina)
 PLAT-918  [Done ✅]     Redis scale-up
-PLAT-919  [Done ✅]     Redis alerting (confirmed correctly scoped)
+PLAT-919  [Done ✅]     Redis alerting
 PLAT-920  [To Do]       Quarterly refresh capacity planning gate
-PLAT-921  [In Progress] Kafka platform onboarding — Tom sprint started Mon
-                         ECR images built. Rolling restart pending approval.
-PLAT-922  [Done ✅]     PCI scope assessment — GDPR filed SA-2024-0119-NM
-PLAT-923  [To Do]       stockCache implementation (Derek, follow-up PR Mon)
-[NEEDED]  Cert-manager IRSA migration (this week)
+PLAT-921  [Done ✅]     Kafka platform onboarding R-6a (closing Fri)
+PLAT-922  [Done ✅]     PCI scope assessment + GDPR filed
+PLAT-923  [In Progress] stockCache (Derek PR #354, production Fri)
+[NEEDED]  Cert-manager IRSA migration (this week — not started)
 [NEEDED]  Cert renewal failure alert (not just expiry)
-[NEEDED]  AWS-level infrastructure audit (James wants by Wed)
-[NEEDED]  Search cluster: ILM, PriorityClass, ArgoCD, gp2→gp3
-[NEEDED]  Metabase assessment + containment
-[NEEDED]  Legacy Jenkins investigation + decommission
-[NEEDED]  reporting-db-prod investigation
-[NEEDED]  VPC peering assessment (legacy-staging)
-[NEEDED]  Read replica for analytics workloads
+[NEEDED]  Search cluster: ArgoCD onboarding (Priya, by Feb 2)
+[NEEDED]  Search cluster: gp2 → gp3 migration (Jake, next sprint)
+[NEEDED]  Search cluster: PriorityClass
+[NEEDED]  Search cluster: SLO definition (Priya + Lisa)
+[NEEDED]  Search cluster: runbook update
+[NEEDED]  Kibana ECR migration (Jake, pre-Feb 2)
+[NEEDED]  Grafana ECR migration (Jake, pre-Feb 2)
 [NEEDED]  Self-service data pipeline template (mid-Feb committed)
 [NEEDED]  Default-deny NetworkPolicy all namespaces (mid-Feb committed)
+[NEEDED]  IAM lifecycle automation — Okta cross-ref (Aisha, end Feb)
+[NEEDED]  SSH key mgmt through IdP (Aisha, end Feb)
 [NEEDED]  Egress gateway (end of Q1 committed)
-[NEEDED]  S3 lifecycle/retention policies (both buckets)
-[NEEDED]  S3 buckets → Terraform
+[NEEDED]  AWS resource tagging enforcement (Marcus, end Q1)
+[NEEDED]  S3 lifecycle/retention policies (all buckets)
 [NEEDED]  Migrate secrets to External Secrets Operator
-[NEEDED]  Security automation: pre-deactivation notifications (Aisha)
-[NEEDED]  ACME account: update from Carlos email to current employee
+[NEEDED]  ACME account: update from Carlos email
 [NEEDED]  weekly_summary.py: connection pooling / max-workers cap
-```
-
-### Pending Deliverables
-
-```
-- AWS-level audit scope → James wants by Wednesday
-- Cert-manager IRSA migration → this week
-- Cert renewal failure alert → this week
-- Tom ECR migration → Tue (images ready, restart pending)
-- Tom mesh injection → Wed
-- Tom monitoring/backup/runbook → Thu-Fri
-- R-6a (Kafka secured) → committed Fri Jan 26
-- R-6b (Kafka fully onboarded) → committed Fri Feb 9
-- EKS upgrade runbook → due today (mostly done)
-- Production Linkerd upgrade → Priya drafting runbook, next Tue 2 AM
-- Derek stockCache PR → this week
-- Supervisory authority acknowledgment → expected within 48h of filing
-  (filed Fri 1:15 PM → expected by Sun 1:15 PM, may arrive today)
+[NEEDED]  Read replica for analytics workloads
+[NEEDED]  Offboarding infrastructure walkthrough (Wei proposal — review)
+[NEEDED]  SA-2024-0119-NM supervisory response (due Feb 5)
+[NEEDED]  FBI CFAA referral (Rachel/counsel, Fri Wk2)
+[NEEDED]  Carlos SSH keys: delete after CrowdStrike clearance
+[NEEDED]  Lambda functions: assess and decommission or onboard
+[NEEDED]  reporting-db-prod: Terraform import or decommission (pending Legal)
+[NEEDED]  Analytics dashboard: reconnect after password rotation (or decommission)
 ```
 
 ---
 
-## ERROR BUDGETS
+## TEAM STATE (as of Thu Wk2 EOD)
 
 ```
-SERVICE          BUDGET    TREND    NOTES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Order-service    61.8%     ↓↓       Three incidents (1, 7 indirect, 8)
-                                    8 days remaining in window
-                                    Baseline ~0.5%/day = ~57.8% at window end
-                                    THIN. One more incident → freeze territory.
-                                    CB deploying today (risk reduction).
+James Morrison (VP Eng):  Board presentation done. Remediation approved.
+                          2 headcount approved. 30-day follow-up scheduled.
+                          "Don't oversell the remediation." Trusts the team.
 
-Payment-service  86.0%     ↓        Three hits (6, ServiceProfile, held on 8)
-                                    Velocity freeze in effect.
-                                    Exception: corrective deploys only.
+Sarah Chen (manager):     Board materials formatted. Credit monitoring vendor
+                          selected (Kroll $797K). Press statement ready.
+                          Forwarded drift scan to James week ago — now board-visible.
+                          Coordinating marketing + support for notification response.
 
-Search-service   No SLO    —        Define post-incident (next week)
+Aisha Rahman (Security):  IR lead for SEC-2024-0122-001. CrowdStrike coordination.
+                          Overnight: rotated RDS master, deactivated jenkins-deployer
+                          IAM key (AdministratorAccess). Adding pre-deactivation
+                          notification to security automation. Planning IAM lifecycle
+                          automation (Okta cross-ref). HR coordination for Carlos
+                          attribution. "Going in the post-incident remediation plan."
 
-Inventory-svc    Not tracked separately (part of order-service SLI)
-```
+Rachel Torres (Legal):    GDPR Art. 33 × 2 filed. Art. 34 sent (284,847 emails).
+                          UK ICO filed. Police report filed. FBI referral by Fri.
+                          Supervisory authority response due Feb 5.
+                          Credit monitoring: Kroll, $2.80/customer.
+                          Customer notification response: measured, no backlash.
+                          "Atlas stays blocked until I say so."
 
----
+Wei Liu (Data Eng mgr):   RBAC restricted. VP report delivered. Admitted fault on
+                          manual pod + exit interview follow-up gap. Proposed
+                          offboarding infrastructure walkthrough — "mandatory
+                          infrastructure walkthrough with departing engineers."
+                          Cooperative, accountable, constructive.
 
-## TEAM STATE
+Tom Chen (Data Eng):      RBAC read-only. Sprint executing ahead of schedule.
+                          ✅ ECR Tue, ✅ mesh Wed, ✅ Terraform Wed (early),
+                          dashboards Thu, runbook Fri.
+                          "First time I've hit a deadline in months."
+                          "Most productive three days at NovaMart."
+                          Marcus + Tom pair: "Like pair programming for infra."
 
-```
-James Morrison (VP Eng):  Satisfied with prevention plan. Presenting 
-                          remediation timeline to board. Wants AWS audit 
-                          by Wednesday. Asked about order-service budget 
-                          (Sarah briefing him now at 11:30 meeting).
-                          Quote: "I want to know about every piece of 
-                          infrastructure that isn't in a manifest somewhere."
+Nina Petrov (Order lead): Onboarded order-data-export to ArgoCD (self-initiated).
+                          README added. CB PR pushback resolved (business math).
+                          Self-service template UX requirement given.
 
-Sarah Chen (manager):     Briefed for James 11:30 meeting. Set up Mon 
-                          10 AM Tom meeting (successful). Forwarded drift 
-                          scan to James. "Wei used the word 'refreshing.'"
-                          Currently in meeting with James (11:30).
+Marcus Webb (secondary):  AWS audit COMPLETE (52 resources, all reconciled).
+                          Found: legacy Jenkins, staging Metabase, reporting-db-prod,
+                          Lambdas, intern account, IAM users, S3 buckets.
+                          Evidence collection. Credential rotations.
+                          Shadow tally: 11 → 3 remaining (all with plans).
+                          "Before I eat: carlos-dev-scratch S3 bucket."
 
-Aisha Rahman (Security):  Leading PCI/GDPR response. Updated shadow infra 
-                          tally. Confirmed containment posture. Adding 
-                          pre-deactivation notification to security automation.
-                          Has NOT YET been informed of Jenkins unauthorized 
-                          access finding. Needs to know IMMEDIATELY.
+Priya Sharma (mid→senior): ILM deployed (Incident 7 root cause fixed).
+                          Search cluster interim owner (proposal sent).
+                          EKS runbook approved. Linkerd dry-run complete.
+                          Triaged search latency alert independently.
+                          ILM monitoring dashboard building.
+                          Significant growth during this period.
 
-Rachel Torres (Legal):    GDPR Art. 33 filed (SA-2024-0119-NM, Fri 1:15 PM).
-                          Awaiting supervisory authority acknowledgment.
-                          "Don't purge Atlas until I say so."
-                          Remediation table approved. Board-ready.
+Jake Torres (mid):        Kyverno deployed: staging clean, production audit mode.
+                          GP3 migration planning resumed.
+                          ECR migration punch list: Kibana, Grafana (pre-Feb 2).
 
-Wei Liu (Data Eng mgr):   RBAC restricted to read-only in data-analytics.
-                          Admitted fault on manual report pod. "I did exactly 
-                          what I was worried Tom would do." VP report deadline 
-                          Tue 10 AM — export re-run completed (single-threaded).
-                          Relieved about S3 data continuity.
+Alex Kim (junior):        Jenkins build killed during Inc-7 (apologized).
+                          nginx:latest test pod flagged by image admission.
+                          Growing. Good instincts.
 
-Tom Chen (Data Eng):      Back from PTO. Onboarding meeting completed.
-                          Energized. Sprint plan: ECR Tue, mesh Wed, 
-                          monitoring Thu-Fri. RBAC read-only in data-analytics.
-                          ECR images built and pushed. Wants to do rolling 
-                          restart of StatefulSets NOW — waiting for approval.
-                          "Horrified" about Atlas but constructive.
+Lisa Park (SRE):          Canary AnalysisTemplate merged. Dual-SLI merged.
+                          Budget tracking: order 61.2%, payment 86.0%.
+                          CB metrics confirmed improvement.
 
-Nina Petrov (Order lead): Onboarded order-data-export to ArgoCD (Sat, 
-                          self-initiated). Migrated to KMS bucket path.
-                          Pushed back on CB PR #2 with business math — 
-                          resolved. Gave self-service template UX requirement.
-                          Added README per user's request.
+David Okafor (Payment):   Reconciliation complete with Martha.
+                          sha-c4d82e1 stable. PAYMENT-847 filed.
 
-Marcus Webb (secondary):  Investigating EC2 instances. Found Metabase, 
-                          legacy Jenkins, unknown RDS. Changed Jenkins 
-                          admin password. Found unauthorized logins from 
-                          peered VPC. WAITING FOR GUIDANCE on next steps.
-                          Asking: "Do I need to call Aisha?"
+Derek Huang (Order):      CB deployed to 100% — cleanest deploy of quarter.
+                          stockCache PR approved, staging Thu, production Fri.
+                          Three-tier fallback: live → cached → blind accept.
+                          Timeout anti-pattern acknowledged. Post-approval process.
 
-Priya Sharma (mid):       Linkerd staging dry-run complete. Drafting 
-                          production upgrade runbook. Recommended excluding 
-                          search namespace from EKS upgrade. Next: production 
-                          Linkerd upgrade (tentative Tue 2 AM next week).
-                          EKS runbook ready for user review.
+Ryan Mitchell (Frontend): Confirmed services recovered after incidents.
 
-Jake Torres (mid):        GP3 migration. Skipping data-analytics + search.
+Martha Reeves (Finance):  $47.23 reconciliation handled. One-time adjustment.
+                          Metabase user (discovered during investigation).
 
-Alex Kim (junior):        Jenkins build killed during Incident 7 (apologized).
-                          Growing. Good instincts on deploy freeze.
+Priya Kapoor (Payment):   BigDecimal fix stable. PAYMENT-847 filed.
 
-Lisa Park (SRE):          Canary AnalysisTemplate merged (PLAT-916 ✅).
-                          Budget tracking: payment 86.0%, order 61.8%.
-                          Warning: order-service one incident from freeze.
-                          CB canary monitoring.
-
-David Okafor (Payment):   Reconciliation adjustment with Martha (Finance).
-                          Three-rounding-behavior question answered.
-                          sha-c4d82e1 stable.
-
-Derek Huang (Order):      CB PR merged. Staging tested. Production canary 
-                          at 5% (started 2:43 PM). Asking about production 
-                          deploy timing given budget. stockCache follow-up 
-                          PR planned for this week.
-                          Timeout anti-pattern acknowledged ("I clearly 
-                          have a habit"). Post-approval process established.
-
-Ryan Mitchell (Frontend): Confirmed services recovered after Incident 8.
-
-Jenny Wu (Merch):         Looped into PLAT-920. Not active.
-
-Martha Reeves (Finance):  $47.23 reconciliation handled with David. 
-                          One-time adjustment. Future batches clean (HALF_EVEN).
-
-Priya Kapoor (Payment):   BigDecimal fix stable. PAYMENT-847 filed 
-                          (negative amount validation).
+EXTERNAL:
+  David Park (CrowdStrike): Final report delivered. "Best-prepared client handoff 
+    in two years." "Fastest and most thorough response we've seen."
+  Kroll: Credit monitoring enrollment live. 24,847 signups day 1.
+  Outside counsel: Police report filed. FBI CFAA referral by Fri.
+  Supervisory authority: Both filings acknowledged. Reviewing together. 
+    Response to SA-2024-0119-NM due Feb 5.
 ```
 
 ---
@@ -1203,7 +1169,8 @@ Incident 5 (SEV2 — Zombie CI pods):          [Grade from session]
 Incident 6 (SEV2 — Payment currency bug):    A+
 Incident 7 (SEV2 — ES/Search outage):        Pending
 Incident 8 (SEV2 — RDS connections):          Pending
-Incident 9 (SEV3 — TLS cert renewal):         Pending
+Incident 9 (SEV3 — TLS cert renewal):        Pending
+Incident 10 (SEV1 — Data exfiltration):       Pending
 
 Standup Presentation:       A+
 Cluster Audit:              A+
@@ -1215,94 +1182,123 @@ Linkerd Dry-Run:            A+
 Tom Onboarding Meeting:     A+
 Drift Detection Delivery:   A+
 Maintenance Window:         A
+Board Presentation:         A+
+CrowdStrike Coordination:   A+
+Rachel Working Session:     A+
+Customer Support Briefing:  A+
 ```
 
 ### v2 Chaos Engine Observations
 
 ```
-CONSEQUENCES ENCOUNTERED (cumulative):
-  1. KMS permission gap (self-inflicted Wed, found Thu) — fixed, disclosed
+CONSEQUENCES ENCOUNTERED (cumulative, 11 days):
+  1. KMS permission gap (self-inflicted Wed Wk1, found Thu) — fixed, disclosed
   2. ServiceProfile timeout (approved PR, Derek added post-approval) — fixed
   3. ETL "failure" alert (containment caused expected daily alert) — silenced
   4. HALF_EVEN reconciliation (known Wed, hit finance Fri) — $47.23, handled
-  5. analytics_reader no connection limit (known Wed, hit Mon) — Incident 8
+  5. analytics_reader no connection limit (known Wed Wk1, hit Mon Wk2) — Incident 8
   6. Wei RBAC gap (restricted Tom Sun, Wei caused incident Mon) — fixed
   7. Security automation broke cert renewal (RULE 2) — fixed
-  8. Legacy Jenkins unauthorized access (discovered through audit) — ACTIVE
-
-PATTERN: 
-  User identifies risks correctly in investigation, documents them 
-  as TODOs, but fixes them in priority order rather than exposure 
-  order. Database-level and credential-level fixes are low-effort 
-  but high-exposure — should be applied immediately when identified, 
-  not deferred to ticket timelines.
-
-RECOVERY QUALITY:
-  Consistently strong. Self-identifies gaps, discloses honestly, 
-  fixes thoroughly. Wei KMS disclosure, finance HALF_EVEN apology, 
-  PDB label correction, RBAC expansion after Wei incident — all 
-  demonstrate fast self-correction without defensiveness.
+  8. Legacy Jenkins unauthorized access (discovered through audit) — Incident 10
+  9. Webhook export assessment WRONG (bash history only, missed H2 export log) — corrected
+  10. Secondary ENI missed during SG lockdown (found by CrowdStrike report) — fixed
 
 RULE 4 INSTANCES (wrong/incomplete hypothesis):
   - PDB labels (wrong on first attempt, corrected in 60 sec)
-  - HALF_EVEN impact scope (assumed clean cutover, actually three 
-    rounding behaviors — David caught the rollback window gap)
+  - HALF_EVEN impact scope (three rounding behaviors, not clean cutover)
   - RBAC scope (restricted Tom, missed Wei — pattern, not individual)
-  - Cert renewal: initial assumption was PLAT-919 misconfiguration 
-    for ETL alert — actually correctly scoped (quick correction)
+  - Webhook export: "no evidence of export" → Metabase H2 showed CSV export
+  - Secondary ENI: locked primary SG, missed second network interface
 
-STRENGTHS DEMONSTRATED (v2 additions):
-  ✓ Parallel execution under extreme time pressure (Incident 7)
+STRENGTHS DEMONSTRATED:
+  ✓ Parallel execution under extreme time pressure
   ✓ Counterintuitive tactical decisions (scale DOWN to save UP)
   ✓ Unfamiliar system navigation (ES cluster — RULE 10)
   ✓ Genuine stuck point resolution (AZ-bound PVC — RULE 12)
-  ✓ Signal/noise separation under pressure (3 alerts → 1 incident, twice)
+  ✓ Signal/noise separation under pressure
   ✓ Honest self-accountability without self-flagellation
-  ✓ Executive communication under pressure (answered James while phone buzzing)
+  ✓ Executive communication under pressure
+  ✓ Board presentation (10 min, direct, honest, CEO-praised)
   ✓ Protecting people from themselves (Tom RBAC, Wei RBAC)
   ✓ Building trust through transparency (Wei "refreshing", Tom "not an ambush")
-  ✓ Board-quality deliverables under deadline (Rachel's table)
-  ✓ Committed deliverable met exactly on time (drift detection Mon 8 AM)
-  ✓ Converting blockers through business context (Nina CB pushback)
-  ✓ Process fixes over blame (Derek post-approval commits)
+  ✓ Board-quality deliverables under deadline
+  ✓ Committed deliverables met on time (drift detection, R-6a on track)
+  ✓ Converting blockers through business context
+  ✓ Process fixes over blame (Derek, Wei, Tom — all constructive)
   ✓ VP-level framing ("wall and door at the same time")
+  ✓ CrowdStrike brief quality ("best-prepared in two years")
+  ✓ Forensic evidence preservation under pressure
+  ✓ Self-correction speed (webhook assessment corrected <2 hours)
+  ✓ Delegation to growing engineers (Priya search, Jake admission, Marcus audit)
+  ✓ Security incident management (44-min containment, same-day forensics)
 
-GAPS (v2 additions):
+GAPS:
   - analytics_reader CONNECTION LIMIT deferred (caused Incident 8)
   - HALF_EVEN not proactively flagged to finance (credibility hit)
   - RBAC restriction incomplete (Tom but not Wei)
+  - 7-day gap between K8s audit and AWS audit scope expansion
+  - Webhook "no export" assessment wrong (corrected <2h)
+  - Secondary ENI missed in initial SG lockdown (16h window)
   - PDB wrong labels on first attempt (Incident 7)
-  - Cert renewal failure invisible for 23 days (alert gap, not user's 
-    direct fault, but cert infrastructure was unowned)
-  - AWS-level shadow infra (EC2, RDS) not visible to K8s drift scan
-  - Legacy Jenkins admin/admin existed for 2 years undetected
+  - Cert renewal failure invisible for 23 days (alert gap)
+  - AWS-level shadow infra not visible to K8s drift scan
+
+OVERALL PATTERN:
+  Exceptionally strong on: diagnosis speed, containment execution, 
+  executive communication, team development, honest self-assessment.
+  
+  Growth area: immediate application of low-effort/high-exposure fixes 
+  (database-level changes, credential rotations) rather than deferring 
+  to ticket timelines. Also: enumerate ALL access paths during containment,
+  not just obvious ones. And: qualify assessments during active 
+  investigations — "based on current evidence" vs definitive statements.
 ```
 
 ---
 
-## INCIDENT CATEGORY COVERAGE (9/100)
+## INCIDENT CATEGORY COVERAGE (10/100)
+
+### REVISED TAXONOMY (v2)
 
 ```
-CATEGORY                          COVERED  TARGET   INCIDENTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Deploy/Release failures            2        8       #1, #6
-Database (RDS/Mongo/Redis)         2        10      #3, #8
-Kubernetes (pods/nodes/control)    1        12      #7
-Networking (DNS/LB/mesh/TLS)       0        10
-CI/CD pipeline failures            1        8       #5
-Security incidents                 1*       10      Jenkins (emerging)
-Observability failures             0        6
-Capacity/scaling                   2        8       #3, #7
-Cascading / multi-system           1        8       #8 (RDS→3 services)
-Cost/billing                       0        4
-DR / region failover               0        4
-Certificate / secrets              1        4       #9
-Cross-team / process               1        4       #4
-Ambiguous / hard-to-diagnose       0        4
-Simultaneous incidents             0        5
-IaC/Terraform state issues         1        5       #2
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TOTAL                              9*       100     (*security emerging)
+CATEGORY                              DONE  TARGET  INCIDENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Deploy/Release failures                2      8     #1, #6
+Database (connections/replication/     2      8     #3, #8
+  corruption/migration)
+Kubernetes (scheduling/resources/      1      8     #7
+  eviction/autoscaling)
+Networking — DNS                       0      5     
+Networking — Load Balancer/Ingress     0      4     
+Networking — Service Mesh              0      3     
+Networking — General (VPN/peering/     0      3     
+  NACLs/MTU)
+CI/CD pipeline failures                1      5     #5
+Security incidents                     1      4     #10
+Observability stack failures           0      4     
+Capacity/scaling                       1      6     #3 (shared)
+Cascading / multi-system               1      5     #8 (RDS→3 svcs)
+Cloud provider degradation             0      4     
+Kernel/OS/Node-level                   0      5     
+Control plane / etcd                   0      3     
+Data pipeline / streaming              0      4     
+Third-party / dependency               0      4     
+Storage (EBS/PV/S3)                    0      3     
+Certificate / secrets                  1      3     #9
+Cost/billing anomalies                 0      3     
+DR / region failover                   0      3     
+Scheduled jobs / CronJobs              0      2     
+Auth / RBAC / SSO                      0      3     
+Simultaneous incidents                 0      5     
+IaC / Terraform / GitOps drift         1      3     #2
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOTAL                                 10    100
+
+COVERAGE RATE: 10% complete, 9/25 categories touched.
+Major categories with zero coverage: DNS, LB/Ingress, Mesh,
+  Observability, Cloud provider, Kernel/OS, Control plane,
+  Data pipeline, Third-party, Storage, Cost, DR, CronJobs,
+  Auth/SSO, Simultaneous incidents.
 ```
 
 ---
@@ -1310,73 +1306,251 @@ TOTAL                              9*       100     (*security emerging)
 ## WHERE TO RESUME
 
 ```
-SIMULATION TIME:  Monday 2:44 PM EST, Week 2
+SIMULATION TIME:  Friday Wk2 morning (Day 12 of 100)
 SIMULATION MODE:  v2 — CHAOS ENGINE ACTIVE (all 12 rules)
-ON-CALL:          User (primary), Marcus (secondary — on Jenkins investigation)
+ON-CALL:          User (primary), Priya (secondary)
 
 ACTIVE SITUATIONS:
+  1. SEC-2024-0122-001: Investigation phase (CrowdStrike final)
+     - Customer notification sent, support queue active
+     - FBI CFAA referral pending (Rachel/counsel, today)
+     - SSH keys pending CrowdStrike clearance to delete
+     - SA-2024-0119-NM response due Feb 5
 
-  1. POTENTIAL SECURITY INCIDENT (HIGHEST PRIORITY)
-     Legacy Jenkins: admin/admin, 172.31.4.89 logins from peered VPC
-     Password changed (attacker locked out). Instance untouched (evidence).
-     Marcus waiting for guidance. Aisha NOT YET INFORMED.
-     Unknowns: who is 172.31.4.89, what did they do, what did they access
-     
-  2. Derek CB canary (LOW — self-running)
-     Production canary at 5%, ~10 minutes in, looking clean.
-     Derek monitoring. Scaling to 25% at 15-min mark.
-     
-  3. Tom ECR restart (MEDIUM — needs answer)
-     ECR images ready. Wants to restart StatefulSets in Legal-hold namespace.
-     Needs nuanced approval: image swap is operational improvement within 
-     containment scope, but creates pod churn in preserved namespace.
-     Tom has read-only RBAC — needs platform team to execute restart.
+  2. R-6a milestone closing today
+     - Tom: dashboards + runbook (final items)
+     - All other R-6a components DONE
 
-IMMEDIATE ACTIONS NEEDED:
-  1. Inform Aisha about Jenkins unauthorized access — NOW
-  2. Direct Marcus on evidence preservation
-  3. Investigate 172.31.4.89 and legacy-staging VPC
-  4. Determine severity: security incident or benign?
-  5. Answer Tom on ECR restart
-  6. Monitor Derek's CB canary (passive)
+  3. Derek stockCache production deploy (today)
+  
+  4. Jake image admission validation (today)
 
-UNRESOLVED CONSEQUENCES:
-  ❓ Jenkins IAM role — what can that instance do in AWS?
-  ❓ monthly-db-backup credentials — were they accessed?
-  ❓ 172.31.4.89 identity and intent
-  ❓ legacy-staging VPC — legitimate or forgotten?
-  ❓ VPC peering route tables — production access scope?
-  ❓ reporting-db-prod — unknown RDS, who created it, what's in it?
-  ❓ Metabase — 7 users with no MFA, connected to unknown RDS
-  ❓ Jenkins build discard aggressive limit
-  ❓ Redis Terraform PR merged?
-  ❓ RDS egress CIDR fragility
+TODAY (FRIDAY Wk2):
+  - R-6a milestone close
+  - stockCache production deploy
+  - Image admission validation report
+  - FBI CFAA referral
+  - Normal operations
 
-TODAY REMAINING:
-  - Jenkins security investigation (ACTIVE)
-  - Derek CB canary → production decision
-  - Tom ECR restart approval
-  - EKS runbook finalize (due today)
-  - AWS audit scoping (James wants Wednesday)
-  - IRSA migration planning (this week)
-  - Cert renewal failure alert creation
-
-THIS WEEK:
-  - R-6a deliverables (Kafka secured by Fri Jan 26)
-  - Image admission warn mode (by Fri Jan 26)
-  - AWS-level infrastructure audit
+NEXT WEEK PRIORITIES:
   - Cert-manager IRSA migration
-  - Search cluster: ILM, PriorityClass
-  - Derek stockCache PR
-  - Supervisory authority response (expected any day)
+  - Cert renewal failure alert
+  - Search: ArgoCD onboarding (Priya)
+  - Search: SLO definition (Priya + Lisa)
+  - Kibana + Grafana ECR migration (Jake, pre-Feb 2)
+  - Image admission enforce mode prep (Jake, Feb 2)
+  - SA-2024-0119-NM supervisory response prep (Rachel, due Feb 5)
+  - Wei offboarding proposal review
+  - Lambda assessment (onboard or decommission)
+  - R-6b planning (Kafka fully onboarded, Feb 9)
+  - Headcount planning (2 new positions)
+  - Default-deny NetworkPolicy scoping (mid-Feb committed)
+  - Self-service pipeline template design (mid-Feb committed)
 ```
 
 ---
 
-**END OF HANDOFF DOCUMENT — v5 (CHAOS ENGINE EDITION)**
+## 90 REMAINING INCIDENTS — REVISED TAXONOMY
 
-**Ready to continue simulation. Chaos Engine active. All 12 rules in effect.**
+### Distribution Plan
 
-**Marcus is waiting. Aisha doesn't know yet. 172.31.4.89 logged in four hours ago.**
+```
+CATEGORY                           REMAINING  PLANNED INCIDENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**Go.**
+Deploy/Release failures (6 remaining)
+  11. Canary analysis passes but baseline shift masks regression
+  12. Helm value override collision during multi-team deploy
+  13. ArgoCD sync loop (CRD ordering dependency)
+  14. Blue-green cutover fails: new version can't read old session format
+  15. Feature flag gradual rollout causes split-brain state
+  16. Init container image pull fails silently, main container starts with missing config
+
+Database (6 remaining)
+  17. RDS Multi-AZ failover during business hours (planned maintenance window surprise)
+  18. PostgreSQL bloat / autovacuum stall on high-write table
+  19. Replication lag on read replica causes stale reads in search indexing
+  20. Connection pool leak: connections acquired but never returned (slow growth over days)
+  21. Schema migration partially applied (liquibase/flyway lock + partial DDL)
+  22. Redis cluster slot migration stuck during scaling event
+
+Kubernetes (7 remaining)
+  23. Karpenter consolidation evicts pods during peak traffic
+  24. Pod topology spread constraint prevents scheduling after AZ loss
+  25. HPA flapping: scale-up/scale-down oscillation from metric lag
+  26. Resource quota prevents legitimate scaling during traffic spike
+  27. CrashLoopBackOff from config map change (bad YAML value)
+  28. Node pressure eviction cascade (memory, not storage this time)
+  29. PodDisruptionBudget blocks node drain during upgrade
+
+Networking — DNS (5)
+  30. CoreDNS pod OOM: intermittent NXDOMAIN across cluster
+  31. DNS TTL caching causes traffic to old endpoints after migration
+  32. ndots:5 default causing excessive DNS queries + latency
+  33. Route53 health check flapping → traffic shifts between regions
+  34. External DNS record not updating after service IP change
+
+Networking — Load Balancer / Ingress (4)
+  35. ALB target group health check timeout too aggressive: healthy pods marked unhealthy
+  36. Ingress controller (nginx) OOM under connection surge
+  37. gRPC load balancing failure: all traffic hitting single pod (HTTP/2 connection reuse)
+  38. WebSocket connections not draining during rolling deploy → client disconnects
+
+Networking — Service Mesh (3)
+  39. Linkerd proxy memory leak after upgrade (slow growth, eventually OOMKilled)
+  40. mTLS certificate rotation failure: expired identity certs break inter-service auth
+  41. Retry storm: mesh retries amplify partial outage into full outage
+
+Networking — General (3)
+  42. MTU mismatch causing packet fragmentation between VPCs
+  43. Security group rule limit hit: new rules silently fail
+  44. NAT gateway throttling: burst of external API calls exceeds connection limit
+
+CI/CD pipeline failures (4 remaining)
+  45. GitHub Actions runner OOM on large monorepo build
+  46. Container registry (ECR) pull rate throttled during mass deploy
+  47. ArgoCD application-of-applications sync: child app stuck in "OutOfSync" despite matching
+  48. Build cache poisoning: cached layer contains old dependency version
+
+Security incidents (3 remaining)
+  49. Cryptominer pod deployed via compromised container image in public registry
+  50. AWS access key leaked in public GitHub commit (automated scanner alert)
+  51. Service account token mounted in pod used for lateral movement (pentest finding)
+
+Observability stack failures (4)
+  52. Prometheus TSDB corruption: OOM during compaction → metrics gap
+  53. Metric cardinality explosion: unbounded label (request_id) fills TSDB
+  54. Alertmanager cluster split-brain: some alerts fire, some don't
+  55. Log pipeline backpressure: FluentBit buffer overflow → log loss during incident
+
+Capacity / scaling (5 remaining)
+  56. Karpenter provisioner launches wrong instance type (ARM vs x86 mismatch)
+  57. Vertical Pod Autoscaler recommendation causes OOMKill (aggressive downscale)
+  58. Burst traffic from marketing campaign: 10x normal in 5 minutes
+  59. Cluster autoscaler max-node limit hit: pods pending for 20+ minutes
+  60. Ephemeral storage exhaustion on logging sidecar (container log rotation failure)
+
+Cascading / multi-system (4 remaining)
+  61. Payment service timeout → order service retry storm → inventory service overload
+  62. Cache stampede after Redis failover: all services hit DB simultaneously
+  63. Logging pipeline failure → disk pressure on nodes → pod evictions → more logging
+  64. Certificate expiry cascade: root CA rotation missed intermediate certs
+
+Cloud provider degradation (4)
+  65. AWS EBS io2 latency spike: no status page update, only your metrics show it
+  66. S3 ListBucket throttled during backup job: rate limit errors cascade
+  67. IAM eventual consistency: role policy attached but assume-role fails for 3 minutes
+  68. EC2 insufficient capacity error in primary AZ during autoscaling event
+
+Kernel / OS / Node-level (5)
+  69. Conntrack table overflow: new connections dropped, existing connections fine
+  70. File descriptor exhaustion: process at ulimit, new connections refused
+  71. TIME_WAIT socket accumulation: high-churn service runs out of ephemeral ports
+  72. NTP clock skew: 30-second drift causes JWT validation failures and TLS handshake errors
+  73. OOM killer targets wrong process: kills database agent instead of runaway job
+
+Control plane / etcd (3)
+  74. API server latency spike: webhook timeout on admission controller
+  75. etcd database size alarm: compaction not running, 8GB limit approaching
+  76. Kubelet certificate rotation failure: node goes NotReady after 12 months
+
+Data pipeline / streaming (4)
+  77. Kafka partition rebalancing storm after broker restart (consumer group thrashing)
+  78. Consumer lag growing unboundedly: poison message blocks partition processing
+  79. Schema registry outage: all Avro-encoded producers fail simultaneously
+  80. Dead letter queue overflow: unprocessed messages lost after DLQ retention expires
+
+Third-party / dependency (4)
+  81. Stripe API degradation: payment processing latency 10x, timeouts at 30s
+  82. Docker Hub rate limit: ImagePullBackOff during incident-driven scaling
+  83. CDN cache purge failure: customers seeing stale product prices for hours
+  84. SSO/OAuth provider outage: no employee can log into internal tools
+
+Storage (3)
+  85. EBS gp3 burst credit exhaustion: IOPS drops from 3000 to baseline 100
+  86. PersistentVolume resize stuck: filesystem expansion requires pod restart
+  87. S3 request rate throttling: prefix-based hot spot during batch export
+
+Certificate / secrets (2 remaining)
+  88. Vault token renewal failure: all services lose secret access simultaneously
+  89. Kubernetes secret not updated after rotation: pods using stale credentials
+
+Cost / billing anomalies (3)
+  90. NAT gateway data processing charges spike 400%: debugging which service
+  91. Spot instance interruption: 2-minute warning, stateful workload affected
+  92. Orphaned EBS volumes accumulating: $4K/month in unused storage discovered
+
+DR / region failover (3)
+  93. Database failover promotion: replica promoted but application config still points to old primary
+  94. Cross-region replication lag: failover loses 30 seconds of transactions
+  95. Backup restore test failure: backup exists but restore process has never been tested
+
+Scheduled jobs / CronJobs (2)
+  96. CronJob overlap: previous run still executing when next scheduled run starts
+  97. Timezone bug: CronJob in UTC, business logic assumes local time, runs at wrong hour
+
+Auth / RBAC / SSO (3)
+  98. RBAC change removes critical permission: deploy pipeline breaks across all teams
+  99. Service account key expiry: automated process silently fails for 6 hours
+  100. OIDC issuer URL change after provider migration: all token validation fails
+
+Simultaneous incidents (woven into above — 5 will fire concurrently):
+  Incidents 30+61 fire together (DNS + cascading — correlated root cause)
+  Incidents 52+55 fire together (Prometheus down + log pipeline — meta-incident)
+  Incidents 58+66 fire together (traffic spike + S3 throttle — capacity pressure)
+  Incidents 69+71 fire together (conntrack + TIME_WAIT — node-level networking)
+  Incidents 81+41 fire together (Stripe degradation + mesh retry storm — amplification)
+```
+
+---
+
+## NOTES ON THE 90 PLANNED INCIDENTS
+
+```
+DESIGN PRINCIPLES:
+  1. Each incident teaches a DISTINCT diagnostic skill
+  2. No two incidents have the same root cause pattern
+  3. Difficulty ramps: Wk3-4 are moderate, Wk5-8 introduce 
+     OS-level and control plane, Wk9-12 are advanced/cascading
+  4. Simultaneous incidents appear ~5 times, increasing frequency
+  5. Chaos Engine rules remain active (consequences compound,
+     tooling degrades, red herrings appear)
+  6. Human/process dimension continues (new team members from 
+     headcount, handoffs, on-call rotation, sprint ceremonies)
+  7. The NovaMart infrastructure continues evolving (Linkerd 
+     upgrade happens, EKS upgrade happens, egress gateway 
+     deploys) — incidents interact with these changes
+  8. Security investigation follow-up threads continue in 
+     background (supervisory authority responses, Carlos 
+     attribution, civil action)
+
+APPROXIMATE TIMELINE:
+  Week 2 Fri (Day 12):  Incidents 11-12 (close out sprint)
+  Week 3 (Days 13-17):  Incidents 13-20 (DNS + DB focus)
+  Week 4 (Days 18-22):  Incidents 21-28 (K8s + pipeline)
+  Week 5 (Days 23-27):  Incidents 29-36 (networking deep dive)
+  Week 6 (Days 28-32):  Incidents 37-44 (mesh + LB + OS-level)
+  Week 7 (Days 33-37):  Incidents 45-52 (CI/CD + observability)
+  Week 8 (Days 38-42):  Incidents 53-60 (capacity + cloud provider)
+  Week 9 (Days 43-47):  Incidents 61-68 (cascading + advanced)
+  Week 10 (Days 48-52): Incidents 69-76 (kernel + control plane)
+  Week 11 (Days 53-57): Incidents 77-84 (streaming + third-party)
+  Week 12 (Days 58-62): Incidents 85-92 (storage + cost + DR)
+  Week 13 (Days 63-67): Incidents 93-100 (auth + final gauntlet)
+
+  ~7-8 incidents per week = ~1.5 per day average
+  Some days have 0 incidents (planned work). Some have 3.
+  Matches realistic FAANG on-call cadence for a platform team.
+```
+
+---
+
+**END OF HANDOFF DOCUMENT — v6 (REVISED TAXONOMY)**
+
+**Simulation paused at Thursday Wk2 5:30 PM (Day 11).**
+
+**Resume: Friday Wk2 morning (Day 12).**
+
+**90 incidents planned with revised taxonomy covering 25 categories.**
+
+**Ready to continue when you are.**
