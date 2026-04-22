@@ -6,13 +6,13 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════╗
-║  The entire Kubernetes ecosystem is written in Go.              ║
-║  kubectl, kubelet, kube-proxy, etcd, containerd, Prometheus,    ║
-║  Terraform, Docker, Istio, ArgoCD, Helm, Vault, Consul,        ║
-║  CoreDNS, Linkerd2, CRI-O, Buildah, Trivy, Falco...            ║
+║  The entire Kubernetes ecosystem is written in Go.               ║
+║  kubectl, kubelet, kube-proxy, etcd, containerd, Prometheus,     ║
+║  Terraform, Docker, Istio, ArgoCD, Helm, Vault, Consul,          ║
+║  CoreDNS, Linkerd2, CRI-O, Buildah, Trivy, Falco...              ║
 ║                                                                  ║
-║  If you can't write Go, you can't extend, debug, or contribute  ║
-║  to ANY of these tools. You're a consumer, not an engineer.     ║
+║  If you can't write Go, you can't extend, debug, or contribute   ║
+║  to ANY of these tools. You're a consumer, not an engineer.      ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
 
@@ -3337,4 +3337,3309 @@ import (
 
     . "github.com/onsi/ginkgo/v2"
     . "github.com/onsi/gomega"
-    "
+    "k8s.io/client-go/kubernetes/scheme"
+    "k8s.io/client-go/rest"
+    ctrl "sigs.k8s.io/controller-runtime"
+    "sigs.k8s.io/controller-runtime/pkg/client"
+    "sigs.k8s.io/controller-runtime/pkg/envtest"
+    logf "sigs.k8s.io/controller-runtime/pkg/log"
+    "sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+    platformv1 "github.com/novamart/operator/api/v1"
+)
+
+var (
+    cfg       *rest.Config
+    k8sClient client.Client
+    testEnv   *envtest.Environment
+    ctx       context.Context
+    cancel    context.CancelFunc
+)
+
+func TestControllers(t *testing.T) {
+    RegisterFailHandler(Fail)
+    RunSpecs(t, "Controller Suite")
+}
+
+var _ = BeforeSuite(func() {
+    logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
+
+    ctx, cancel = context.WithCancel(context.Background())
+
+    // envtest starts a REAL etcd + API server (no kubelet, no scheduler)
+    // CRD YAML loaded automatically from paths
+    testEnv = &envtest.Environment{
+        CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+        ErrorIfCRDPathMissing: true,
+    }
+
+    var err error
+    cfg, err = testEnv.Start()
+    Expect(err).NotTo(HaveOccurred())
+    Expect(cfg).NotTo(BeNil())
+
+    // Register CRD types with scheme
+    err = platformv1.AddToScheme(scheme.Scheme)
+    Expect(err).NotTo(HaveOccurred())
+
+    // Create client
+    k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
+    Expect(err).NotTo(HaveOccurred())
+    Expect(k8sClient).NotTo(BeNil())
+
+    // Start controller manager
+    mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+        Scheme: scheme.Scheme,
+    })
+    Expect(err).NotTo(HaveOccurred())
+
+    err = (&controller.NovaMartServiceReconciler{
+        Client: mgr.GetClient(),
+        Scheme: mgr.GetScheme(),
+    }).SetupWithManager(mgr)
+    Expect(err).NotTo(HaveOccurred())
+
+    go func() {
+        defer GinkgoRecover()
+        err = mgr.Start(ctx)
+        Expect(err).NotTo(HaveOccurred())
+    }()
+})
+
+var _ = AfterSuite(func() {
+    cancel()
+    err := testEnv.Stop()
+    Expect(err).NotTo(HaveOccurred())
+})
+
+
+// ═══════════════════════════════════════════════════════════
+// ACTUAL CONTROLLER TESTS
+// ═══════════════════════════════════════════════════════════
+
+// internal/controller/novamartservice_controller_test.go
+package controller_test
+
+import (
+    "time"
+
+    . "github.com/onsi/ginkgo/v2"
+    . "github.com/onsi/gomega"
+    appsv1 "k8s.io/api/apps/v1"
+    corev1 "k8s.io/api/core/v1"
+    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    "k8s.io/apimachinery/pkg/types"
+
+    platformv1 "github.com/novamart/operator/api/v1"
+)
+
+var _ = Describe("NovaMartService Controller", func() {
+
+    const (
+        timeout  = 30 * time.Second
+        interval = 250 * time.Millisecond
+    )
+
+    Context("When creating a NovaMartService", func() {
+        It("Should create Deployment and Service", func() {
+            // Create namespace
+            ns := &corev1.Namespace{
+                ObjectMeta: metav1.ObjectMeta{Name: "test-payments"},
+            }
+            Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+
+            // Create NovaMartService CR
+            svc := &platformv1.NovaMartService{
+                ObjectMeta: metav1.ObjectMeta{
+                    Name:      "payment-service",
+                    Namespace: "test-payments",
+                },
+                Spec: platformv1.NovaMartServiceSpec{
+                    Team:     "payments",
+                    Tier:     "critical",
+                    Replicas: 3,
+                    Image:    "novamart/payment-service:v1.0.0",
+                    Port:     8080,
+                },
+            }
+            Expect(k8sClient.Create(ctx, svc)).To(Succeed())
+
+            // Verify Deployment is created
+            depKey := types.NamespacedName{
+                Name:      "payment-service",
+                Namespace: "test-payments",
+            }
+            Eventually(func() error {
+                var dep appsv1.Deployment
+                return k8sClient.Get(ctx, depKey, &dep)
+            }, timeout, interval).Should(Succeed())
+
+            // Verify Deployment spec
+            var dep appsv1.Deployment
+            Expect(k8sClient.Get(ctx, depKey, &dep)).To(Succeed())
+            Expect(*dep.Spec.Replicas).To(Equal(int32(3)))
+            Expect(dep.Spec.Template.Spec.Containers[0].Image).
+                To(Equal("novamart/payment-service:v1.0.0"))
+            // Critical tier should get 500m CPU request
+            Expect(dep.Spec.Template.Spec.Containers[0].Resources.Requests.Cpu().String()).
+                To(Equal("500m"))
+
+            // Verify Service is created
+            svcKey := types.NamespacedName{
+                Name:      "payment-service",
+                Namespace: "test-payments",
+            }
+            Eventually(func() error {
+                var k8sSvc corev1.Service
+                return k8sClient.Get(ctx, svcKey, &k8sSvc)
+            }, timeout, interval).Should(Succeed())
+
+            // Verify owner reference (for garbage collection)
+            var k8sSvc corev1.Service
+            Expect(k8sClient.Get(ctx, svcKey, &k8sSvc)).To(Succeed())
+            Expect(k8sSvc.OwnerReferences).To(HaveLen(1))
+            Expect(k8sSvc.OwnerReferences[0].Name).To(Equal("payment-service"))
+        })
+
+        It("Should update status to Running when replicas are ready", func() {
+            svcKey := types.NamespacedName{
+                Name:      "payment-service",
+                Namespace: "test-payments",
+            }
+
+            // In envtest, no kubelet to mark pods Ready,
+            // so we simulate by updating Deployment status
+            depKey := types.NamespacedName{
+                Name:      "payment-service",
+                Namespace: "test-payments",
+            }
+            Eventually(func() error {
+                var dep appsv1.Deployment
+                if err := k8sClient.Get(ctx, depKey, &dep); err != nil {
+                    return err
+                }
+                dep.Status.ReadyReplicas = 3
+                dep.Status.Replicas = 3
+                dep.Status.AvailableReplicas = 3
+                return k8sClient.Status().Update(ctx, &dep)
+            }, timeout, interval).Should(Succeed())
+
+            // Check NovaMartService status
+            Eventually(func() string {
+                var svc platformv1.NovaMartService
+                if err := k8sClient.Get(ctx, svcKey, &svc); err != nil {
+                    return ""
+                }
+                return svc.Status.Phase
+            }, timeout, interval).Should(Equal("Running"))
+        })
+    })
+
+    Context("When deleting a NovaMartService", func() {
+        It("Should clean up child resources via owner references", func() {
+            svcKey := types.NamespacedName{
+                Name:      "payment-service",
+                Namespace: "test-payments",
+            }
+
+            var svc platformv1.NovaMartService
+            Expect(k8sClient.Get(ctx, svcKey, &svc)).To(Succeed())
+            Expect(k8sClient.Delete(ctx, &svc)).To(Succeed())
+
+            // Deployment should be garbage collected
+            Eventually(func() bool {
+                var dep appsv1.Deployment
+                err := k8sClient.Get(ctx, svcKey, &dep)
+                return errors.IsNotFound(err)
+            }, timeout, interval).Should(BeTrue())
+        })
+    })
+})
+```
+
+---
+
+## 12. AWS SDK FOR GO (aws-sdk-go-v2)
+
+```go
+// ═══════════════════════════════════════════════════════════
+// aws-sdk-go-v2 is the current AWS SDK for Go
+// v1 is in maintenance mode — always use v2 for new code
+// ═══════════════════════════════════════════════════════════
+
+package aws
+
+import (
+    "context"
+    "fmt"
+    "time"
+
+    "github.com/aws/aws-sdk-go-v2/aws"
+    "github.com/aws/aws-sdk-go-v2/config"
+    "github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+    "github.com/aws/aws-sdk-go-v2/service/ec2"
+    ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+    "github.com/aws/aws-sdk-go-v2/service/sts"
+    "github.com/rs/zerolog/log"
+)
+
+// ── Session/Config setup ──────────────────────────────────
+
+func NewAWSConfig(ctx context.Context, region string, roleARN string) (aws.Config, error) {
+    // Load default config (env vars, shared credentials, IMDS)
+    cfg, err := config.LoadDefaultConfig(ctx,
+        config.WithRegion(region),
+        config.WithRetryMaxAttempts(5),
+        config.WithRetryMode(aws.RetryModeAdaptive), // Adaptive retry with backoff
+    )
+    if err != nil {
+        return aws.Config{}, fmt.Errorf("loading AWS config: %w", err)
+    }
+
+    // Cross-account assume role
+    if roleARN != "" {
+        stsClient := sts.NewFromConfig(cfg)
+        cfg.Credentials = aws.NewCredentialsCache(
+            stscreds.NewAssumeRoleProvider(stsClient, roleARN,
+                func(o *stscreds.AssumeRoleOptions) {
+                    o.RoleSessionName = "novactl"
+                    o.Duration = 1 * time.Hour
+                },
+            ),
+        )
+        log.Info().Str("role", roleARN).Msg("assuming_cross_account_role")
+    }
+
+    return cfg, nil
+}
+
+
+// ── EC2 Operations ────────────────────────────────────────
+
+type EC2Client struct {
+    client *ec2.Client
+    region string
+}
+
+func NewEC2Client(cfg aws.Config) *EC2Client {
+    return &EC2Client{
+        client: ec2.NewFromConfig(cfg),
+        region: cfg.Region,
+    }
+}
+
+type InstanceInfo struct {
+    ID           string            `json:"id"`
+    Type         string            `json:"type"`
+    State        string            `json:"state"`
+    AZ           string            `json:"az"`
+    PrivateIP    string            `json:"private_ip"`
+    PublicIP     string            `json:"public_ip,omitempty"`
+    LaunchTime   time.Time         `json:"launch_time"`
+    AgeDays      int               `json:"age_days"`
+    Tags         map[string]string `json:"tags"`
+    Name         string            `json:"name"`
+    Platform     string            `json:"platform"`
+    VpcID        string            `json:"vpc_id"`
+    SubnetID     string            `json:"subnet_id"`
+}
+
+func (c *EC2Client) ListInstances(
+    ctx context.Context,
+    filters ...ec2types.Filter,
+) ([]InstanceInfo, error) {
+    var instances []InstanceInfo
+
+    // Paginator handles pagination automatically — NEVER do manual NextToken
+    paginator := ec2.NewDescribeInstancesPaginator(c.client,
+        &ec2.DescribeInstancesInput{
+            Filters: filters,
+        },
+    )
+
+    for paginator.HasMorePages() {
+        page, err := paginator.NextPage(ctx)
+        if err != nil {
+            return nil, fmt.Errorf("describing instances in %s: %w", c.region, err)
+        }
+
+        for _, reservation := range page.Reservations {
+            for _, inst := range reservation.Instances {
+                info := InstanceInfo{
+                    ID:         aws.ToString(inst.InstanceId),
+                    Type:       string(inst.InstanceType),
+                    State:      string(inst.State.Name),
+                    AZ:         aws.ToString(inst.Placement.AvailabilityZone),
+                    PrivateIP:  aws.ToString(inst.PrivateIpAddress),
+                    PublicIP:   aws.ToString(inst.PublicIpAddress),
+                    LaunchTime: aws.ToTime(inst.LaunchTime),
+                    AgeDays:    int(time.Since(aws.ToTime(inst.LaunchTime)).Hours() / 24),
+                    Tags:       tagsToMap(inst.Tags),
+                    Platform:   string(inst.PlatformDetails),
+                    VpcID:      aws.ToString(inst.VpcId),
+                    SubnetID:   aws.ToString(inst.SubnetId),
+                }
+                info.Name = info.Tags["Name"]
+                instances = append(instances, info)
+            }
+        }
+    }
+
+    log.Info().
+        Str("region", c.region).
+        Int("count", len(instances)).
+        Msg("instances_listed")
+
+    return instances, nil
+}
+
+func (c *EC2Client) StopInstances(
+    ctx context.Context,
+    instanceIDs []string,
+    dryRun bool,
+) error {
+    if len(instanceIDs) == 0 {
+        return nil
+    }
+
+    log.Info().
+        Strs("instances", instanceIDs).
+        Bool("dry_run", dryRun).
+        Msg("stopping_instances")
+
+    _, err := c.client.StopInstances(ctx, &ec2.StopInstancesInput{
+        InstanceIds: instanceIDs,
+        DryRun:      aws.Bool(dryRun),
+    })
+    if err != nil {
+        return fmt.Errorf("stopping instances: %w", err)
+    }
+
+    if !dryRun {
+        // Wait for instances to stop
+        waiter := ec2.NewInstanceStoppedWaiter(c.client)
+        err = waiter.Wait(ctx, &ec2.DescribeInstancesInput{
+            InstanceIds: instanceIDs,
+        }, 10*time.Minute)
+        if err != nil {
+            return fmt.Errorf("waiting for instances to stop: %w", err)
+        }
+    }
+
+    return nil
+}
+
+func (c *EC2Client) FindUntaggedResources(ctx context.Context) ([]InstanceInfo, error) {
+    // Find instances missing required tags
+    requiredTags := []string{"team", "environment", "service"}
+
+    allInstances, err := c.ListInstances(ctx,
+        ec2types.Filter{
+            Name:   aws.String("instance-state-name"),
+            Values: []string{"running"},
+        },
+    )
+    if err != nil {
+        return nil, err
+    }
+
+    var untagged []InstanceInfo
+    for _, inst := range allInstances {
+        for _, tag := range requiredTags {
+            if _, ok := inst.Tags[tag]; !ok {
+                untagged = append(untagged, inst)
+                break
+            }
+        }
+    }
+
+    return untagged, nil
+}
+
+// ── Multi-region operations ───────────────────────────────
+
+func ListInstancesAllRegions(
+    ctx context.Context,
+    regions []string,
+    roleARN string,
+) ([]InstanceInfo, error) {
+    type regionResult struct {
+        region    string
+        instances []InstanceInfo
+        err       error
+    }
+
+    resultCh := make(chan regionResult, len(regions))
+
+    for _, region := range regions {
+        go func(r string) {
+            cfg, err := NewAWSConfig(ctx, r, roleARN)
+            if err != nil {
+                resultCh <- regionResult{region: r, err: err}
+                return
+            }
+
+            client := NewEC2Client(cfg)
+            instances, err := client.ListInstances(ctx,
+                ec2types.Filter{
+                    Name:   aws.String("instance-state-name"),
+                    Values: []string{"running"},
+                },
+            )
+            resultCh <- regionResult{region: r, instances: instances, err: err}
+        }(region)
+    }
+
+    var allInstances []InstanceInfo
+    var errs []error
+
+    for range regions {
+        result := <-resultCh
+        if result.err != nil {
+            log.Error().Err(result.err).Str("region", result.region).Msg("region_scan_failed")
+            errs = append(errs, result.err)
+            continue
+        }
+        allInstances = append(allInstances, result.instances...)
+    }
+
+    if len(errs) > 0 && len(allInstances) == 0 {
+        return nil, fmt.Errorf("all regions failed: %v", errs[0])
+    }
+
+    return allInstances, nil
+}
+
+func tagsToMap(tags []ec2types.Tag) map[string]string {
+    m := make(map[string]string, len(tags))
+    for _, t := range tags {
+        m[aws.ToString(t.Key)] = aws.ToString(t.Value)
+    }
+    return m
+}
+```
+
+---
+
+## 13. OUTPUT FORMATTING
+
+```go
+// ═══════════════════════════════════════════════════════════
+// All NovaMart CLIs support --output table|json|yaml|csv
+// stdout = data (pipeable), stderr = human messages
+// ═══════════════════════════════════════════════════════════
+
+package output
+
+import (
+    "encoding/csv"
+    "encoding/json"
+    "fmt"
+    "io"
+    "os"
+
+    "github.com/olekukonez/tablewriter"
+    "gopkg.in/yaml.v3"
+)
+
+// Render outputs data in the requested format
+func Render(format string, data interface{}) error {
+    switch format {
+    case "json":
+        return renderJSON(os.Stdout, data)
+    case "yaml":
+        return renderYAML(os.Stdout, data)
+    case "csv":
+        return renderCSV(os.Stdout, data)
+    case "table":
+        return renderTable(os.Stdout, data)
+    default:
+        return fmt.Errorf("unsupported format: %s", format)
+    }
+}
+
+func renderJSON(w io.Writer, data interface{}) error {
+    encoder := json.NewEncoder(w)
+    encoder.SetIndent("", "  ")
+    return encoder.Encode(data)
+}
+
+func renderYAML(w io.Writer, data interface{}) error {
+    encoder := yaml.NewEncoder(w)
+    encoder.SetIndent(2)
+    return encoder.Encode(data)
+}
+
+// Table rendering — type-specific implementations
+func renderTable(w io.Writer, data interface{}) error {
+    switch v := data.(type) {
+    case []PodInfo:
+        return renderPodTable(w, v)
+    case []NodeInfo:
+        return renderNodeTable(w, v)
+    case []AuditFinding:
+        return renderAuditTable(w, v)
+    case []InstanceInfo:
+        return renderInstanceTable(w, v)
+    default:
+        // Fallback to JSON for unknown types
+        return renderJSON(w, data)
+    }
+}
+
+func renderPodTable(w io.Writer, pods []PodInfo) error {
+    table := tablewriter.NewWriter(w)
+    table.SetHeader([]string{"NAMESPACE", "NAME", "READY", "STATUS", "RESTARTS", "AGE", "NODE"})
+    table.SetBorder(false)
+    table.SetColumnSeparator("")
+    table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
+    table.SetAlignment(tablewriter.ALIGN_LEFT)
+
+    for _, pod := range pods {
+        table.Append([]string{
+            pod.Namespace,
+            pod.Name,
+            pod.Ready,
+            pod.Status,
+            fmt.Sprintf("%d", pod.Restarts),
+            pod.Age,
+            pod.Node,
+        })
+    }
+
+    table.Render()
+    return nil
+}
+
+func renderAuditTable(w io.Writer, findings []AuditFinding) error {
+    table := tablewriter.NewWriter(w)
+    table.SetHeader([]string{"SEVERITY", "CATEGORY", "RESOURCE", "NAMESPACE", "NAME", "MESSAGE"})
+    table.SetBorder(false)
+    table.SetAutoWrapText(false)
+
+    severityColors := map[string]int{
+        "CRITICAL": tablewriter.FgRedColor,
+        "HIGH":     tablewriter.FgHiRedColor,
+        "MEDIUM":   tablewriter.FgYellowColor,
+        "LOW":      tablewriter.FgBlueColor,
+    }
+
+    for _, f := range findings {
+        row := []string{
+            f.Severity,
+            f.Category,
+            f.Resource,
+            f.Namespace,
+            f.Name,
+            f.Message,
+        }
+
+        colors := make([]tablewriter.Colors, len(row))
+        if color, ok := severityColors[f.Severity]; ok {
+            colors[0] = tablewriter.Colors{tablewriter.Bold, color}
+        }
+        table.Rich(row, colors)
+    }
+
+    table.Render()
+
+    // Summary
+    critCount := 0
+    highCount := 0
+    for _, f := range findings {
+        switch f.Severity {
+        case "CRITICAL":
+            critCount++
+        case "HIGH":
+            highCount++
+        }
+    }
+    fmt.Fprintf(w, "\nTotal: %d findings (%d critical, %d high)\n",
+        len(findings), critCount, highCount)
+
+    return nil
+}
+
+func renderInstanceTable(w io.Writer, instances []InstanceInfo) error {
+    table := tablewriter.NewWriter(w)
+    table.SetHeader([]string{"ID", "NAME", "TYPE", "STATE", "AZ", "PRIVATE IP", "AGE"})
+    table.SetBorder(false)
+
+    for _, inst := range instances {
+        table.Append([]string{
+            inst.ID,
+            inst.Name,
+            inst.Type,
+            inst.State,
+            inst.AZ,
+            inst.PrivateIP,
+            fmt.Sprintf("%dd", inst.AgeDays),
+        })
+    }
+
+    table.Render()
+    return nil
+}
+```
+
+---
+
+## 14. RETRY PACKAGE (REUSABLE)
+
+```go
+// pkg/retry/retry.go — production retry with backoff + jitter
+package retry
+
+import (
+    "context"
+    "fmt"
+    "math"
+    "math/rand"
+    "time"
+
+    "github.com/rs/zerolog/log"
+)
+
+type Config struct {
+    MaxAttempts    int
+    InitialBackoff time.Duration
+    MaxBackoff     time.Duration
+    Multiplier     float64
+    Jitter         bool
+    RetryableFunc  func(error) bool // Optional: decide if error is retryable
+}
+
+func DefaultConfig() Config {
+    return Config{
+        MaxAttempts:    3,
+        InitialBackoff: 1 * time.Second,
+        MaxBackoff:     30 * time.Second,
+        Multiplier:     2.0,
+        Jitter:         true,
+    }
+}
+
+func Do(ctx context.Context, cfg Config, fn func() error) error {
+    if cfg.MaxAttempts <= 0 {
+        cfg.MaxAttempts = 3
+    }
+    if cfg.InitialBackoff == 0 {
+        cfg.InitialBackoff = 1 * time.Second
+    }
+    if cfg.MaxBackoff == 0 {
+        cfg.MaxBackoff = 30 * time.Second
+    }
+    if cfg.Multiplier == 0 {
+        cfg.Multiplier = 2.0
+    }
+
+    var lastErr error
+    for attempt := 1; attempt <= cfg.MaxAttempts; attempt++ {
+        lastErr = fn()
+        if lastErr == nil {
+            return nil
+        }
+
+        // Check if retryable
+        if cfg.RetryableFunc != nil && !cfg.RetryableFunc(lastErr) {
+            return fmt.Errorf("non-retryable error: %w", lastErr)
+        }
+
+        // Don't sleep after last attempt
+        if attempt == cfg.MaxAttempts {
+            break
+        }
+
+        // Calculate backoff
+        backoff := time.Duration(float64(cfg.InitialBackoff) *
+            math.Pow(cfg.Multiplier, float64(attempt-1)))
+        if backoff > cfg.MaxBackoff {
+            backoff = cfg.MaxBackoff
+        }
+
+        // Add jitter (±25%)
+        if cfg.Jitter {
+            jitter := time.Duration(rand.Int63n(int64(backoff) / 2))
+            backoff = backoff/2 + jitter
+        }
+
+        log.Warn().
+            Err(lastErr).
+            Int("attempt", attempt).
+            Int("max_attempts", cfg.MaxAttempts).
+            Dur("backoff", backoff).
+            Msg("retrying")
+
+        select {
+        case <-ctx.Done():
+            return fmt.Errorf("context cancelled during retry: %w", ctx.Err())
+        case <-time.After(backoff):
+        }
+    }
+
+    return fmt.Errorf("exhausted %d attempts: %w", cfg.MaxAttempts, lastErr)
+}
+```
+
+---
+
+## 15. GORELEASER — PROFESSIONAL DISTRIBUTION
+
+```yaml
+# .goreleaser.yml — build and release for all platforms
+project_name: novactl
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+    - golangci-lint run
+
+builds:
+  - id: novactl
+    main: ./cmd/novactl/
+    binary: novactl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/novamart/novactl/internal/version.Version={{.Version}}
+      - -X github.com/novamart/novactl/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/novamart/novactl/internal/version.Date={{.Date}}
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+dockers:
+  - image_templates:
+      - "ghcr.io/novamart/novactl:{{ .Version }}-amd64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+    dockerfile: Dockerfile.goreleaser
+  - image_templates:
+      - "ghcr.io/novamart/novactl:{{ .Version }}-arm64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+    goarch: arm64
+    dockerfile: Dockerfile.goreleaser
+
+docker_manifests:
+  - name_template: "ghcr.io/novamart/novactl:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/novamart/novactl:{{ .Version }}-amd64"
+      - "ghcr.io/novamart/novactl:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/novamart/novactl:latest"
+    image_templates:
+      - "ghcr.io/novamart/novactl:{{ .Version }}-amd64"
+      - "ghcr.io/novamart/novactl:{{ .Version }}-arm64"
+
+brews:
+  - name: novactl
+    repository:
+      owner: novamart
+      name: homebrew-tap
+    homepage: "https://github.com/novamart/novactl"
+    description: "NovaMart Platform CLI"
+    install: |
+      bin.install "novactl"
+      # Shell completions
+      bash_completion.install "completions/novactl.bash" => "novactl"
+      zsh_completion.install "completions/novactl.zsh" => "_novactl"
+    test: |
+      system "#{bin}/novactl", "version"
+```
+
+---
+
+## 16. ADMISSION WEBHOOKS
+
+```go
+// ═══════════════════════════════════════════════════════════
+// Admission webhooks intercept K8s API requests BEFORE persistence.
+// Validating: reject bad requests. Mutating: modify requests.
+// NovaMart: enforce labels, resource limits, image registry.
+// ═══════════════════════════════════════════════════════════
+
+package webhook
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "strings"
+
+    "github.com/rs/zerolog/log"
+    admissionv1 "k8s.io/api/admission/v1"
+    appsv1 "k8s.io/api/apps/v1"
+    corev1 "k8s.io/api/core/v1"
+    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    "k8s.io/apimachinery/pkg/runtime"
+    "k8s.io/apimachinery/pkg/runtime/serializer"
+)
+
+var (
+    scheme = runtime.NewScheme()
+    codecs = serializer.NewCodecFactory(scheme)
+)
+
+func init() {
+    _ = admissionv1.AddToScheme(scheme)
+    _ = appsv1.AddToScheme(scheme)
+    _ = corev1.AddToScheme(scheme)
+}
+
+const (
+    allowedRegistry = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
+)
+
+// ValidateDeployment validates Deployment create/update requests
+func ValidateDeployment(w http.ResponseWriter, r *http.Request) {
+    review, err := parseAdmissionReview(r)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    var dep appsv1.Deployment
+    if err := json.Unmarshal(review.Request.Object.Raw, &dep); err != nil {
+        sendResponse(w, review, false, fmt.Sprintf("failed to parse deployment: %v", err))
+        return
+    }
+
+    logger := log.With().
+        Str("name", dep.Name).
+        Str("namespace", dep.Namespace).
+        Str("operation", string(review.Request.Operation)).
+        Logger()
+
+    var violations []string
+
+    // Rule 1: Required labels
+    requiredLabels := []string{"app", "team", "version"}
+    for _, label := range requiredLabels {
+        if _, ok := dep.Labels[label]; !ok {
+            violations = append(violations,
+                fmt.Sprintf("missing required label: %s", label))
+        }
+    }
+
+    // Rule 2: All containers must have resource limits
+    for _, container := range dep.Spec.Template.Spec.Containers {
+        if container.Resources.Limits == nil {
+            violations = append(violations,
+                fmt.Sprintf("container '%s' missing resource limits", container.Name))
+        } else {
+            if container.Resources.Limits.Cpu().IsZero() {
+                violations = append(violations,
+                    fmt.Sprintf("container '%s' missing CPU limit", container.Name))
+            }
+            if container.Resources.Limits.Memory().IsZero() {
+                violations = append(violations,
+                    fmt.Sprintf("container '%s' missing memory limit", container.Name))
+            }
+        }
+    }
+
+    // Rule 3: Images must come from approved registry
+    for _, container := range dep.Spec.Template.Spec.Containers {
+        if !strings.HasPrefix(container.Image, allowedRegistry) {
+            violations = append(violations,
+                fmt.Sprintf("container '%s' uses unapproved registry: %s (must use %s)",
+                    container.Name, container.Image, allowedRegistry))
+        }
+    }
+
+    // Rule 4: No :latest tag
+    for _, container := range dep.Spec.Template.Spec.Containers {
+        if strings.HasSuffix(container.Image, ":latest") || !strings.Contains(container.Image, ":") {
+            violations = append(violations,
+                fmt.Sprintf("container '%s': :latest or untagged images not allowed", container.Name))
+        }
+    }
+
+    // Rule 5: Readiness probe required
+    for _, container := range dep.Spec.Template.Spec.Containers {
+        if container.ReadinessProbe == nil {
+            violations = append(violations,
+                fmt.Sprintf("container '%s' missing readinessProbe", container.Name))
+        }
+    }
+
+    if len(violations) > 0 {
+        msg := "Deployment violates NovaMart policies:\n- " + strings.Join(violations, "\n- ")
+        logger.Warn().Strs("violations", violations).Msg("deployment_rejected")
+        sendResponse(w, review, false, msg)
+        return
+    }
+
+    logger.Info().Msg("deployment_approved")
+    sendResponse(w, review, true, "")
+}
+
+// MutateDeployment injects defaults into Deployments
+func MutateDeployment(w http.ResponseWriter, r *http.Request) {
+    review, err := parseAdmissionReview(r)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    var dep appsv1.Deployment
+    if err := json.Unmarshal(review.Request.Object.Raw, &dep); err != nil {
+        sendResponse(w, review, false, fmt.Sprintf("failed to parse: %v", err))
+        return
+    }
+
+    var patches []map[string]interface{}
+
+    // Inject standard labels if missing
+    if dep.Labels == nil {
+        patches = append(patches, map[string]interface{}{
+            "op":    "add",
+            "path":  "/metadata/labels",
+            "value": map[string]string{},
+        })
+    }
+    if _, ok := dep.Labels["managed-by"]; !ok {
+        patches = append(patches, map[string]interface{}{
+            "op":    "add",
+            "path":  "/metadata/labels/managed-by",
+            "value": "novamart-platform",
+        })
+    }
+
+    // Inject pod anti-affinity for HA (spread across AZs)
+    if dep.Spec.Replicas != nil && *dep.Spec.Replicas >= 2 {
+        if dep.Spec.Template.Spec.Affinity == nil {
+            affinity := map[string]interface{}{
+                "podAntiAffinity": map[string]interface{}{
+                    "preferredDuringSchedulingIgnoredDuringExecution": []map[string]interface{}{
+                        {
+                            "weight": 100,
+                            "podAffinityTerm": map[string]interface{}{
+                                "topologyKey": "topology.kubernetes.io/zone",
+                                "labelSelector": map[string]interface{}{
+                                    "matchLabels": dep.Spec.Selector.MatchLabels,
+                                },
+                            },
+                        },
+                    },
+                },
+            }
+            patches = append(patches, map[string]interface{}{
+                "op":    "add",
+                "path":  "/spec/template/spec/affinity",
+                "value": affinity,
+            })
+        }
+    }
+
+    patchBytes, _ := json.Marshal(patches)
+    patchType := admissionv1.PatchTypeJSONPatch
+
+    response := &admissionv1.AdmissionResponse{
+        UID:       review.Request.UID,
+        Allowed:   true,
+        PatchType: &patchType,
+        Patch:     patchBytes,
+    }
+
+    sendAdmissionResponse(w, review, response)
+}
+
+func parseAdmissionReview(r *http.Request) (*admissionv1.AdmissionReview, error) {
+    var review admissionv1.AdmissionReview
+    if err := json.NewDecoder(r.Body).Decode(&review); err != nil {
+        return nil, fmt.Errorf("decoding admission review: %w", err)
+    }
+    return &review, nil
+}
+
+func sendResponse(w http.ResponseWriter, review *admissionv1.AdmissionReview, allowed bool, message string) {
+    response := &admissionv1.AdmissionResponse{
+        UID:     review.Request.UID,
+        Allowed: allowed,
+    }
+    if !allowed {
+        response.Result = &metav1.Status{
+            Message: message,
+            Code:    403,
+        }
+    }
+    sendAdmissionResponse(w, review, response)
+}
+
+func sendAdmissionResponse(w http.ResponseWriter, review *admissionv1.AdmissionReview, response *admissionv1.AdmissionResponse) {
+    review.Response = response
+    review.Response.UID = review.Request.UID
+
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(review)
+}
+```
+
+---
+
+## 17. GO FAILURE MODES — COMPLETE LIST
+
+```go
+// ═══════════════════════════════════════════════════════════
+// Every Go failure mode a Senior DevOps engineer hits
+// ═══════════════════════════════════════════════════════════
+
+// FAILURE 1: Goroutine leak (covered above)
+// Missing context cancellation, unbuffered channel nobody reads
+// Detection: runtime.NumGoroutine() grows, pprof goroutine profile
+// FIX: Always use context, always close channels from sender side
+
+// FAILURE 2: Nil pointer dereference
+// var dep *appsv1.Deployment  // nil
+// dep.Name  // PANIC
+// Also: interface nil trap:
+var err error = (*MyError)(nil)  // err != nil is TRUE even though value is nil
+// Interface is (type=*MyError, value=nil) — not nil interface
+// FIX: Return plain nil, not typed nil: return nil, not return (*MyError)(nil)
+
+// FAILURE 3: Slice gotcha — shared backing array
+original := []string{"a", "b", "c", "d"}
+slice := original[:2]   // ["a", "b"] — shares backing array with original
+slice = append(slice, "X")  // Overwrites original[2]! original is now ["a", "b", "X", "d"]
+// FIX: Use full slice expression: slice := original[:2:2] (sets capacity)
+// Or: copy to new slice
+
+// FAILURE 4: Map concurrent access panic
+// Maps are NOT goroutine-safe. Concurrent read+write = panic (not just wrong data)
+// FIX: sync.RWMutex or sync.Map
+
+// FAILURE 5: defer in loop
+func processFiles(files []string) {
+    for _, f := range files {
+        fd, _ := os.Open(f)
+        defer fd.Close()  // ALL defers run at FUNCTION exit, not loop iteration
+        // 1000 files = 1000 open file descriptors until function returns
+    }
+}
+// FIX: Use closure:
+func processFiles(files []string) {
+    for _, f := range files {
+        func() {
+            fd, _ := os.Open(f)
+            defer fd.Close()  // Closes at closure exit (each iteration)
+        }()
+    }
+}
+
+// FAILURE 6: HTTP response body not closed
+resp, err := http.Get(url)
+if err != nil { return err }
+// Missing: defer resp.Body.Close()
+// Result: connection leak, eventually connection pool exhaustion
+// FIX: ALWAYS close body, even if you don't read it
+defer resp.Body.Close()
+io.Copy(io.Discard, resp.Body)  // Drain to allow connection reuse
+
+// FAILURE 7: http.Client without timeout (covered above)
+// Default client blocks forever. Always set Timeout.
+
+// FAILURE 8: JSON unmarshalling into wrong type
+// Go silently ignores unknown fields (won't error)
+// Go silently uses zero values for missing fields
+// FIX: Use json.Decoder with DisallowUnknownFields() when strict parsing needed
+decoder := json.NewDecoder(reader)
+decoder.DisallowUnknownFields()
+
+// FAILURE 9: String iteration yields runes, not bytes
+s := "héllo"
+for i, c := range s {
+    // i = byte offset (not index), c = rune (not byte)
+    // i: 0, 1, 3, 4, 5 (index 2 is second byte of é)
+}
+// If you need byte-by-byte: for i := 0; i < len(s); i++ { s[i] }
+// If you need runes: for _, r := range s { }
+
+// FAILURE 10: time.After leak in select
+for {
+    select {
+    case msg := <-ch:
+        process(msg)
+    case <-time.After(5 * time.Second):  // Creates NEW timer every iteration
+        // Leaked timers pile up until GC catches them
+    }
+}
+// FIX: Use time.NewTimer and Reset()
+timer := time.NewTimer(5 * time.Second)
+defer timer.Stop()
+for {
+    select {
+    case msg := <-ch:
+        process(msg)
+        if !timer.Stop() {
+            <-timer.C
+        }
+        timer.Reset(5 * time.Second)
+    case <-timer.C:
+        handleTimeout()
+        timer.Reset(5 * time.Second)
+    }
+}
+
+// FAILURE 11: init() functions hidden dependencies
+// init() runs at import time — can't control order, can't test, can't inject
+// FIX: Use explicit initialization functions called from main()
+
+// FAILURE 12: Error wrapping breaks errors.Is()
+// BAD:
+return fmt.Errorf("failed: %v", err)  // %v = err is NOT wrapped, Is/As won't work
+// GOOD:
+return fmt.Errorf("failed: %w", err)  // %w = err IS wrapped, Is/As traverses chain
+```
+
+
+## QUICK REFERENCE CARD
+
+```
+╔═══════════════════════════════════════════════════════════════╗
+║              GO FOR DEVOPS — CHEAT SHEET                      ║
+╠═══════════════════════════════════════════════════════════════╣
+║                                                               ║
+║ PROJECT:                                                      ║
+║   cmd/ → internal/ → pkg/                                     ║
+║   go mod init, go mod tidy                                    ║
+║   CGO_ENABLED=0 go build -ldflags="-s -w" ./cmd/novactl/     ║
+║   GOOS=linux GOARCH=arm64 go build  (cross-compile)          ║
+║                                                               ║
+║ CLI (Cobra + Viper):                                          ║
+║   rootCmd.PersistentFlags() — global flags                    ║
+║   viper.BindPFlag() — unify flags/env/config                  ║
+║   viper.SetEnvPrefix("NOVACTL")                               ║
+║   cobra.ExactArgs(1) — argument validation                    ║
+║                                                               ║
+║ ERRORS:                                                       ║
+║   return fmt.Errorf("doing X: %w", err)  — ALWAYS wrap       ║
+║   errors.Is(err, ErrNotFound)  — sentinel check               ║
+║   errors.As(err, &awsErr)  — typed check                      ║
+║   NEVER: err.Error() == "string"                              ║
+║                                                               ║
+║ CONCURRENCY:                                                  ║
+║   errgroup.SetLimit(N) — bounded parallelism (90% use case)  ║
+║   context.WithTimeout() — ALWAYS for external calls           ║
+║   defer cancel() — ALWAYS                                     ║
+║   go test -race ./... — ALWAYS in CI                          ║
+║                                                               ║
+║ HTTP CLIENT:                                                  ║
+║   ALWAYS set Timeout on http.Client (default = forever)       ║
+║   Reuse client (don't create per-request)                     ║
+║   defer resp.Body.Close() + io.Copy(io.Discard, resp.Body)   ║
+║                                                               ║
+║ K8S (client-go):                                              ║
+║   rest.InClusterConfig() || clientcmd.BuildConfigFromFlags()  ║
+║   config.QPS = 50, config.Burst = 100                         ║
+║   Informers for watch, Listers for cached reads               ║
+║   WaitForCacheSync() BEFORE reading from cache                ║
+║   controllerutil.CreateOrUpdate() for idempotent reconcile    ║
+║   controllerutil.SetControllerReference() for GC              ║
+║                                                               ║
+║ AWS (v2):                                                     ║
+║   config.LoadDefaultConfig(ctx, WithRegion, WithRetryMode)    ║
+║   Paginator for List operations (NEVER manual NextToken)      ║
+║   Waiter for state transitions                                ║
+║   aws.ToString() / aws.ToTime() for pointer derefs            ║
+║                                                               ║
+║ TESTING:                                                      ║
+║   Table-driven tests (standard Go pattern)                    ║
+║   Interface mocking (no framework needed)                     ║
+║   go test -race -coverprofile=coverage.out ./...              ║
+║   envtest for controller tests (real etcd + API server)       ║
+║                                                               ║
+║ GOTCHAS:                                                      ║
+║   ✗ default http.Client      → set Timeout                    ║
+║   ✗ defer in loop            → wrap in closure                ║
+║   ✗ shared slice backing     → full slice expr [:n:n]         ║
+║   ✗ concurrent map access    → sync.RWMutex or sync.Map       ║
+║   ✗ time.After in loop       → time.NewTimer + Reset          ║
+║   ✗ resp.Body not closed     → defer Close + Drain            ║
+║   ✗ fmt.Errorf("%v", err)    → use %w for wrapping            ║
+║   ✗ typed nil interface trap → return plain nil                ║
+║   ✗ init() hidden deps       → explicit init functions        ║
+║                                                               ║
+║ DISTRIBUTION:                                                 ║
+║   GoReleaser → multi-arch binaries + Docker + Homebrew        ║
+║   Distroless container (gcr.io/distroless/static-debian12)    ║
+║   ldflags -s -w (strip debug, ~30% smaller binary)            ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+```
+
+
+---
+
+## RETENTION QUESTIONS
+
+**Q1 (Architecture — Design a Go CLI Tool):**
+
+Design `novactl cost report` — a CLI command that:
+1. Queries AWS Cost Explorer across 3 regions for the last 30 days
+2. Queries Kubecost API for per-namespace K8s cost attribution
+3. Correlates AWS costs with K8s namespaces using tags (team, service)
+4. Outputs: cost-by-team table, cost-by-service table, untagged spend, daily trend, anomalies (>20% above 7-day avg)
+5. Sends Slack summary with top cost drivers
+
+Show: file layout (which packages), Cobra command definition, the concurrency model for multi-region + Kubecost queries, error handling strategy (partial failures OK), the data model (structs), output format routing, and how you'd test the cost correlation logic without hitting AWS.
+
+---
+
+**Q2 (Debugging — Find the Bugs):**
+
+Your teammate's Go code runs a nightly cleanup of old ECR images. It worked for 6 months, then started silently skipping images. No errors in logs. Find every bug:
+
+```go
+func cleanupECRImages(ctx context.Context, repos []string, maxAge int) {
+    client := ecr.NewFromConfig(getAWSConfig())
+    
+    for _, repo := range repos {
+        images, _ := client.DescribeImages(ctx, &ecr.DescribeImagesInput{
+            RepositoryName: &repo,
+        })
+        
+        for _, img := range images.ImageDetails {
+            age := time.Now().Sub(*img.ImagePushedAt)
+            if age.Hours() / 24 > float64(maxAge) {
+                if img.ImageTags != nil && len(img.ImageTags) > 0 {
+                    log.Printf("Deleting %s:%s (age: %d days)", 
+                        repo, img.ImageTags[0], int(age.Hours()/24))
+                }
+                
+                client.BatchDeleteImage(ctx, &ecr.BatchDeleteImageInput{
+                    RepositoryName: &repo,
+                    ImageIds: []types.ImageIdentifier{
+                        {ImageDigest: img.ImageDigest},
+                    },
+                })
+            }
+        }
+    }
+}
+```
+
+---
+
+**Q3 (Production Code — Write It):**
+
+Write a complete, tested Go function that implements a K8s deployment validator pre-check. Before a deployment rolls out, it should:
+1. Check the target image exists in ECR (don't deploy if image is missing)
+2. Check namespace resource quota has room for the new pods
+3. Check no PDB would block the rollout (all pods disrupted)
+4. Check the previous rollout is complete (no in-progress rollouts)
+5. Return a structured result with pass/fail per check and overall go/no-go
+
+Include: struct definitions, the function, and a table-driven test with mocked K8s and ECR clients.
+
+---
+
+**Q4 (Concurrency — Trace the Execution):**
+
+```go
+func main() {
+    ch := make(chan int, 2)
+    done := make(chan bool)
+
+    go func() {
+        for v := range ch {
+            fmt.Println("received:", v)
+            time.Sleep(100 * time.Millisecond)
+        }
+        done <- true
+    }()
+
+    for i := 0; i < 5; i++ {
+        ch <- i
+        fmt.Println("sent:", i)
+    }
+    close(ch)
+    <-done
+}
+```
+
+Trace the exact execution order. Which sends block? When? Why is the buffer size 2 relevant? What happens if you change it to `make(chan int)` (unbuffered)? What if the consumer goroutine panics on `i == 3` — what happens to the main goroutine?
+
+
+
+# Q1 — Architecture: `novactl cost report`
+
+## File Layout
+
+```
+novactl/
+├── cmd/
+│   ├── root.go                       # Cobra root command
+│   └── cost/
+│       ├── cost.go                   # `novactl cost` subcommand group
+│       └── report.go                 # `novactl cost report` command definition
+├── internal/
+│   ├── aws/
+│   │   ├── costexplorer/
+│   │   │   ├── client.go            # Interface + real implementation
+│   │   │   ├── client_test.go
+│   │   │   └── types.go             # AWS-specific response mapping
+│   │   └── session.go               # Shared AWS config factory
+│   ├── kubecost/
+│   │   ├── client.go                # Interface + HTTP client for Kubecost API
+│   │   ├── client_test.go
+│   │   └── types.go                 # Kubecost response structs
+│   ├── cost/
+│   │   ├── correlator.go            # Core: joins AWS costs ↔ K8s namespaces via tags
+│   │   ├── correlator_test.go       # Table-driven tests with fakes
+│   │   ├── anomaly.go               # Anomaly detection (7-day avg comparison)
+│   │   ├── anomaly_test.go
+│   │   ├── models.go                # Domain structs: CostReport, TeamCost, etc.
+│   │   └── aggregator.go            # Aggregation by team, service, day
+│   ├── output/
+│   │   ├── table.go                 # Rich terminal table (tablewriter)
+│   │   ├── json.go                  # JSON output
+│   │   ├── csv.go                   # CSV output
+│   │   └── formatter.go             # Interface + factory
+│   ├── notify/
+│   │   ├── slack.go                 # Slack webhook sender
+│   │   └── slack_test.go
+│   └── concurrency/
+│       └── fanout.go                # Generic fan-out/fan-in helper
+├── pkg/
+│   └── testutil/
+│       ├── fakes.go                 # Fake CostExplorer + Kubecost clients
+│       └── fixtures.go              # Test data builders
+├── go.mod
+├── go.sum
+└── main.go
+```
+
+## Data Model (`internal/cost/models.go`)
+
+```go
+package cost
+
+import "time"
+
+// ── Domain Models ───────────────────────────────────────────────────────────
+
+// CostRecord is the normalized unit from any source (AWS or Kubecost).
+type CostRecord struct {
+    Date        time.Time         `json:"date"`
+    Service     string            `json:"service"`      // e.g., "order-service"
+    Team        string            `json:"team"`         // e.g., "payments-team"
+    Namespace   string            `json:"namespace"`    // K8s namespace
+    AWSService  string            `json:"aws_service"`  // e.g., "AmazonEC2", "AmazonRDS"
+    Region      string            `json:"region"`
+    Amount      float64           `json:"amount"`
+    Currency    string            `json:"currency"`
+    Tags        map[string]string `json:"tags"`
+    Source      CostSource        `json:"source"`       // AWS or Kubecost
+}
+
+type CostSource string
+
+const (
+    SourceAWS      CostSource = "aws_cost_explorer"
+    SourceKubecost CostSource = "kubecost"
+)
+
+// CorrelatedCost represents a single cost line item after AWS↔K8s join.
+type CorrelatedCost struct {
+    CostRecord
+    K8sCPUCost    float64 `json:"k8s_cpu_cost"`
+    K8sMemoryCost float64 `json:"k8s_memory_cost"`
+    K8sGPUCost    float64 `json:"k8s_gpu_cost"`
+    Correlated    bool    `json:"correlated"` // false = untagged/unmatched
+}
+
+// TeamCostSummary aggregates costs for a single team.
+type TeamCostSummary struct {
+    Team          string  `json:"team"`
+    TotalCost     float64 `json:"total_cost"`
+    AWSCost       float64 `json:"aws_cost"`
+    K8sCost       float64 `json:"k8s_cost"`
+    ServiceCount  int     `json:"service_count"`
+    TopService    string  `json:"top_service"`
+    TopServiceAmt float64 `json:"top_service_amount"`
+}
+
+// ServiceCostSummary aggregates costs for a single service.
+type ServiceCostSummary struct {
+    Service      string  `json:"service"`
+    Team         string  `json:"team"`
+    Namespace    string  `json:"namespace"`
+    TotalCost    float64 `json:"total_cost"`
+    DailyAvg     float64 `json:"daily_avg"`
+    SevenDayAvg  float64 `json:"seven_day_avg"`
+    IsAnomaly    bool    `json:"is_anomaly"`
+    AnomalyPct   float64 `json:"anomaly_pct"` // % above 7-day avg
+}
+
+// DailyTrend represents one day's aggregate cost.
+type DailyTrend struct {
+    Date      time.Time `json:"date"`
+    TotalCost float64   `json:"total_cost"`
+    AWSCost   float64   `json:"aws_cost"`
+    K8sCost   float64   `json:"k8s_cost"`
+}
+
+// Anomaly flags a service whose daily cost deviates from its 7-day average.
+type Anomaly struct {
+    Service     string    `json:"service"`
+    Team        string    `json:"team"`
+    Date        time.Time `json:"date"`
+    DailyCost   float64   `json:"daily_cost"`
+    SevenDayAvg float64   `json:"seven_day_avg"`
+    DeviationPct float64  `json:"deviation_pct"`
+}
+
+// CostReport is the top-level output of the entire pipeline.
+type CostReport struct {
+    GeneratedAt    time.Time            `json:"generated_at"`
+    PeriodStart    time.Time            `json:"period_start"`
+    PeriodEnd      time.Time            `json:"period_end"`
+    Regions        []string             `json:"regions"`
+    TotalCost      float64              `json:"total_cost"`
+    UntaggedCost   float64              `json:"untagged_cost"`
+    UntaggedPct    float64              `json:"untagged_pct"`
+    ByTeam         []TeamCostSummary    `json:"by_team"`
+    ByService      []ServiceCostSummary `json:"by_service"`
+    DailyTrend     []DailyTrend         `json:"daily_trend"`
+    Anomalies      []Anomaly            `json:"anomalies"`
+    Errors         []string             `json:"errors,omitempty"`
+}
+```
+
+## Client Interfaces (for testability)
+
+```go
+// internal/aws/costexplorer/client.go
+package costexplorer
+
+import "context"
+
+type CostExplorerClient interface {
+    GetCostByTags(ctx context.Context, params GetCostInput) ([]CostRecord, error)
+}
+
+type GetCostInput struct {
+    Region    string
+    StartDate time.Time
+    EndDate   time.Time
+    TagKeys   []string // ["team", "service"]
+}
+```
+
+```go
+// internal/kubecost/client.go
+package kubecost
+
+import "context"
+
+type KubecostClient interface {
+    GetNamespaceCosts(ctx context.Context, window string) ([]NamespaceCost, error)
+}
+
+type NamespaceCost struct {
+    Namespace   string            `json:"namespace"`
+    CPUCost     float64           `json:"cpuCost"`
+    MemoryCost  float64           `json:"memoryCost"`
+    GPUCost     float64           `json:"gpuCost"`
+    TotalCost   float64           `json:"totalCost"`
+    Labels      map[string]string `json:"labels"`
+}
+```
+
+## Concurrency Model (`internal/concurrency/fanout.go`)
+
+```go
+package concurrency
+
+import (
+    "context"
+    "fmt"
+    "sync"
+)
+
+// Result wraps a typed result with its source label and potential error.
+type Result[T any] struct {
+    Source string
+    Value  T
+    Err    error
+}
+
+// FanOut executes functions concurrently, collects all results.
+// Partial failures are captured in Result.Err — never short-circuits.
+func FanOut[T any](ctx context.Context, tasks map[string]func(context.Context) (T, error)) []Result[T] {
+    results := make([]Result[T], 0, len(tasks))
+    var mu sync.Mutex
+    var wg sync.WaitGroup
+
+    for name, fn := range tasks {
+        wg.Add(1)
+        go func(name string, fn func(context.Context) (T, error)) {
+            defer wg.Done()
+            defer func() {
+                if r := recover(); r != nil {
+                    mu.Lock()
+                    results = append(results, Result[T]{
+                        Source: name,
+                        Err:    fmt.Errorf("panic in %s: %v", name, r),
+                    })
+                    mu.Unlock()
+                }
+            }()
+
+            val, err := fn(ctx)
+            mu.Lock()
+            results = append(results, Result[T]{Source: name, Value: val, Err: err})
+            mu.Unlock()
+        }(name, fn)
+    }
+
+    wg.Wait()
+    return results
+}
+```
+
+**Usage in the report pipeline:**
+
+```go
+// internal/cost/correlator.go — orchestration
+
+func BuildReport(
+    ctx context.Context,
+    ceClient costexplorer.CostExplorerClient,
+    kcClient kubecost.KubecostClient,
+    regions []string,
+    period time.Duration,
+) (*CostReport, error) {
+    now := time.Now().UTC()
+    start := now.Add(-period)
+
+    // ── Fan-out: 3 AWS regions + 1 Kubecost query = 4 concurrent tasks ────
+    tasks := make(map[string]func(context.Context) (interface{}, error))
+
+    for _, region := range regions {
+        r := region // capture
+        tasks["aws-"+r] = func(ctx context.Context) (interface{}, error) {
+            return ceClient.GetCostByTags(ctx, costexplorer.GetCostInput{
+                Region:    r,
+                StartDate: start,
+                EndDate:   now,
+                TagKeys:   []string{"team", "service"},
+            })
+        }
+    }
+
+    tasks["kubecost"] = func(ctx context.Context) (interface{}, error) {
+        return kcClient.GetNamespaceCosts(ctx, "30d")
+    }
+
+    results := concurrency.FanOut[interface{}](ctx, tasks)
+
+    // ── Fan-in: collect results, capture errors ───────────────────────────
+    var awsRecords []CostRecord
+    var kcRecords []kubecost.NamespaceCost
+    var errors []string
+
+    for _, r := range results {
+        if r.Err != nil {
+            errors = append(errors, fmt.Sprintf("%s: %v", r.Source, r.Err))
+            continue
+        }
+        switch v := r.Value.(type) {
+        case []CostRecord:
+            awsRecords = append(awsRecords, v...)
+        case []kubecost.NamespaceCost:
+            kcRecords = append(kcRecords, v...)
+        }
+    }
+
+    // ── Correlate + analyze ───────────────────────────────────────────────
+    correlated := correlateCosts(awsRecords, kcRecords)
+    report := aggregate(correlated, start, now)
+    report.Anomalies = detectAnomalies(report.ByService, 0.20)
+    report.Errors = errors
+    report.Regions = regions
+
+    return report, nil
+}
+```
+
+## Cobra Command (`cmd/cost/report.go`)
+
+```go
+package cost
+
+import (
+    "context"
+    "fmt"
+    "os"
+    "time"
+
+    "github.com/spf13/cobra"
+    "github.com/novamart/novactl/internal/aws/costexplorer"
+    costpkg "github.com/novamart/novactl/internal/cost"
+    "github.com/novamart/novactl/internal/kubecost"
+    "github.com/novamart/novactl/internal/notify"
+    "github.com/novamart/novactl/internal/output"
+)
+
+var (
+    flagRegions        []string
+    flagPeriodDays     int
+    flagOutputFormat   string
+    flagSlack          bool
+    flagAnomalyThresh  float64
+    flagKubecostURL    string
+)
+
+func NewReportCmd() *cobra.Command {
+    cmd := &cobra.Command{
+        Use:   "report",
+        Short: "Generate cost attribution report across AWS and K8s",
+        Long: `Queries AWS Cost Explorer and Kubecost, correlates costs by team/service
+tags, detects anomalies, and outputs a comprehensive cost report.
+
+Partial failures are tolerated — if one region is unreachable, the report
+includes data from the others with a warning.`,
+        Example: `  novactl cost report
+  novactl cost report --regions us-east-1,eu-west-1 --period 14 -o json
+  novactl cost report --no-slack --format csv > costs.csv`,
+        RunE: runReport,
+    }
+
+    cmd.Flags().StringSliceVarP(&flagRegions, "regions", "r",
+        []string{"us-east-1", "us-west-2", "eu-west-1"}, "AWS regions to query")
+    cmd.Flags().IntVarP(&flagPeriodDays, "period", "p", 30, "Lookback period in days")
+    cmd.Flags().StringVarP(&flagOutputFormat, "format", "o", "table",
+        "Output format: table, json, csv")
+    cmd.Flags().BoolVar(&flagSlack, "slack", true, "Send Slack summary")
+    cmd.Flags().Float64Var(&flagAnomalyThresh, "anomaly-threshold", 0.20,
+        "Anomaly threshold (fraction above 7-day avg)")
+    cmd.Flags().StringVar(&flagKubecostURL, "kubecost-url",
+        "http://kubecost-cost-analyzer.kubecost:9090", "Kubecost API base URL")
+
+    return cmd
+}
+
+func runReport(cmd *cobra.Command, args []string) error {
+    ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
+    defer cancel()
+
+    // Build clients
+    ceClient, err := costexplorer.New(ctx)
+    if err != nil {
+        return fmt.Errorf("initializing cost explorer client: %w", err)
+    }
+    kcClient := kubecost.New(flagKubecostURL)
+
+    // Build report
+    period := time.Duration(flagPeriodDays) * 24 * time.Hour
+    report, err := costpkg.BuildReport(ctx, ceClient, kcClient, flagRegions, period)
+    if err != nil {
+        return fmt.Errorf("building cost report: %w", err)
+    }
+
+    // Warn about partial failures
+    for _, e := range report.Errors {
+        fmt.Fprintf(os.Stderr, "WARNING: %s\n", e)
+    }
+
+    // Format output
+    formatter, err := output.NewFormatter(flagOutputFormat)
+    if err != nil {
+        return err
+    }
+    if err := formatter.Render(os.Stdout, report); err != nil {
+        return fmt.Errorf("rendering output: %w", err)
+    }
+
+    // Slack notification
+    if flagSlack {
+        webhookURL := os.Getenv("SLACK_WEBHOOK_URL")
+        if webhookURL == "" {
+            fmt.Fprintln(os.Stderr, "WARNING: SLACK_WEBHOOK_URL not set, skipping notification")
+        } else if err := notify.SendCostSummary(ctx, webhookURL, report); err != nil {
+            fmt.Fprintf(os.Stderr, "WARNING: Slack notification failed: %v\n", err)
+        }
+    }
+
+    // Exit code: non-zero if anomalies found (for CI gating)
+    if len(report.Anomalies) > 0 {
+        return fmt.Errorf("found %d cost anomalies", len(report.Anomalies))
+    }
+
+    return nil
+}
+```
+
+## Correlation Logic + Test (`internal/cost/correlator.go`)
+
+```go
+package cost
+
+// correlateCosts joins AWS cost records with Kubecost namespace data via tags.
+// Strategy:
+//   1. Index Kubecost records by namespace label "service" -> NamespaceCost
+//   2. For each AWS record, look up by "service" tag -> enrich with K8s costs
+//   3. Unmatched AWS records are flagged as uncorrelated (untagged)
+//   4. Unmatched Kubecost records become AWS-unattributed K8s costs
+func correlateCosts(
+    awsRecords []CostRecord,
+    kcRecords []kubecost.NamespaceCost,
+) []CorrelatedCost {
+    // Build lookup: service-name → kubecost data
+    kcByService := make(map[string]kubecost.NamespaceCost, len(kcRecords))
+    kcUsed := make(map[string]bool)
+    for _, kc := range kcRecords {
+        svcLabel := kc.Labels["service"]
+        if svcLabel == "" {
+            svcLabel = kc.Namespace // fallback: use namespace as service name
+        }
+        kcByService[svcLabel] = kc
+    }
+
+    result := make([]CorrelatedCost, 0, len(awsRecords)+len(kcRecords))
+
+    for _, aws := range awsRecords {
+        cc := CorrelatedCost{CostRecord: aws}
+
+        svc := aws.Tags["service"]
+        if svc == "" {
+            svc = aws.Service
+        }
+
+        if kc, ok := kcByService[svc]; ok {
+            cc.K8sCPUCost = kc.CPUCost
+            cc.K8sMemoryCost = kc.MemoryCost
+            cc.K8sGPUCost = kc.GPUCost
+            cc.Correlated = true
+            kcUsed[svc] = true
+        }
+
+        result = append(result, cc)
+    }
+
+    // Add K8s-only costs (no matching AWS record)
+    for svc, kc := range kcByService {
+        if !kcUsed[svc] {
+            result = append(result, CorrelatedCost{
+                CostRecord: CostRecord{
+                    Service:   svc,
+                    Namespace: kc.Namespace,
+                    Team:      kc.Labels["team"],
+                    Amount:    kc.TotalCost,
+                    Source:    SourceKubecost,
+                },
+                K8sCPUCost:    kc.CPUCost,
+                K8sMemoryCost: kc.MemoryCost,
+                Correlated:    false,
+            })
+        }
+    }
+
+    return result
+}
+```
+
+## Test (Table-Driven, No AWS)
+
+```go
+package cost
+
+import (
+    "testing"
+    "time"
+
+    "github.com/novamart/novactl/internal/kubecost"
+    "github.com/stretchr/testify/assert"
+    "github.com/stretchr/testify/require"
+)
+
+func TestCorrelateCosts(t *testing.T) {
+    tests := []struct {
+        name             string
+        awsRecords       []CostRecord
+        kcRecords        []kubecost.NamespaceCost
+        wantTotal        int
+        wantCorrelated   int
+        wantUncorrelated int
+        wantUntaggedAmt  float64
+    }{
+        {
+            name: "perfect match — all services correlated",
+            awsRecords: []CostRecord{
+                {Service: "order-service", Team: "orders-team", Amount: 100.0,
+                    Tags: map[string]string{"service": "order-service", "team": "orders-team"}},
+                {Service: "payment-service", Team: "payments-team", Amount: 200.0,
+                    Tags: map[string]string{"service": "payment-service", "team": "payments-team"}},
+            },
+            kcRecords: []kubecost.NamespaceCost{
+                {Namespace: "orders", CPUCost: 30, MemoryCost: 10, TotalCost: 40,
+                    Labels: map[string]string{"service": "order-service"}},
+                {Namespace: "payments", CPUCost: 60, MemoryCost: 20, TotalCost: 80,
+                    Labels: map[string]string{"service": "payment-service"}},
+            },
+            wantTotal: 2, wantCorrelated: 2, wantUncorrelated: 0,
+        },
+        {
+            name: "untagged AWS spend — no service tag",
+            awsRecords: []CostRecord{
+                {Service: "", Amount: 50.0, Tags: map[string]string{}},
+            },
+            kcRecords:       []kubecost.NamespaceCost{},
+            wantTotal:       1,
+            wantCorrelated:  0,
+            wantUncorrelated: 1,
+        },
+        {
+            name: "K8s-only cost — no matching AWS record",
+            awsRecords: []CostRecord{},
+            kcRecords: []kubecost.NamespaceCost{
+                {Namespace: "ml-training", CPUCost: 500, MemoryCost: 200,
+                    TotalCost: 700, Labels: map[string]string{"service": "ml-pipeline"}},
+            },
+            wantTotal: 1, wantCorrelated: 0, wantUncorrelated: 1,
+        },
+        {
+            name: "mixed — some correlated, some orphaned on both sides",
+            awsRecords: []CostRecord{
+                {Service: "order-service", Amount: 100,
+                    Tags: map[string]string{"service": "order-service", "team": "orders"}},
+                {Service: "legacy-batch", Amount: 75,
+                    Tags: map[string]string{"service": "legacy-batch"}}, // no K8s match
+            },
+            kcRecords: []kubecost.NamespaceCost{
+                {Namespace: "orders", CPUCost: 30, MemoryCost: 10, TotalCost: 40,
+                    Labels: map[string]string{"service": "order-service"}},
+                {Namespace: "experiments", CPUCost: 5, MemoryCost: 2, TotalCost: 7,
+                    Labels: map[string]string{"service": "experiment-svc"}}, // no AWS match
+            },
+            wantTotal: 3, wantCorrelated: 1, wantUncorrelated: 2,
+        },
+        {
+            name: "empty inputs",
+            awsRecords: []CostRecord{},
+            kcRecords:  []kubecost.NamespaceCost{},
+            wantTotal:  0,
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            result := correlateCosts(tt.awsRecords, tt.kcRecords)
+
+            assert.Len(t, result, tt.wantTotal)
+
+            correlated := 0
+            uncorrelated := 0
+            for _, r := range result {
+                if r.Correlated {
+                    correlated++
+                } else {
+                    uncorrelated++
+                }
+            }
+            assert.Equal(t, tt.wantCorrelated, correlated, "correlated count mismatch")
+            assert.Equal(t, tt.wantUncorrelated, uncorrelated, "uncorrelated count mismatch")
+        })
+    }
+}
+
+func TestDetectAnomalies(t *testing.T) {
+    tests := []struct {
+        name       string
+        services   []ServiceCostSummary
+        threshold  float64
+        wantCount  int
+    }{
+        {
+            name: "25% spike detected at 20% threshold",
+            services: []ServiceCostSummary{
+                {Service: "order-svc", DailyAvg: 125.0, SevenDayAvg: 100.0},
+            },
+            threshold: 0.20,
+            wantCount: 1,
+        },
+        {
+            name: "15% spike below 20% threshold — no anomaly",
+            services: []ServiceCostSummary{
+                {Service: "order-svc", DailyAvg: 115.0, SevenDayAvg: 100.0},
+            },
+            threshold: 0.20,
+            wantCount: 0,
+        },
+        {
+            name: "zero seven-day avg — no division by zero",
+            services: []ServiceCostSummary{
+                {Service: "new-svc", DailyAvg: 50.0, SevenDayAvg: 0.0},
+            },
+            threshold: 0.20,
+            wantCount: 0, // can't compute deviation; skip
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            anomalies := detectAnomalies(tt.services, tt.threshold)
+            assert.Len(t, anomalies, tt.wantCount)
+        })
+    }
+}
+```
+
+## Error Handling Strategy Summary
+
+| Scenario | Behavior |
+|---|---|
+| One AWS region unreachable | Captured in `report.Errors`; other regions' data included. stderr warning. |
+| Kubecost API down | Captured in `report.Errors`; report shows AWS-only data. K8s columns empty. |
+| All sources fail | `BuildReport` returns report with `Errors` populated, zero cost data. CLI prints warnings. |
+| Slack fails | stderr warning, non-fatal. Report still output to stdout. |
+| Anomalies found | CLI returns exit code 1 (for CI gating), report fully rendered. |
+
+---
+
+# Q2 — Debugging: ECR Cleanup Silent Failures
+
+## Bug 1: **Swallowed error on `DescribeImages`** — THE SILENT SKIP ROOT CAUSE
+
+```go
+images, _ := client.DescribeImages(ctx, &ecr.DescribeImagesInput{
+    RepositoryName: &repo,
+})
+```
+
+**Problem:** The error is discarded with `_`. If `DescribeImages` fails (permissions, throttling, repo doesn't exist), `images` is `nil`. Accessing `images.ImageDetails` on a nil `images` should panic — **but it doesn't always** because if the API returns a non-nil response with an empty `ImageDetails` slice, the for loop simply iterates nothing.
+
+More critically: **AWS API throttling** returns retryable errors. After 6 months with more images in the repos, the API calls are more likely to be throttled. The error is silently discarded, and the entire repo is skipped.
+
+**Production consequence:** Repos that trigger API errors are silently skipped. No images are cleaned from those repos. Over time, ECR storage costs balloon and the "silent skipping" goes undetected.
+
+**Fix:**
+```go
+images, err := client.DescribeImages(ctx, &ecr.DescribeImagesInput{
+    RepositoryName: &repo,
+})
+if err != nil {
+    log.Printf("ERROR: DescribeImages for %s: %v", repo, err)
+    continue
+}
+```
+
+---
+
+## Bug 2: **Missing pagination — only first page of images returned**
+
+```go
+images, _ := client.DescribeImages(ctx, &ecr.DescribeImagesInput{
+    RepositoryName: &repo,
+})
+```
+
+**Problem:** `DescribeImages` returns a maximum of **1,000 images per page** (default 100). The response includes a `NextToken` for pagination. This code reads only the first page and ignores the rest.
+
+After 6 months with CI/CD pushing images constantly, many repos likely have >100 images. Only the first page is checked; all subsequent images are invisible.
+
+**Production consequence:** This is the primary cause of "silently skipping images." With 500 images in a repo, only the first 100 are candidates for cleanup. The other 400 accumulate forever.
+
+**Fix:**
+```go
+paginator := ecr.NewDescribeImagesPaginator(client, &ecr.DescribeImagesInput{
+    RepositoryName: &repo,
+})
+for paginator.HasMorePages() {
+    page, err := paginator.NextPage(ctx)
+    if err != nil {
+        log.Printf("ERROR: paginating %s: %v", repo, err)
+        break
+    }
+    for _, img := range page.ImageDetails {
+        // ... process image
+    }
+}
+```
+
+---
+
+## Bug 3: **Swallowed error on `BatchDeleteImage`**
+
+```go
+client.BatchDeleteImage(ctx, &ecr.BatchDeleteImageInput{
+    RepositoryName: &repo,
+    ImageIds: []types.ImageIdentifier{
+        {ImageDigest: img.ImageDigest},
+    },
+})
+```
+
+**Problem:** The return value and error are both discarded. `BatchDeleteImage` can fail due to:
+- Permissions (IAM `ecr:BatchDeleteImage` missing)
+- Image is referenced by a manifest list
+- Throttling
+- The response contains a `Failures` slice with per-image failure reasons
+
+You never know if the delete actually succeeded. The log says "Deleting…" but the image may still be there.
+
+**Production consequence:** The nightly job reports deletions that didn't happen. ECR continues accumulating images. Storage costs grow. The team thinks cleanup is working.
+
+**Fix:**
+```go
+resp, err := client.BatchDeleteImage(ctx, &ecr.BatchDeleteImageInput{...})
+if err != nil {
+    log.Printf("ERROR: BatchDeleteImage for %s: %v", repo, err)
+    continue
+}
+for _, f := range resp.Failures {
+    log.Printf("WARN: failed to delete %s in %s: %s (%s)",
+        *f.ImageId.ImageDigest, repo, *f.FailureReason, f.FailureCode)
+}
+```
+
+---
+
+## Bug 4: **Untagged images are silently skipped — only logged when tags exist, but always deleted**
+
+```go
+if img.ImageTags != nil && len(img.ImageTags) > 0 {
+    log.Printf("Deleting %s:%s (age: %d days)", 
+        repo, img.ImageTags[0], int(age.Hours()/24))
+}
+
+client.BatchDeleteImage(ctx, &ecr.BatchDeleteImageInput{...})
+```
+
+**Problem:** The `if` block only controls the **log message**, not the delete operation. The `BatchDeleteImage` call happens unconditionally. This means:
+
+1. **Untagged images are deleted without any log.** You have no audit trail.
+2. **The intent is ambiguous.** Did the author mean to skip untagged images? The structure suggests the delete was supposed to be inside the `if` block.
+
+**Production consequence:** Untagged images (which may include intermediate build layers or critical base images) are silently deleted. When debugging image pull failures later, there's no log of what was removed.
+
+**Fix (if intent is to delete all old images, but log all):**
+```go
+tagStr := "<untagged>"
+if len(img.ImageTags) > 0 {
+    tagStr = img.ImageTags[0]
+}
+log.Printf("Deleting %s:%s (digest: %s, age: %d days)", 
+    repo, tagStr, *img.ImageDigest, int(age.Hours()/24))
+
+// Then delete...
+```
+
+---
+
+## Bug 5: **`time.Now().Sub(...)` uses local time — `ImagePushedAt` is UTC**
+
+```go
+age := time.Now().Sub(*img.ImagePushedAt)
+```
+
+**Problem:** `time.Now()` returns local time. `img.ImagePushedAt` is UTC (from AWS API). While Go's `time.Sub` correctly handles timezone arithmetic (it computes monotonic duration), the **semantic age may be misleading** in log output and in edge cases around the threshold boundary.
+
+More importantly: if this runs in a container without a timezone set, `time.Now()` defaults to UTC — no bug. But if it runs on a developer laptop or EC2 instance with a non-UTC timezone, the **displayed** age in logs may be wrong, and images at the boundary could be deleted prematurely or skipped.
+
+**Fix:**
+```go
+age := time.Since(*img.ImagePushedAt) // idiomatic; equivalent but clearer
+// Or explicitly: time.Now().UTC().Sub(...)
+```
+
+---
+
+## Bug 6: **Single-image `BatchDeleteImage` calls — massively inefficient and throttle-prone**
+
+```go
+client.BatchDeleteImage(ctx, &ecr.BatchDeleteImageInput{
+    RepositoryName: &repo,
+    ImageIds: []types.ImageIdentifier{
+        {ImageDigest: img.ImageDigest},
+    },
+})
+```
+
+**Problem:** `BatchDeleteImage` accepts **up to 100 image IDs per call**. This code sends one image per API call. For a repo with 500 old images, that's 500 API calls instead of 5. This dramatically increases the chance of hitting AWS API throttle limits, which (per Bug 1) are silently swallowed.
+
+**Production consequence:** After adding 200 new instances and more CI/CD activity, the repos have more images to clean. The 1-at-a-time deletion pattern triggers throttling. Throttled calls return errors, which are silently discarded (Bug 1), and those images are never cleaned.
+
+**Fix:**
+```go
+const batchSize = 100
+var toDelete []types.ImageIdentifier
+
+for _, img := range oldImages {
+    toDelete = append(toDelete, types.ImageIdentifier{ImageDigest: img.ImageDigest})
+    if len(toDelete) >= batchSize {
+        deleteBatch(ctx, client, repo, toDelete)
+        toDelete = toDelete[:0]
+    }
+}
+if len(toDelete) > 0 {
+    deleteBatch(ctx, client, repo, toDelete)
+}
+```
+
+---
+
+## Bug 7: **`ImagePushedAt` may be nil — potential nil pointer dereference**
+
+```go
+age := time.Now().Sub(*img.ImagePushedAt)
+```
+
+**Problem:** `img.ImagePushedAt` is a `*time.Time`. For images that are still being uploaded or in a weird state, this can be `nil`. Dereferencing a nil `*time.Time` causes a **panic** that crashes the entire function — every remaining repo is skipped.
+
+**Production consequence:** One malformed image metadata entry kills the cleanup for all remaining repos.
+
+**Fix:**
+```go
+if img.ImagePushedAt == nil {
+    log.Printf("WARN: %s has nil ImagePushedAt, skipping", *img.ImageDigest)
+    continue
+}
+```
+
+---
+
+## Bug 8: **No context timeout / cancellation propagation**
+
+```go
+func cleanupECRImages(ctx context.Context, repos []string, maxAge int) {
+```
+
+**Problem:** The function accepts a `ctx` but never checks if it's cancelled. If the calling code sets a deadline (e.g., Lambda 15-minute timeout), and this function is processing hundreds of repos, it will continue making API calls after the context is cancelled — receiving errors it then discards (Bug 1).
+
+**Fix:** Check context in the loop:
+```go
+for _, repo := range repos {
+    if ctx.Err() != nil {
+        log.Printf("Context cancelled, stopping cleanup")
+        return
+    }
+    // ...
+}
+```
+
+---
+
+## Bug 9: **`&repo` captures the loop variable — all calls use the same pointer**
+
+```go
+for _, repo := range repos {
+    images, _ := client.DescribeImages(ctx, &ecr.DescribeImagesInput{
+        RepositoryName: &repo,
+    })
+```
+
+**Problem:** In Go versions prior to 1.22, `&repo` takes the address of the loop variable, which is **reused across iterations**. Since `DescribeImages` is synchronous here, this happens to work — by the time the next iteration overwrites `repo`, the previous call has completed. **However**, `BatchDeleteImage` also uses `&repo`, and if the code is ever made concurrent (e.g., with goroutines per repo), all calls would reference the same `repo` pointer — the last repo in the slice.
+
+Even in the synchronous version, this is a latent bug that will bite during the inevitable refactor.
+
+**Post Go 1.22:** The loop variable is now per-iteration, so this is safe. But if running on Go <1.22 (which is likely for "running 6 months"), this is a real risk.
+
+**Fix:**
+```go
+for _, repo := range repos {
+    repo := repo // capture for pre-1.22 safety
+    // ...
+}
+```
+
+---
+
+## Corrected Code
+
+```go
+func cleanupECRImages(ctx context.Context, repos []string, maxAge int) error {
+    cfg := getAWSConfig()
+    client := ecr.NewFromConfig(cfg)
+    const batchSize = 100
+
+    var totalDeleted, totalFailed int
+
+    for _, repo := range repos {
+        repo := repo // capture loop variable
+
+        if ctx.Err() != nil {
+            return fmt.Errorf("context cancelled: %w", ctx.Err())
+        }
+
+        log.Printf("Scanning repo: %s", repo)
+
+        paginator := ecr.NewDescribeImagesPaginator(client, &ecr.DescribeImagesInput{
+            RepositoryName: &repo,
+        })
+
+        var toDelete []types.ImageIdentifier
+
+        for paginator.HasMorePages() {
+            page, err := paginator.NextPage(ctx)
+            if err != nil {
+                log.Printf("ERROR: DescribeImages page for %s: %v", repo, err)
+                break
+            }
+
+            for _, img := range page.ImageDetails {
+                if img.ImagePushedAt == nil {
+                    log.Printf("WARN: %s/%s has nil ImagePushedAt, skipping",
+                        repo, safeDigest(img.ImageDigest))
+                    continue
+                }
+
+                age := time.Since(*img.ImagePushedAt)
+                ageDays := int(age.Hours() / 24)
+
+                if ageDays > maxAge {
+                    tagStr := "<untagged>"
+                    if len(img.ImageTags) > 0 {
+                        tagStr = img.ImageTags[0]
+                    }
+                    log.Printf("Queuing deletion: %s:%s (digest: %s, age: %dd)",
+                        repo, tagStr, safeDigest(img.ImageDigest), ageDays)
+
+                    toDelete = append(toDelete, types.ImageIdentifier{
+                        ImageDigest: img.ImageDigest,
+                    })
+                }
+            }
+        }
+
+        // Batch delete
+        for i := 0; i < len(toDelete); i += batchSize {
+            end := i + batchSize
+            if end > len(toDelete) {
+                end = len(toDelete)
+            }
+            batch := toDelete[i:end]
+
+            resp, err := client.BatchDeleteImage(ctx, &ecr.BatchDeleteImageInput{
+                RepositoryName: &repo,
+                ImageIds:       batch,
+            })
+            if err != nil {
+                log.Printf("ERROR: BatchDeleteImage for %s: %v", repo, err)
+                totalFailed += len(batch)
+                continue
+            }
+            totalDeleted += len(resp.ImageIds)
+            for _, f := range resp.Failures {
+                log.Printf("WARN: delete failure in %s: %s (code: %s)",
+                    repo, *f.FailureReason, f.FailureCode)
+                totalFailed++
+            }
+        }
+
+        log.Printf("Repo %s: queued %d for deletion", repo, len(toDelete))
+    }
+
+    log.Printf("Cleanup complete: %d deleted, %d failed", totalDeleted, totalFailed)
+    return nil
+}
+
+func safeDigest(d *string) string {
+    if d == nil {
+        return "<nil>"
+    }
+    if len(*d) > 19 {
+        return (*d)[:19] + "…"
+    }
+    return *d
+}
+```
+
+---
+
+# Q3 — Production Code: K8s Deployment Pre-Check Validator
+
+## Full Implementation
+
+```go
+// internal/validator/precheck.go
+package validator
+
+import (
+    "context"
+    "fmt"
+    "log/slog"
+    "strings"
+    "time"
+)
+
+// ── Check Result Model ─────────────────────────────────────────────────────
+
+type CheckStatus string
+
+const (
+    StatusPass CheckStatus = "PASS"
+    StatusFail CheckStatus = "FAIL"
+    StatusWarn CheckStatus = "WARN"
+    StatusSkip CheckStatus = "SKIP"
+)
+
+type CheckResult struct {
+    Name    string      `json:"name"`
+    Status  CheckStatus `json:"status"`
+    Message string      `json:"message"`
+    Details string      `json:"details,omitempty"`
+}
+
+type PreCheckResult struct {
+    Deployment string        `json:"deployment"`
+    Namespace  string        `json:"namespace"`
+    Image      string        `json:"image"`
+    Timestamp  time.Time     `json:"timestamp"`
+    Checks     []CheckResult `json:"checks"`
+    GoNoGo     bool          `json:"go_no_go"`
+    Summary    string        `json:"summary"`
+}
+
+func (r *PreCheckResult) addCheck(c CheckResult) {
+    r.Checks = append(r.Checks, c)
+}
+
+func (r *PreCheckResult) computeGoNoGo() {
+    r.GoNoGo = true
+    var failures []string
+    for _, c := range r.Checks {
+        if c.Status == StatusFail {
+            r.GoNoGo = false
+            failures = append(failures, c.Name)
+        }
+    }
+    if r.GoNoGo {
+        r.Summary = "All pre-checks passed — safe to deploy"
+    } else {
+        r.Summary = fmt.Sprintf("BLOCKED: %d check(s) failed: %s",
+            len(failures), strings.Join(failures, ", "))
+    }
+}
+
+// ── Input ───────────────────────────────────────────────────────────────────
+
+type DeploymentSpec struct {
+    Name      string
+    Namespace string
+    Image     string // "registry.novamart.com/order-service:v1.2.3"
+    Replicas  int32
+}
+
+// ── Interfaces (for testing) ────────────────────────────────────────────────
+
+type ECRClient interface {
+    ImageExists(ctx context.Context, repository, tag string) (bool, error)
+}
+
+type K8sClient interface {
+    // Quota check: returns available CPU (millicores) and memory (bytes) in namespace
+    GetAvailableQuota(ctx context.Context, namespace string) (cpuMillis int64, memBytes int64, err error)
+
+    // PDB check: returns true if any PDB in the namespace would block a full rollout
+    PDBWouldBlock(ctx context.Context, namespace string, deploymentName string, replicas int32) (blocked bool, reason string, err error)
+
+    // Rollout check: returns true if deployment currently has an in-progress rollout
+    RolloutInProgress(ctx context.Context, namespace string, deploymentName string) (bool, error)
+
+    // Resource requirements for the deployment's pod spec
+    GetPodResourceRequests(ctx context.Context, namespace, deployment string) (cpuMillis int64, memBytes int64, err error)
+}
+
+// ── Validator ───────────────────────────────────────────────────────────────
+
+type PreCheckValidator struct {
+    ecr    ECRClient
+    k8s    K8sClient
+    logger *slog.Logger
+}
+
+func NewPreCheckValidator(ecr ECRClient, k8s K8sClient, logger *slog.Logger) *PreCheckValidator {
+    if logger == nil {
+        logger = slog.Default()
+    }
+    return &PreCheckValidator{ecr: ecr, k8s: k8s, logger: logger}
+}
+
+func (v *PreCheckValidator) Validate(ctx context.Context, spec DeploymentSpec) (*PreCheckResult, error) {
+    if spec.Name == "" || spec.Namespace == "" || spec.Image == "" {
+        return nil, fmt.Errorf("deployment spec requires name, namespace, and image")
+    }
+
+    result := &PreCheckResult{
+        Deployment: spec.Name,
+        Namespace:  spec.Namespace,
+        Image:      spec.Image,
+        Timestamp:  time.Now().UTC(),
+    }
+
+    v.logger.Info("starting pre-check validation",
+        "deployment", spec.Name,
+        "namespace", spec.Namespace,
+        "image", spec.Image,
+    )
+
+    // Check 1: Image exists in ECR
+    v.checkImageExists(ctx, spec, result)
+
+    // Check 2: Namespace resource quota
+    v.checkResourceQuota(ctx, spec, result)
+
+    // Check 3: PDB won't block rollout
+    v.checkPDB(ctx, spec, result)
+
+    // Check 4: No in-progress rollout
+    v.checkRolloutStatus(ctx, spec, result)
+
+    result.computeGoNoGo()
+
+    v.logger.Info("pre-check complete",
+        "deployment", spec.Name,
+        "go_no_go", result.GoNoGo,
+        "summary", result.Summary,
+    )
+
+    return result, nil
+}
+
+// ── Individual Checks ──────────────────────────────────────────────────────
+
+func (v *PreCheckValidator) checkImageExists(ctx context.Context, spec DeploymentSpec, result *PreCheckResult) {
+    repo, tag, err := parseImage(spec.Image)
+    if err != nil {
+        result.addCheck(CheckResult{
+            Name:    "image_exists",
+            Status:  StatusFail,
+            Message: fmt.Sprintf("Invalid image reference: %v", err),
+        })
+        return
+    }
+
+    exists, err := v.ecr.ImageExists(ctx, repo, tag)
+    if err != nil {
+        result.addCheck(CheckResult{
+            Name:    "image_exists",
+            Status:  StatusFail,
+            Message: fmt.Sprintf("ECR check failed: %v", err),
+            Details: "Could not verify image existence — failing safe",
+        })
+        return
+    }
+
+    if !exists {
+        result.addCheck(CheckResult{
+            Name:    "image_exists",
+            Status:  StatusFail,
+            Message: fmt.Sprintf("Image %s:%s not found in ECR", repo, tag),
+            Details: "Deployment would fail with ImagePullBackOff",
+        })
+        return
+    }
+
+    result.addCheck(CheckResult{
+        Name:    "image_exists",
+        Status:  StatusPass,
+        Message: fmt.Sprintf("Image %s:%s exists in ECR", repo, tag),
+    })
+}
+
+func (v *PreCheckValidator) checkResourceQuota(ctx context.Context, spec DeploymentSpec, result *PreCheckResult) {
+    availCPU, availMem, err := v.k8s.GetAvailableQuota(ctx, spec.Namespace)
+    if err != nil {
+        result.addCheck(CheckResult{
+            Name:    "resource_quota",
+            Status:  StatusWarn,
+            Message: fmt.Sprintf("Could not check quota: %v", err),
+            Details: "Namespace may not have ResourceQuota configured",
+        })
+        return
+    }
+
+    reqCPU, reqMem, err := v.k8s.GetPodResourceRequests(ctx, spec.Namespace, spec.Name)
+    if err != nil {
+        result.addCheck(CheckResult{
+            Name:    "resource_quota",
+            Status:  StatusWarn,
+            Message: fmt.Sprintf("Could not get pod resource requests: %v", err),
+        })
+        return
+    }
+
+    // During a rolling update, there's a surge — at least 1 extra pod
+    totalCPU := reqCPU * int64(spec.Replicas+1)
+    totalMem := reqMem * int64(spec.Replicas+1)
+
+    if totalCPU > availCPU || totalMem > availMem {
+        result.addCheck(CheckResult{
+            Name:   "resource_quota",
+            Status: StatusFail,
+            Message: fmt.Sprintf("Insufficient quota: need %dm CPU/%dMi mem, have %dm/%dMi",
+                totalCPU, totalMem/(1024*1024), availCPU, availMem/(1024*1024)),
+            Details: "Rolling update surge would exceed namespace ResourceQuota",
+        })
+        return
+    }
+
+    result.addCheck(CheckResult{
+        Name:    "resource_quota",
+        Status:  StatusPass,
+        Message: "Namespace has sufficient quota for rolling update",
+    })
+}
+
+func (v *PreCheckValidator) checkPDB(ctx context.Context, spec DeploymentSpec, result *PreCheckResult) {
+    blocked, reason, err := v.k8s.PDBWouldBlock(ctx, spec.Namespace, spec.Name, spec.Replicas)
+    if err != nil {
+        result.addCheck(CheckResult{
+            Name:    "pdb_check",
+            Status:  StatusWarn,
+            Message: fmt.Sprintf("Could not evaluate PDBs: %v", err),
+        })
+        return
+    }
+
+    if blocked {
+        result.addCheck(CheckResult{
+            Name:    "pdb_check",
+            Status:  StatusFail,
+            Message: "PodDisruptionBudget would block rollout",
+            Details: reason,
+        })
+        return
+    }
+
+    result.addCheck(CheckResult{
+        Name:    "pdb_check",
+        Status:  StatusPass,
+        Message: "No PDB conflicts detected",
+    })
+}
+
+func (v *PreCheckValidator) checkRolloutStatus(ctx context.Context, spec DeploymentSpec, result *PreCheckResult) {
+    inProgress, err := v.k8s.RolloutInProgress(ctx, spec.Namespace, spec.Name)
+    if err != nil {
+        result.addCheck(CheckResult{
+            Name:    "rollout_status",
+            Status:  StatusWarn,
+            Message: fmt.Sprintf("Could not check rollout status: %v", err),
+        })
+        return
+    }
+
+    if inProgress {
+        result.addCheck(CheckResult{
+            Name:    "rollout_status",
+            Status:  StatusFail,
+            Message: "A rollout is already in progress",
+            Details: "Deploying now could cause unexpected behavior or double surge",
+        })
+        return
+    }
+
+    result.addCheck(CheckResult{
+        Name:    "rollout_status",
+        Status:  StatusPass,
+        Message: "No in-progress rollout detected",
+    })
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+func parseImage(image string) (repo, tag string, err error) {
+    // Handle: registry.novamart.com/order-service:v1.2.3
+    //         order-service:v1.2.3
+    //         registry.novamart.com/order-service (implicit :latest)
+    //         registry.novamart.com/order-service@sha256:abc123
+
+    if strings.Contains(image, "@") {
+        // Digest reference: split on @
+        parts := strings.SplitN(image, "@", 2)
+        return parts[0], parts[1], nil
+    }
+
+    lastColon := strings.LastIndex(image, ":")
+    // Check if the colon is part of a port number (before the first /)
+    firstSlash := strings.Index(image, "/")
+
+    if lastColon == -1 || (firstSlash != -1 && lastColon < firstSlash) {
+        // No tag specified
+        return image, "latest", nil
+    }
+
+    repo = image[:lastColon]
+    tag = image[lastColon+1:]
+
+    if repo == "" || tag == "" {
+        return "", "", fmt.Errorf("invalid image reference: %q", image)
+    }
+
+    return repo, tag, nil
+}
+```
+
+## Table-Driven Tests
+
+```go
+// internal/validator/precheck_test.go
+package validator
+
+import (
+    "context"
+    "fmt"
+    "log/slog"
+    "os"
+    "testing"
+
+    "github.com/stretchr/testify/assert"
+    "github.com/stretchr/testify/require"
+)
+
+// ── Mocks ───────────────────────────────────────────────────────────────────
+
+type mockECR struct {
+    images map[string]bool  // "repo:tag" -> exists
+    err    error
+}
+
+func (m *mockECR) ImageExists(_ context.Context, repo, tag string) (bool, error) {
+    if m.err != nil {
+        return false, m.err
+    }
+    return m.images[repo+":"+tag], nil
+}
+
+type mockK8s struct {
+    availCPU        int64
+    availMem        int64
+    quotaErr        error
+    podCPU          int64
+    podMem          int64
+    podResourceErr  error
+    pdbBlocked      bool
+    pdbReason       string
+    pdbErr          error
+    rolloutActive   bool
+    rolloutErr      error
+}
+
+func (m *mockK8s) GetAvailableQuota(_ context.Context, _ string) (int64, int64, error) {
+    return m.availCPU, m.availMem, m.quotaErr
+}
+
+func (m *mockK8s) GetPodResourceRequests(_ context.Context, _, _ string) (int64, int64, error) {
+    return m.podCPU, m.podMem, m.podResourceErr
+}
+
+func (m *mockK8s) PDBWouldBlock(_ context.Context, _, _ string, _ int32) (bool, string, error) {
+    return m.pdbBlocked, m.pdbReason, m.pdbErr
+}
+
+func (m *mockK8s) RolloutInProgress(_ context.Context, _, _ string) (bool, error) {
+    return m.rolloutActive, m.rolloutErr
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+func TestPreCheckValidator(t *testing.T) {
+    logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+    baseSpec := DeploymentSpec{
+        Name:      "order-service",
+        Namespace: "production",
+        Image:     "registry.novamart.com/order-service:v1.2.3",
+        Replicas:  3,
+    }
+
+    tests := []struct {
+        name           string
+        spec           DeploymentSpec
+        ecr            *mockECR
+        k8s            *mockK8s
+        wantGoNoGo     bool
+        wantCheckCount int
+        wantStatuses   map[string]CheckStatus // check name -> expected status
+    }{
+        {
+            name: "all checks pass — green light",
+            spec: baseSpec,
+            ecr: &mockECR{
+                images: map[string]bool{
+                    "registry.novamart.com/order-service:v1.2.3": true,
+                },
+            },
+            k8s: &mockK8s{
+                availCPU: 8000, availMem: 16 * 1024 * 1024 * 1024,
+                podCPU: 500, podMem: 512 * 1024 * 1024,
+            },
+            wantGoNoGo:     true,
+            wantCheckCount: 4,
+            wantStatuses: map[string]CheckStatus{
+                "image_exists":   StatusPass,
+                "resource_quota": StatusPass,
+                "pdb_check":      StatusPass,
+                "rollout_status": StatusPass,
+            },
+        },
+        {
+            name: "image missing in ECR — blocked",
+            spec: baseSpec,
+            ecr: &mockECR{
+                images: map[string]bool{}, // empty — nothing exists
+            },
+            k8s: &mockK8s{
+                availCPU: 8000, availMem: 16 * 1024 * 1024 * 1024,
+                podCPU: 500, podMem: 512 * 1024 * 1024,
+            },
+            wantGoNoGo: false,
+            wantStatuses: map[string]CheckStatus{
+                "image_exists": StatusFail,
+            },
+        },
+        {
+            name: "ECR unreachable — fail safe",
+            spec: baseSpec,
+            ecr: &mockECR{
+                err: fmt.Errorf("connection timeout"),
+            },
+            k8s: &mockK8s{
+                availCPU: 8000, availMem: 16 * 1024 * 1024 * 1024,
+                podCPU: 500, podMem: 512 * 1024 * 1024,
+            },
+            wantGoNoGo: false,
+            wantStatuses: map[string]CheckStatus{
+                "image_exists": StatusFail, // fail-safe: can't verify = don't deploy
+            },
+        },
+        {
+            name: "insufficient quota — blocked",
+            spec: baseSpec,
+            ecr: &mockECR{
+                images: map[string]bool{
+                    "registry.novamart.com/order-service:v1.2.3": true,
+                },
+            },
+            k8s: &mockK8s{
+                availCPU: 1000, availMem: 1024 * 1024 * 1024, // only 1 CPU, 1GB
+                podCPU: 500, podMem: 512 * 1024 * 1024, // 500m per pod × 4 (3 replicas + 1 surge) = 2000m > 1000m
+            },
+            wantGoNoGo: false,
+            wantStatuses: map[string]CheckStatus{
+                "image_exists":   StatusPass,
+                "resource_quota": StatusFail,
+            },
+        },
+        {
+            name: "PDB would block rollout",
+            spec: baseSpec,
+            ecr: &mockECR{
+                images: map[string]bool{
+                    "registry.novamart.com/order-service:v1.2.3": true,
+                },
+            },
+            k8s: &mockK8s{
+                availCPU: 8000, availMem: 16 * 1024 * 1024 * 1024,
+                podCPU: 500, podMem: 512 * 1024 * 1024,
+                pdbBlocked: true,
+                pdbReason:  "PDB order-service-pdb allows 0 disruptions",
+            },
+            wantGoNoGo: false,
+            wantStatuses: map[string]CheckStatus{
+                "image_exists":   StatusPass,
+                "resource_quota": StatusPass,
+                "pdb_check":      StatusFail,
+            },
+        },
+        {
+            name: "rollout already in progress",
+            spec: baseSpec,
+            ecr: &mockECR{
+                images: map[string]bool{
+                    "registry.novamart.com/order-service:v1.2.3": true,
+                },
+            },
+            k8s: &mockK8s{
+                availCPU: 8000, availMem: 16 * 1024 * 1024 * 1024,
+                podCPU: 500, podMem: 512 * 1024 * 1024,
+                rolloutActive: true,
+            },
+            wantGoNoGo: false,
+            wantStatuses: map[string]CheckStatus{
+                "image_exists":   StatusPass,
+                "resource_quota": StatusPass,
+                "pdb_check":      StatusPass,
+                "rollout_status": StatusFail,
+            },
+        },
+        {
+            name: "multiple failures compound correctly",
+            spec: baseSpec,
+            ecr: &mockECR{images: map[string]bool{}}, // missing image
+            k8s: &mockK8s{
+                availCPU: 100, availMem: 100, // insufficient
+                podCPU: 500, podMem: 512 * 1024 * 1024,
+                pdbBlocked:    true,
+                pdbReason:     "minAvailable=3",
+                rolloutActive: true,
+            },
+            wantGoNoGo:     false,
+            wantCheckCount: 4,
+            wantStatuses: map[string]CheckStatus{
+                "image_exists":   StatusFail,
+                "resource_quota": StatusFail,
+                "pdb_check":      StatusFail,
+                "rollout_status": StatusFail,
+            },
+        },
+        {
+            name: "quota API unavailable — warn, not fail",
+            spec: baseSpec,
+            ecr: &mockECR{
+                images: map[string]bool{
+                    "registry.novamart.com/order-service:v1.2.3": true,
+                },
+            },
+            k8s: &mockK8s{
+                quotaErr: fmt.Errorf("namespace has no ResourceQuota"),
+                podCPU: 500, podMem: 512 * 1024 * 1024,
+            },
+            wantGoNoGo: true, // warn doesn't block
+            wantStatuses: map[string]CheckStatus{
+                "image_exists":   StatusPass,
+                "resource_quota": StatusWarn,
+                "pdb_check":      StatusPass,
+                "rollout_status": StatusPass,
+            },
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            v := NewPreCheckValidator(tt.ecr, tt.k8s, logger)
+            result, err := v.Validate(context.Background(), tt.spec)
+            require.NoError(t, err)
+
+            assert.Equal(t, tt.wantGoNoGo, result.GoNoGo, "GoNoGo mismatch")
+
+            if tt.wantCheckCount > 0 {
+                assert.Len(t, result.Checks, tt.wantCheckCount)
+            }
+
+            // Verify individual check statuses
+            checkMap := make(map[string]CheckResult)
+            for _, c := range result.Checks {
+                checkMap[c.Name] = c
+            }
+
+            for checkName, wantStatus := range tt.wantStatuses {
+                c, ok := checkMap[checkName]
+                require.True(t, ok, "check %q not found in results", checkName)
+                assert.Equal(t, wantStatus, c.Status,
+                    "check %q: want %s, got %s: %s",
+                    checkName, wantStatus, c.Status, c.Message)
+            }
+        })
+    }
+}
+
+// ── parseImage Tests ────────────────────────────────────────────────────────
+
+func TestParseImage(t *testing.T) {
+    tests := []struct {
+        input   string
+        repo    string
+        tag     string
+        wantErr bool
+    }{
+        {
+            input: "registry.novamart.com/order-service:v1.2.3",
+            repo:  "registry.novamart.com/order-service",
+            tag:   "v1.2.3",
+        },
+        {
+            input: "order-service:latest",
+            repo:  "order-service",
+            tag:   "latest",
+        },
+        {
+            input: "registry.novamart.com/order-service",
+            repo:  "registry.novamart.com/order-service",
+            tag:   "latest", // implicit
+        },
+        {
+            input: "registry.novamart.com:5000/order-service:v2.0.0",
+            repo:  "registry.novamart.com:5000/order-service",
+            tag:   "v2.0.0",
+        },
+        {
+            input: "registry.novamart.com/order-service@sha256:abc123def456",
+            repo:  "registry.novamart.com/order-service",
+            tag:   "sha256:abc123def456",
+        },
+        {
+            input:   ":bad",
+            wantErr: true,
+        },
+        {
+            input:   "repo:",
+            wantErr: true,
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.input, func(t *testing.T) {
+            repo, tag, err := parseImage(tt.input)
+            if tt.wantErr {
+                assert.Error(t, err)
+                return
+            }
+            require.NoError(t, err)
+            assert.Equal(t, tt.repo, repo)
+            assert.Equal(t, tt.tag, tag)
+        })
+    }
+}
+
+// ── Validation Input Tests ──────────────────────────────────────────────────
+
+func TestValidate_InvalidInput(t *testing.T) {
+    logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+    v := NewPreCheckValidator(&mockECR{}, &mockK8s{}, logger)
+
+    tests := []struct {
+        name string
+        spec DeploymentSpec
+    }{
+        {
+            name: "empty name",
+            spec: DeploymentSpec{Namespace: "prod", Image: "img:v1"},
+        },
+        {
+            name: "empty namespace",
+            spec: DeploymentSpec{Name: "svc", Image: "img:v1"},
+        },
+        {
+            name: "empty image",
+            spec: DeploymentSpec{Name: "svc", Namespace: "prod"},
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            _, err := v.Validate(context.Background(), tt.spec)
+            assert.Error(t, err)
+        })
+    }
+}
+```
+
+---
+
+# Q4 — Concurrency Trace: Buffered Channel Execution
+
+## The Setup
+
+```go
+ch := make(chan int, 2)    // buffered: capacity 2
+done := make(chan bool)     // unbuffered: synchronization signal
+```
+
+Two channels:
+- `ch` can hold 2 values before a send blocks
+- `done` is a synchronization gate — send blocks until receiver is ready
+
+## Detailed Execution Trace
+
+I'll track the channel buffer state at each step:
+
+```
+Legend:
+  ch buffer: [slot0, slot1] (capacity 2)
+  M = main goroutine
+  G = consumer goroutine
+
+─── STEP 1: G spawns, blocks on range ch (buffer empty) ───────────────────
+    M: spawns G
+    G: enters `for v := range ch` → blocks (ch is empty)
+    ch: []
+
+─── STEP 2: M sends 0 — buffer has room, does NOT block ──────────────────
+    M: ch <- 0          → buffer absorbs it, NO BLOCK
+    M: prints "sent: 0"
+    ch: [0]
+    G: may or may not wake yet (scheduler-dependent)
+
+─── STEP 3: M sends 1 — buffer has room, does NOT block ──────────────────
+    M: ch <- 1          → buffer absorbs it, NO BLOCK
+    M: prints "sent: 1"
+    ch: [0, 1]          ← BUFFER FULL
+
+─── STEP 4: M sends 2 — buffer FULL, M BLOCKS ────────────────────────────
+    M: ch <- 2          → BLOCKS (buffer is [0, 1], no room)
+    
+    G: NOW MUST run to drain the buffer
+    G: receives 0 from ch
+    G: prints "received: 0"
+    G: sleeps 100ms
+    ch: [1]             ← slot freed, M can now send
+
+    M: unblocks, 2 enters buffer
+    M: prints "sent: 2"
+    ch: [1, 2]          ← BUFFER FULL AGAIN
+
+─── STEP 5: M sends 3 — buffer FULL, M BLOCKS AGAIN ─────────────────────
+    M: ch <- 3          → BLOCKS
+
+    G: receives 1 from ch
+    G: prints "received: 1"
+    G: sleeps 100ms
+    ch: [2]             ← slot freed
+
+    M: unblocks, 3 enters buffer
+    M: prints "sent: 3"
+    ch: [2, 3]
+
+─── STEP 6: M sends 4 — buffer FULL, M BLOCKS AGAIN ─────────────────────
+    M: ch <- 4          → BLOCKS
+
+    G: receives 2 from ch
+    G: prints "received: 2"
+    G: sleeps 100ms
+    ch: [3]
+
+    M: unblocks, 4 enters buffer
+    M: prints "sent: 4"
+    ch: [3, 4]
+
+─── STEP 7: M exits loop, closes ch ──────────────────────────────────────
+    M: close(ch)
+    M: <-done           → BLOCKS waiting for G to finish
+
+    G: receives 3, prints "received: 3", sleeps 100ms
+    G: receives 4, prints "received: 4", sleeps 100ms
+    G: range ch detects close, exits loop
+    G: done <- true
+
+    M: receives true from done, unblocks
+    M: exits
+```
+
+## Expected Output
+
+```
+sent: 0
+sent: 1
+received: 0
+sent: 2
+received: 1
+sent: 3
+received: 2
+sent: 4
+received: 3
+received: 4
+```
+
+**Note:** The exact interleaving of "sent" and "received" lines varies slightly by scheduler timing, but the **blocking points are deterministic:**
+
+| Send | Blocks? | Why |
+|------|---------|-----|
+| `ch <- 0` | No | Buffer empty (0/2) |
+| `ch <- 1` | No | Buffer has room (1/2) |
+| `ch <- 2` | **YES** | Buffer full (2/2). Blocks until G receives one value. |
+| `ch <- 3` | **YES** | Buffer full again after previous send filled it. |
+| `ch <- 4` | **YES** | Same pattern. |
+
+## Why Buffer Size 2 Is Relevant
+
+The buffer creates a **2-element head start** for the producer. The first 2 sends are non-blocking, which means the main goroutine can race ahead of the consumer. After that, the system becomes **lock-step**: the producer can only send when the consumer drains one slot.
+
+**Throughput implication:** With buffer size 2, the producer can "pre-load" work while the consumer processes. This hides latency when production is bursty. With 5 items and 100ms per consumption, the total wall-clock time is approximately:
+
+```
+5 items × 100ms = ~500ms
+minus the 2-item head start ≈ ~300ms effective blocking time for producer
+Total ≈ ~500ms (dominated by consumer)
+```
+
+---
+
+## What Changes with `make(chan int)` (Unbuffered)?
+
+```
+Every single send blocks until the consumer is ready to receive.
+
+─── ch <- 0: M blocks → G receives 0 → M unblocks, prints "sent: 0"
+─── ch <- 1: M blocks → G finishes sleep(100ms), receives 1 → M unblocks
+─── ch <- 2: same pattern
+─── ch <- 3: same pattern
+─── ch <- 4: same pattern
+```
+
+**Key differences:**
+
+| Aspect | Buffered (2) | Unbuffered |
+|--------|-------------|------------|
+| First 2 sends | Non-blocking | Each blocks |
+| Output interleaving | "sent 0, sent 1" appear before any "received" | "received: 0" appears **before** "sent: 0" (or interleaved 1:1) |
+| Wall-clock time | ~500ms | ~500ms (same — consumer-dominated) |
+| Coupling | Loosely coupled (2-item buffer) | Fully synchronous rendezvous |
+
+**The output with unbuffered channel:**
+```
+received: 0
+sent: 0
+received: 1
+sent: 1
+received: 2
+sent: 2
+received: 3
+sent: 3
+received: 4
+sent: 4
+```
+
+Each "received" appears before or simultaneously with its corresponding "sent" — because the send only completes **when the receive happens**. They are a synchronized handshake.
+
+---
+
+## What If the Consumer Panics on `i == 3`?
+
+```go
+go func() {
+    for v := range ch {
+        if v == 3 {
+            panic("boom")  // hypothetical
+        }
+        fmt.Println("received:", v)
+        time.Sleep(100 * time.Millisecond)
+    }
+    done <- true
+}()
+```
+
+**Execution trace:**
+
+```
+G receives 0, 1, 2 normally.
+G receives 3 → panic("boom")
+
+The panic is UNRECOVERED (no defer/recover in the goroutine).
+```
+
+**What happens to the main goroutine:**
+
+### Phase 1: Immediate effect of the panic
+
+In Go, an **unrecovered panic in any goroutine crashes the entire program**. The runtime prints:
+
+```
+goroutine 6 [running]:
+main.main.func1()
+    panic: boom
+    ...
+exit status 2
+```
+
+**The main goroutine does NOT deadlock.** It doesn't get a chance to. The panic tears down the entire process.
+
+### But what if the panic WERE recovered?
+
+```go
+go func() {
+    defer func() {
+        if r := recover(); r != nil {
+            log.Printf("consumer panicked: %v", r)
+        }
+        // NOTE: done <- true is NEVER reached because
+        // the for loop exited via panic, not via close(ch)
+    }()
+    for v := range ch {
+        if v == 3 { panic("boom") }
+        // ...
+    }
+    done <- true  // unreachable after panic
+}()
+```
+
+Now the situation is different and **much worse**:
+
+```
+1. G receives 0, 1, 2 normally
+2. G receives 3 → panic → recover catches it
+3. G's deferred function runs, logs the error
+4. G exits (the goroutine is done)
+5. done <- true was NEVER sent
+
+Meanwhile, M is still trying to send:
+  - If M is blocked on ch <- 4: ch has no receiver anymore.
+    M blocks forever on the send.
+    
+  - Eventually M would need to reach <-done, but it's stuck on ch <- 4.
+
+RESULT: DEADLOCK
+
+fatal error: all goroutines are asleep - deadlock!
+goroutine 1 [chan send]:
+    ch <- 4
+```
+
+The Go runtime detects that **all goroutines are blocked** and terminates with a deadlock error.
+
+### Summary of Panic Scenarios
+
+| Scenario | Outcome |
+|----------|---------|
+| Panic, no recover | **Entire program crashes immediately** — exit status 2 |
+| Panic + recover, no cleanup | **Deadlock** — main blocks on `ch <- 4` forever, then `<-done` is unreachable. Runtime detects deadlock. |
+| Panic + recover + `close(done)` in defer | Main's `<-done` unblocks, but `ch <- 4` may still deadlock if main hasn't sent it yet. Need to drain or close `ch`. |
+
+**The correct defensive pattern:**
+
+```go
+go func() {
+    defer func() {
+        if r := recover(); r != nil {
+            log.Printf("consumer panicked: %v", r)
+        }
+        // ALWAYS signal done, even on panic
+        done <- true
+    }()
+    for v := range ch {
+        // ...
+    }
+}()
+```
+
+But even this doesn't fully fix it — the main goroutine may still be blocked on `ch <- 4` with no receiver. The real fix requires either:
+1. A **buffered `ch`** large enough to absorb remaining sends, OR
+2. The main goroutine using a **`select` with a context/timeout** on sends, OR
+3. A **separate drainer goroutine** that empties `ch` on error
+
+This is why production Go code almost always uses `context.Context` for cancellation propagation rather than relying on channel close semantics alone.
+
+
