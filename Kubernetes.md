@@ -11,7 +11,7 @@ We covered K8s networking in Phase 1. Now we go deeper into the control plane, h
 │                                                              │
 │  ┌───────────────┐  ┌───────────────┐  ┌──────────────────┐  │
 │  │  API Server   │  │   Scheduler   │  │ Controller       │  │
-│  │  (kube-apiserver)│ (kube-scheduler)│ │ Manager         │  │
+│  │(kube-apiserver)│ (kube-scheduler)│  │   Manager        │  │
 │  │               │  │               │  │ (kube-controller │  │
 │  │ THE gatekeeper│  │ WHERE does    │  │  -manager)       │  │
 │  │ ALL traffic   │  │ this pod go?  │  │                  │  │
