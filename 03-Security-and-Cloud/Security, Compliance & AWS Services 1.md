@@ -1,8 +1,10 @@
+--- START OF FILE Paste April 25, 2026 - 12:55PM ---
+
 # Phase 6: Security, Compliance & AWS Services
 
 ## Phase 6 Lesson Plan
 
-```
+```text
 Lesson 1: AWS IAM Deep Dive — Identity, Policies, Organizations, SSO
 Lesson 2: Secrets Management — KMS, Vault, Secrets Manager, Certificates
 Lesson 3: Kubernetes Security — OPA/Gatekeeper, PSA, Falco, Supply Chain
@@ -16,7 +18,7 @@ Lesson 5: Compliance & Governance — SOC2, PCI-DSS, AWS Config, Landing Zones
 
 ## Why IAM Is the Foundation of Everything
 
-```
+```text
 Every AWS API call — from launching an EC2 instance to reading an S3 
 object to deploying an EKS pod — goes through IAM.
 
@@ -46,71 +48,71 @@ At NovaMart:
 
 ### How Every AWS API Call Is Authorized
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│                  AWS API REQUEST FLOW                                │
+│                         AWS API REQUEST FLOW                        │
 │                                                                     │
-│  1. AUTHENTICATION: "Who are you?"                                  │
-│     ├── IAM User: Access Key ID + Secret Access Key                 │
-│     ├── IAM Role: Temporary credentials from STS                    │
-│     ├── Federated: SAML/OIDC token → STS → temporary creds          │
-│     └── Anonymous: No credentials (public access)                   │
+│ 1. AUTHENTICATION: "Who are you?"                                   │
+│    ├── IAM User: Access Key ID + Secret Access Key                  │
+│    ├── IAM Role: Temporary credentials from STS                     │
+│    ├── Federated: SAML/OIDC token → STS → temporary creds           │
+│    └── Anonymous: No credentials (public access)                    │
 │                                                                     │
-│  2. REQUEST CONTEXT assembled:                                      │
-│     ├── Principal (who)                                             │
-│     ├── Action (what API call: s3:GetObject, ec2:RunInstances)     │
-│     ├── Resource (which ARN)                                        │
-│     ├── Conditions (source IP, time, MFA, tags, etc.)              │
-│     └── Environment (account, region, service)                     │
+│ 2. REQUEST CONTEXT assembled:                                       │
+│    ├── Principal (who)                                              │
+│    ├── Action (what API call: s3:GetObject, ec2:RunInstances)       │
+│    ├── Resource (which ARN)                                         │
+│    ├── Conditions (source IP, time, MFA, tags, etc.)                │
+│    └── Environment (account, region, service)                       │
 │                                                                     │
-│  3. POLICY EVALUATION (order matters!):                             │
+│ 3. POLICY EVALUATION (order matters!):                              │
 │                                                                     │
-│     ┌──────────────────────────────┐                                │
-│     │ Explicit DENY in any policy? │──YES──→ ❌ DENIED              │
-│     └──────────────┬───────────────┘                                │
-│                    NO                                               │
-│                    ▼                                                 │
-│     ┌──────────────────────────────┐                                │
-│     │ SCP allows it?              │──NO───→ ❌ DENIED               │
-│     │ (Organizations)             │                                 │
-│     └──────────────┬───────────────┘                                │
-│                    YES                                              │
-│                    ▼                                                 │
-│     ┌──────────────────────────────┐                                │
-│     │ Resource-based policy        │                                │
-│     │ grants cross-account access? │──YES──→ ✅ ALLOWED             │
-│     └──────────────┬───────────────┘  (if same account, continue)   │
-│                    │                                                │
-│                    ▼                                                │
-│     ┌──────────────────────────────┐                                │
-│     │ Identity-based policy        │                                │
-│     │ (user/role policy) allows?   │──NO───→ ❌ DENIED              │
-│     └──────────────┬───────────────┘                                │
-│                    YES                                              │
-│                    ▼                                                │
-│     ┌──────────────────────────────┐                                │
-│     │ Permissions boundary         │                                │
-│     │ allows it?                  │──NO───→ ❌ DENIED               │
-│     └──────────────┬───────────────┘                                │
-│                    YES                                              │
-│                    ▼                                                │
-│     ┌──────────────────────────────┐                                │
-│     │ Session policy allows?       │──NO───→ ❌ DENIED              │
-│     │ (if using STS)              │                                 │
-│     └──────────────┬───────────────┘                                │
-│                    YES                                              │
-│                    ▼                                                │
-│                 ✅ ALLOWED                                          │
+│    ┌──────────────────────────────┐                                 │
+│    │ Explicit DENY in any policy? │──YES──→ ❌ DENIED               │
+│    └──────────────┬───────────────┘                                 │
+│                   NO                                                │
+│                   ▼                                                 │
+│    ┌──────────────────────────────┐                                 │
+│    │ SCP allows it?               │──NO───→ ❌ DENIED               │
+│    │ (Organizations)              │                                 │
+│    └──────────────┬───────────────┘                                 │
+│                   YES                                               │
+│                   ▼                                                 │
+│    ┌──────────────────────────────┐                                 │
+│    │ Resource-based policy        │                                 │
+│    │ grants cross-account access? │──YES──→ ✅ ALLOWED              │
+│    └──────────────┬───────────────┘  (if same account, continue)    │
+│                   │                                                 │
+│                   ▼                                                 │
+│    ┌──────────────────────────────┐                                 │
+│    │ Identity-based policy        │                                 │
+│    │ (user/role policy) allows?   │──NO───→ ❌ DENIED               │
+│    └──────────────┬───────────────┘                                 │
+│                   YES                                               │
+│                   ▼                                                 │
+│    ┌──────────────────────────────┐                                 │
+│    │ Permissions boundary         │                                 │
+│    │ allows it?                   │──NO───→ ❌ DENIED               │
+│    └──────────────┬───────────────┘                                 │
+│                   YES                                               │
+│                   ▼                                                 │
+│    ┌──────────────────────────────┐                                 │
+│    │ Session policy allows?       │──NO───→ ❌ DENIED               │
+│    │ (if using STS)               │                                 │
+│    └──────────────┬───────────────┘                                 │
+│                   YES                                               │
+│                   ▼                                                 │
+│                ✅ ALLOWED                                           │
 │                                                                     │
-│  KEY INSIGHT: Default is DENY. Every gate must say YES.             │
-│  Any single DENY anywhere = denied. Period.                        │
-│  This is "deny by default, allow by exception."                    │
+│ KEY INSIGHT: Default is DENY. Every gate must say YES.              │
+│ Any single DENY anywhere = denied. Period.                          │
+│ This is "deny by default, allow by exception."                      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### The Critical Rule
 
-```
+```text
 EXPLICIT DENY > EXPLICIT ALLOW > IMPLICIT DENY (default)
 
 This means:
@@ -130,15 +132,15 @@ This is why IAM is "additive for allows, absolute for denies."
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "AllowS3ReadPaymentBucket",
       "Effect": "Allow",
-      "Action": [
+      "Action":[
         "s3:GetObject",
         "s3:ListBucket"
       ],
-      "Resource": [
+      "Resource":[
         "arn:aws:s3:::novamart-payment-data",
         "arn:aws:s3:::novamart-payment-data/*"
       ],
@@ -157,7 +159,7 @@ This is why IAM is "additive for allows, absolute for denies."
 
 ### Every Field Explained
 
-```
+```text
 Version: Always "2012-10-17" (the current policy language version)
          "2008-10-17" exists but lacks features. Always use 2012.
 
@@ -195,33 +197,33 @@ Condition: Additional constraints. ALL conditions must be true (AND logic).
 
 ### Condition Keys You Must Know
 
-```
-┌──────────────────────────────────────┬────────────────────────────────────────┐
-│ Condition Key                        │ Use Case                               │
-├──────────────────────────────────────┼────────────────────────────────────────┤
-│ aws:SourceIp                         │ Restrict to corporate IP range         │
-│ aws:SourceVpc                        │ Restrict to specific VPC               │
-│ aws:SourceVpce                       │ Restrict to specific VPC endpoint      │
-│ aws:PrincipalTag/<key>               │ ABAC — tag on the calling principal    │
-│ aws:ResourceTag/<key>                │ Tag on the target resource             │
-│ aws:RequestedRegion                  │ Restrict to specific regions           │
-│ aws:PrincipalOrgID                   │ Restrict to your AWS Organization      │
-│ aws:MultiFactorAuthPresent           │ Require MFA for sensitive actions      │
-│ aws:SecureTransport                  │ Require HTTPS (deny HTTP)              │
-│ s3:prefix                            │ S3 key prefix filtering                │
-│ ec2:ResourceTag/<key>                │ EC2 tag-based access control           │
-│ kms:ViaService                       │ KMS key used only through a service    │
-│ sts:ExternalId                       │ Cross-account confused deputy fix      │
-│ aws:PrincipalArn                     │ Specific role/user ARN                 │
-│ aws:CalledVia                        │ Service that made the call on behalf   │
-│ aws:PrincipalIsAWSService            │ Is the caller an AWS service?          │
-│ elasticmapreduce:ResourceTag/<key>   │ Service-specific tag conditions        │
-└──────────────────────────────────────┴────────────────────────────────────────┘
+```text
+┌────────────────────────────────────┬─────────────────────────────────────────┐
+│ Condition Key                      │ Use Case                                │
+├────────────────────────────────────┼─────────────────────────────────────────┤
+│ aws:SourceIp                       │ Restrict to corporate IP range          │
+│ aws:SourceVpc                      │ Restrict to specific VPC                │
+│ aws:SourceVpce                     │ Restrict to specific VPC endpoint       │
+│ aws:PrincipalTag/<key>             │ ABAC — tag on the calling principal     │
+│ aws:ResourceTag/<key>              │ Tag on the target resource              │
+│ aws:RequestedRegion                │ Restrict to specific regions            │
+│ aws:PrincipalOrgID                 │ Restrict to your AWS Organization       │
+│ aws:MultiFactorAuthPresent         │ Require MFA for sensitive actions       │
+│ aws:SecureTransport                │ Require HTTPS (deny HTTP)               │
+│ s3:prefix                          │ S3 key prefix filtering                 │
+│ ec2:ResourceTag/<key>              │ EC2 tag-based access control            │
+│ kms:ViaService                     │ KMS key used only through a service     │
+│ sts:ExternalId                     │ Cross-account confused deputy fix       │
+│ aws:PrincipalArn                   │ Specific role/user ARN                  │
+│ aws:CalledVia                      │ Service that made the call on behalf    │
+│ aws:PrincipalIsAWSService          │ Is the caller an AWS service?           │
+│ elasticmapreduce:ResourceTag/<key> │ Service-specific tag conditions         │
+└────────────────────────────────────┴─────────────────────────────────────────┘
 ```
 
 ### Policy Types — Where Policies Live
 
-```
+```text
 ┌──────────────────────┬───────────────────────────────────────────────────┐
 │ Policy Type          │ Attached To / Scope                               │
 ├──────────────────────┼───────────────────────────────────────────────────┤
@@ -230,11 +232,11 @@ Condition: Additional constraints. ALL conditions must be true (AND logic).
 │                      │ Managed = reusable, versioned, preferred          │
 │                      │ Inline = embedded directly, use sparingly         │
 ├──────────────────────┼───────────────────────────────────────────────────┤
-│ Resource-based       │ S3 buckets, SQS queues, KMS keys, Lambda, etc.  │
+│ Resource-based       │ S3 buckets, SQS queues, KMS keys, Lambda, etc.    │
 │                      │ "Who can access THIS resource?"                   │
 │                      │ Has a Principal field (identity policies don't)   │
 │                      │ ONLY way to grant cross-account without role      │
-│                      │ assumption (S3, KMS, SQS, SNS, Lambda)           │
+│                      │ assumption (S3, KMS, SQS, SNS, Lambda)            │
 ├──────────────────────┼───────────────────────────────────────────────────┤
 │ Permissions boundary │ IAM users, roles                                  │
 │                      │ MAXIMUM permissions ceiling                       │
@@ -253,13 +255,13 @@ Condition: Additional constraints. ALL conditions must be true (AND logic).
 │ VPC Endpoint policy  │ VPC endpoints (Gateway/Interface)                 │
 │                      │ Controls which principals/resources can use       │
 │                      │ the endpoint                                      │
-│                      │ Default: allow all — ALWAYS restrict in prod     │
+│                      │ Default: allow all — ALWAYS restrict in prod      │
 └──────────────────────┴───────────────────────────────────────────────────┘
 ```
 
 ### The Intersection Model
 
-```
+```text
 EFFECTIVE PERMISSIONS = 
   Identity policy
     ∩ Permissions boundary (if set)
@@ -270,18 +272,19 @@ EFFECTIVE PERMISSIONS =
     — Explicit denies (override everything)
 
 Think of it as concentric circles:
-  ┌─────────────────────────────────────────────┐
-  │ SCP (outermost — account-level ceiling)     │
-  │   ┌───────────────────────────────────────┐ │
-  │   │ Permissions boundary (role ceiling)   │ │
-  │   │   ┌───────────────────────────────┐   │ │
-  │   │   │ Identity policy (actual perms)│   │ │
-  │   │   │   ┌───────────────────────┐   │   │ │
-  │   │   │   │ Session policy (temp) │   │   │ │
-  │   │   │   └───────────────────────┘   │   │ │
-  │   │   └───────────────────────────────┘   │ │
-  │   └───────────────────────────────────────┘ │
-  └─────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────┐
+│ SCP (outermost — account-level ceiling)     │
+│   ┌───────────────────────────────────────┐ │
+│   │ Permissions boundary (role ceiling)   │ │
+│   │   ┌───────────────────────────────┐   │ │
+│   │   │ Identity policy (actual perms)│   │ │
+│   │   │   ┌───────────────────────┐   │   │ │
+│   │   │   │ Session policy (temp) │   │   │ │
+│   │   │   └───────────────────────┘   │   │ │
+│   │   └───────────────────────────────┘   │ │
+│   └───────────────────────────────────────┘ │
+└─────────────────────────────────────────────┘
   
   You can only do what ALL circles allow.
   Exception: Resource-based policies can "reach through" 
@@ -294,7 +297,7 @@ Think of it as concentric circles:
 
 ### Why Roles, Not Users
 
-```
+```text
 IAM Users have LONG-LIVED credentials:
   - Access Key + Secret Key
   - Can be leaked in Git, logs, .env files, Slack
@@ -327,7 +330,7 @@ IAM Users should only exist for:
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Effect": "Allow",
       "Principal": {
@@ -339,7 +342,7 @@ IAM Users should only exist for:
 }
 ```
 
-```
+```text
 The TRUST POLICY answers: "Who is allowed to BECOME this role?"
 The PERMISSIONS POLICY answers: "What can this role DO?"
 
@@ -348,32 +351,32 @@ in the trust policy or vice versa.
 
 Principal types in trust policies:
 ┌──────────────────────────────────────────────────────────────────┐
-│ "Principal": {"AWS": "arn:aws:iam::123456789012:root"}          │
+│ "Principal": {"AWS": "arn:aws:iam::123456789012:root"}           │
 │   → Any principal in account 123456789012                        │
 │                                                                  │
-│ "Principal": {"AWS": "arn:aws:iam::123456789012:role/jenkins"}  │
+│ "Principal": {"AWS": "arn:aws:iam::123456789012:role/jenkins"}   │
 │   → Only the jenkins role in that account                        │
 │                                                                  │
-│ "Principal": {"Service": "ec2.amazonaws.com"}                   │
+│ "Principal": {"Service": "ec2.amazonaws.com"}                    │
 │   → EC2 service (instance profiles)                              │
 │                                                                  │
-│ "Principal": {"Service": "eks.amazonaws.com"}                   │
+│ "Principal": {"Service": "eks.amazonaws.com"}                    │
 │   → EKS service                                                  │
 │                                                                  │
-│ "Principal": {"Federated": "arn:aws:iam::123:oidc-provider/..."}│
+│ "Principal": {"Federated": "arn:aws:iam::123:oidc-provider/..."} │
 │   → OIDC identity provider (IRSA, GitHub Actions, etc.)          │
 │                                                                  │
-│ "Principal": {"Federated": "arn:aws:iam::123:saml-provider/..."}│
+│ "Principal": {"Federated": "arn:aws:iam::123:saml-provider/..."} │
 │   → SAML identity provider (SSO, Active Directory)               │
 │                                                                  │
 │ "Principal": "*"                                                 │
-│   → ANYONE (⚠️ EXTREMELY DANGEROUS — use with conditions only)  │
+│   → ANYONE (⚠️ EXTREMELY DANGEROUS — use with conditions only)   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ### IRSA — IAM Roles for Service Accounts (Critical for EKS)
 
-```
+```text
 IRSA is how Kubernetes pods get AWS permissions without
 embedding credentials.
 
@@ -390,34 +393,34 @@ THE IRSA WAY (correct):
   - Least privilege at the pod level
 ```
 
-```
+```text
 HOW IRSA WORKS:
 
 ┌──────────┐  1. Pod starts with    ┌───────────────┐
-│ Pod with │────ServiceAccount────→│ K8s API Server │
-│ SA       │  annotated with IAM   │ (projects OIDC │
-│ payment- │  role ARN             │  token into pod)│
-│ svc-sa   │                       └───────┬────────┘
-└────┬─────┘                               │
-     │                                     │ 2. Projected token
-     │  3. Pod reads token                 │    mounted at
-     │     from mounted path               │    /var/run/secrets/
-     │                                     │    eks.amazonaws.com/
-     │                                     │    serviceaccount/token
-     ▼                                     │
-┌────────────┐                             │
-│ AWS SDK    │  4. SDK calls               │
+│ Pod with │────ServiceAccount────→ │ K8s API Server│
+│ SA       │  annotated with IAM    │ (projects OIDC│
+│ payment- │  role ARN              │  token into   │
+│ svc-sa   │                        │  pod)         │
+└────┬─────┘                        └───────┬───────┘
+     │                                      │ 2. Projected token
+     │  3. Pod reads token                  │    mounted at
+     │     from mounted path                │    /var/run/secrets/
+     │                                      │    eks.amazonaws.com/
+     │                                      │    serviceaccount/token
+     ▼                                      │
+┌────────────┐                              │
+│ AWS SDK    │  4. SDK calls                │
 │ in the pod │─────STS AssumeRoleWithWebIdentity
-│            │     with the OIDC token     │
-└────┬───────┘                             │
-     │                                     │
-     ▼                                     │
-┌─────────┐  5. STS validates token  ┌─────▼──────────┐
+│            │     with the OIDC token      │
+└────┬───────┘                              │
+     │                                      │
+     ▼                                      │
+┌─────────┐  5. STS validates token  ┌──────▼─────────┐
 │ AWS STS │←──against OIDC provider──│ EKS OIDC       │
-│         │   (is this token from    │ Provider        │
-│         │    my cluster? Is the    │ (registered     │
-│         │    SA allowed to assume  │  in IAM)        │
-│         │    this role?)           │                 │
+│         │   (is this token from    │ Provider       │
+│         │    my cluster? Is the    │ (registered    │
+│         │    SA allowed to assume  │  in IAM)       │
+│         │    this role?)           │                │
 └────┬────┘                          └────────────────┘
      │
      │  6. STS returns temporary credentials
@@ -449,7 +452,7 @@ data "tls_certificate" "eks" {
 }
 
 resource "aws_iam_openid_connect_provider" "eks" {
-  client_id_list  = ["sts.amazonaws.com"]
+  client_id_list  =["sts.amazonaws.com"]
   thumbprint_list = [data.tls_certificate.eks.certificates[0].sha1_fingerprint]
   url             = aws_eks_cluster.main.identity[0].oidc[0].issuer
 }
@@ -469,7 +472,7 @@ resource "aws_iam_role" "payment_svc" {
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Effect = "Allow"
         Principal = {
@@ -501,11 +504,11 @@ resource "aws_iam_role_policy" "payment_svc" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Sid    = "AllowSQSPaymentQueue"
         Effect = "Allow"
-        Action = [
+        Action =[
           "sqs:SendMessage",
           "sqs:ReceiveMessage",
           "sqs:DeleteMessage",
@@ -516,7 +519,7 @@ resource "aws_iam_role_policy" "payment_svc" {
       {
         Sid    = "AllowKMSDecrypt"
         Effect = "Allow"
-        Action = [
+        Action =[
           "kms:Decrypt",
           "kms:GenerateDataKey"
         ]
@@ -565,7 +568,7 @@ spec:
 
 ### IRSA Failure Modes
 
-```
+```text
 FAILURE 1: "AccessDenied" — Pod can't assume role
   CAUSE: Trust policy condition mismatch
   CHECK: The :sub condition must EXACTLY match:
@@ -630,7 +633,7 @@ spec:
               - 169.254.169.254/32  # Instance Metadata Service
 ```
 
-```
+```text
 BETTER APPROACH: Configure the aws-node DaemonSet to disable 
 IMDS for pods:
 
@@ -648,7 +651,7 @@ kubectl -n kube-system set env daemonset/aws-node \
 
 ### Why Multiple Accounts?
 
-```
+```text
 SINGLE ACCOUNT (bad for production):
   - One blast radius: IAM misconfiguration affects everything
   - Cost attribution is difficult
@@ -666,46 +669,46 @@ MULTI-ACCOUNT (NovaMart's approach):
 
 ### NovaMart Account Structure
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    AWS ORGANIZATION                                  │
-│                    (Management Account)                              │
-│                    - Billing only                                    │
-│                    - NO workloads here                               │
-│                    - SCPs managed from here                          │
+│                       AWS ORGANIZATION                              │
+│                       (Management Account)                          │
+│                       - Billing only                                │
+│                       - NO workloads here                           │
+│                       - SCPs managed from here                      │
 │                                                                     │
-├──────────────┬──────────────┬──────────────┬───────────────────────┤
-│              │              │              │                       │
-│   Security   │  Shared      │  Workloads   │  Sandbox              │
-│   OU         │  Services OU │  OU          │  OU                   │
-│              │              │              │                       │
-│ ┌──────────┐│┌────────────┐│┌────────────┐│┌───────────────┐      │
-│ │ Security ││ │ Networking ││ │ Production ││ │ Dev-sandbox-1 │      │
-│ │ Account  │││ Account    ││ │ Account    │││ (per engineer) │      │
-│ │          │││            ││ │            ││└───────────────┘      │
-│ │ GuardDuty│││ Transit GW ││ │ EKS        ││┌───────────────┐      │
-│ │ CloudTrl ││ │ DNS (R53)  ││ │ RDS        │││ Dev-sandbox-2 │      │
-│ │ Sec Hub  │││ VPN/DX     ││ │ S3         ││└───────────────┘      │
-│ │ Config   │││ Shared VPCs││ │ SQS        ││                       │
-│ └──────────┘│└────────────┘│ └────────────┘│                       │
-│              │              │┌────────────┐│                       │
-│ ┌──────────┐│┌────────────┐││ Staging    ││                       │
-│ │ Log      │││ CI/CD      │││ Account    ││                       │
-│ │ Archive  ││ │ Account    │││            ││                       │
-│ │ Account  │││            │││ Mirror of  ││                       │
-│ │          │││ Jenkins     │││ production ││                       │
-│ │ CloudTrl │││ Artifactory│││ (smaller)  ││                       │
-│ │ all accts│││ ECR        ││└────────────┘│                       │
-│ │ VPC Flow │││            ││┌────────────┐│                       │
-│ └──────────┘│└────────────┘││ Dev        ││                       │
-│              │              ││ Account    ││                       │
-│              │              │└────────────┘│                       │
-└──────────────┴──────────────┴──────────────┴───────────────────────┘
+├──────────────┬──────────────┬──────────────┬────────────────────────┤
+│              │              │              │                        │
+│ Security     │ Shared       │ Workloads    │ Sandbox                │
+│ OU           │ Services OU  │ OU           │ OU                     │
+│              │              │              │                        │
+│ ┌──────────┐ │ ┌──────────┐ │ ┌──────────┐ │ ┌────────────────────┐ │
+│ │ Security │ │ │Networking│ │ │Production│ │ │ Dev-sandbox-1      │ │
+│ │ Account  │ │ │Account   │ │ │Account   │ │ │ (per engineer)     │ │
+│ │          │ │ │          │ │ │          │ │ └────────────────────┘ │
+│ │ GuardDuty│ │ │Transit GW│ │ │ EKS      │ │ ┌────────────────────┐ │
+│ │ CloudTrl │ │ │DNS (R53) │ │ │ RDS      │ │ │ Dev-sandbox-2      │ │
+│ │ Sec Hub  │ │ │VPN/DX    │ │ │ S3       │ │ └────────────────────┘ │
+│ │ Config   │ │ │Shared VPC│ │ │ SQS      │ │                        │
+│ └──────────┘ │ └──────────┘ │ └──────────┘ │                        │
+│              │              │ ┌──────────┐ │                        │
+│ ┌──────────┐ │ ┌──────────┐ │ │ Staging  │ │                        │
+│ │ Log      │ │ │ CI/CD    │ │ │ Account  │ │                        │
+│ │ Archive  │ │ │ Account  │ │ │          │ │                        │
+│ │ Account  │ │ │          │ │ │ Mirror of│ │                        │
+│ │          │ │ │ Jenkins  │ │ │ prod     │ │                        │
+│ │ CloudTrl │ │ │ Artifacts│ │ │ (smaller)│ │                        │
+│ │ all accts│ │ │ ECR      │ │ └──────────┘ │                        │
+│ │ VPC Flow │ │ │          │ │ ┌──────────┐ │                        │
+│ └──────────┘ │ └──────────┘ │ │ Dev      │ │                        │
+│              │              │ │ Account  │ │                        │
+│              │              │ └──────────┘ │                        │
+└──────────────┴──────────────┴──────────────┴────────────────────────┘
 ```
 
 ### Service Control Policies (SCPs)
 
-```
+```text
 SCPs are the GUARDRAILS for the entire organization.
 
 Key concepts:
@@ -723,7 +726,7 @@ Key concepts:
 // SCP 1: Deny region outside approved regions
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "DenyUnapprovedRegions",
       "Effect": "Deny",
@@ -731,7 +734,7 @@ Key concepts:
       "Resource": "*",
       "Condition": {
         "StringNotEquals": {
-          "aws:RequestedRegion": [
+          "aws:RequestedRegion":[
             "us-east-1",
             "us-west-2",
             "eu-west-1"
@@ -752,11 +755,11 @@ Key concepts:
 // SCP 2: Protect CloudTrail and GuardDuty
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "DenyCloudTrailModification",
       "Effect": "Deny",
-      "Action": [
+      "Action":[
         "cloudtrail:StopLogging",
         "cloudtrail:DeleteTrail",
         "cloudtrail:UpdateTrail"
@@ -771,7 +774,7 @@ Key concepts:
     {
       "Sid": "DenyGuardDutyDisable",
       "Effect": "Deny",
-      "Action": [
+      "Action":[
         "guardduty:DeleteDetector",
         "guardduty:DisassociateFromMasterAccount",
         "guardduty:UpdateDetector"
@@ -791,7 +794,7 @@ Key concepts:
 // SCP 3: Prevent leaving the Organization
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "DenyLeaveOrg",
       "Effect": "Deny",
@@ -806,7 +809,7 @@ Key concepts:
 // SCP 4: Enforce encryption
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "DenyUnencryptedS3",
       "Effect": "Deny",
@@ -843,11 +846,11 @@ Key concepts:
 // SCP 5: Deny dangerous services/actions in production
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "DenyDangerousActions",
       "Effect": "Deny",
-      "Action": [
+      "Action":[
         "ec2:CreateDefaultVpc",
         "iam:CreateUser",
         "iam:CreateAccessKey",
@@ -858,7 +861,7 @@ Key concepts:
       "Resource": "*",
       "Condition": {
         "ArnNotLike": {
-          "aws:PrincipalARN": [
+          "aws:PrincipalARN":[
             "arn:aws:iam::*:role/OrganizationAdmin",
             "arn:aws:iam::*:role/BreakGlass"
           ]
@@ -871,7 +874,7 @@ Key concepts:
 
 ### SCP Failure Modes
 
-```
+```text
 FAILURE 1: SCP locks out everyone including admins
   CAUSE: Deny policy without exception for admin role
   SYMPTOM: Even the account's admin role gets Access Denied
@@ -906,7 +909,7 @@ FAILURE 4: SCP size limit exceeded
 
 ### How Humans Access AWS at NovaMart
 
-```
+```text
 THE WRONG WAY:
   - Each engineer has an IAM user per account
   - 150 engineers × 6 accounts = 900 IAM users to manage
@@ -921,29 +924,29 @@ THE RIGHT WAY (IAM Identity Center):
   - Centralized provisioning and deprovisioning
   - Single audit trail across all accounts
 
-┌───────────────┐     SAML/OIDC      ┌─────────────────────┐
-│ Identity       │──────────────────→│ IAM Identity Center │
-│ Provider       │                   │ (AWS SSO)           │
-│ (Okta/AzureAD)│                   │                     │
-│                │                   │ Permission Sets:    │
-│ Users & Groups │                   │ - AdminAccess       │
-│ managed here   │                   │ - ReadOnly          │
-│                │                   │ - DevOps            │
-│                │                   │ - Developer         │
-└───────────────┘                   │ - SecurityAudit     │
+┌────────────────┐    SAML/OIDC     ┌─────────────────────┐
+│ Identity       │─────────────────→│ IAM Identity Center │
+│ Provider       │                  │ (AWS SSO)           │
+│ (Okta/AzureAD) │                  │                     │
+│                │                  │ Permission Sets:    │
+│ Users & Groups │                  │ - AdminAccess       │
+│ managed here   │                  │ - ReadOnly          │
+│                │                  │ - DevOps            │
+│                │                  │ - Developer         │
+└────────────────┘                  │ - SecurityAudit     │
                                     └──────────┬──────────┘
                                                │
-                    ┌──────────────────────────┼──────────────┐
-                    │                          │              │
-                    ▼                          ▼              ▼
-             ┌─────────────┐          ┌──────────────┐ ┌───────────┐
-             │ Prod Account│          │ Staging Acct │ │ Dev Acct  │
-             │             │          │              │ │           │
-             │ Eng: DevOps │          │ Eng: DevOps  │ │ Eng: Admin│
-             │     ReadOnly│          │     Developer│ │    DevOps │
-             │             │          │     Admin    │ │           │
-             │ Mgr: Admin  │          │              │ │           │
-             └─────────────┘          └──────────────┘ └───────────┘
+                   ┌───────────────────────────┼───────────────┐
+                   │                           │               │
+                   ▼                           ▼               ▼
+            ┌──────────────┐           ┌──────────────┐ ┌──────────────┐
+            │ Prod Account │           │ Staging Acct │ │ Dev Account  │
+            │              │           │              │ │              │
+            │ Eng: DevOps  │           │ Eng: DevOps  │ │ Eng: Admin   │
+            │      ReadOnly│           │      Dev     │ │      DevOps  │
+            │              │           │      Admin   │ │              │
+            │ Mgr: Admin   │           │              │ │              │
+            └──────────────┘           └──────────────┘ └──────────────┘
 ```
 
 ### Permission Sets — NovaMart Examples
@@ -953,11 +956,11 @@ THE RIGHT WAY (IAM Identity Center):
 // Assigned to: Platform team in Prod, Staging, Dev accounts
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "EKSFullAccess",
       "Effect": "Allow",
-      "Action": [
+      "Action":[
         "eks:*",
         "ecr:*"
       ],
@@ -966,7 +969,7 @@ THE RIGHT WAY (IAM Identity Center):
     {
       "Sid": "EC2ReadAndLimited",
       "Effect": "Allow",
-      "Action": [
+      "Action":[
         "ec2:Describe*",
         "ec2:Get*",
         "ec2:CreateTags",
@@ -977,13 +980,13 @@ THE RIGHT WAY (IAM Identity Center):
     {
       "Sid": "S3Access",
       "Effect": "Allow",
-      "Action": [
+      "Action":[
         "s3:GetObject",
         "s3:PutObject",
         "s3:ListBucket",
         "s3:DeleteObject"
       ],
-      "Resource": [
+      "Resource":[
         "arn:aws:s3:::novamart-*",
         "arn:aws:s3:::novamart-*/*"
       ]
@@ -991,7 +994,7 @@ THE RIGHT WAY (IAM Identity Center):
     {
       "Sid": "ObservabilityAccess",
       "Effect": "Allow",
-      "Action": [
+      "Action":[
         "cloudwatch:*",
         "logs:*",
         "xray:*"
@@ -1001,7 +1004,7 @@ THE RIGHT WAY (IAM Identity Center):
     {
       "Sid": "SecretsRead",
       "Effect": "Allow",
-      "Action": [
+      "Action":[
         "secretsmanager:GetSecretValue",
         "secretsmanager:DescribeSecret",
         "secretsmanager:ListSecrets"
@@ -1011,7 +1014,7 @@ THE RIGHT WAY (IAM Identity Center):
     {
       "Sid": "DenyIAMModification",
       "Effect": "Deny",
-      "Action": [
+      "Action":[
         "iam:CreateUser",
         "iam:DeleteUser",
         "iam:CreateRole",
@@ -1058,9 +1061,7 @@ aws eks update-kubeconfig --name novamart-prod --profile novamart-prod
 sso_session = novamart
 sso_account_id = 111111111111
 sso_role_name = DevOps
-region = us-east-1
-
-[profile novamart-staging]
+region = us-east-1[profile novamart-staging]
 sso_session = novamart
 sso_account_id = 222222222222
 sso_role_name = DevOps
@@ -1084,7 +1085,7 @@ sso_registration_scopes = sso:account:access
 
 ### The Principle
 
-```
+```text
 Grant ONLY the permissions needed to perform the task.
 No more. Review regularly. Revoke when no longer needed.
 
@@ -1100,7 +1101,7 @@ challenge in AWS because:
 
 ### ABAC — Attribute-Based Access Control
 
-```
+```text
 RBAC (traditional):
   "DevOps team can access EKS"
   → Create role, attach policy, assign role to team
@@ -1117,11 +1118,11 @@ EXAMPLE:
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "AllowSameTeamAccess",
       "Effect": "Allow",
-      "Action": [
+      "Action":[
         "s3:GetObject",
         "s3:PutObject"
       ],
@@ -1136,7 +1137,7 @@ EXAMPLE:
 }
 ```
 
-```
+```text
 This single policy means:
   - payment-svc (tagged team=payments) can ONLY access objects tagged team=payments
   - order-svc (tagged team=orders) can ONLY access objects tagged team=orders
@@ -1151,7 +1152,7 @@ NovaMart ABAC tags:
 
 ### IAM Access Analyzer
 
-```
+```text
 ACCESS ANALYZER finds:
 1. External access: Resources shared outside your account/org
    - S3 bucket with public access
@@ -1180,7 +1181,7 @@ ACCESS ANALYZER finds:
 aws accessanalyzer start-policy-generation \
   --policy-generation-details '{
     "principalArn": "arn:aws:iam::123456789012:role/novamart-prod-payment-svc",
-    "cloudTrailDetails": [
+    "cloudTrailDetails":[
       {
         "trailArn": "arn:aws:cloudtrail:us-east-1:123456789012:trail/org-trail",
         "startTime": "2024-01-01T00:00:00Z",
@@ -1199,7 +1200,7 @@ aws accessanalyzer get-generated-policy --job-id <job-id>
 
 ### Permission Boundaries — Delegating Safe IAM Admin
 
-```
+```text
 PROBLEM: Platform team needs to create IAM roles for new services.
          But you don't want them creating roles with AdminAccess.
 
@@ -1214,11 +1215,11 @@ roles can ever do, regardless of what policies are attached later.
 // Permission boundary: maximum allowed for service roles
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "AllowedServiceActions",
       "Effect": "Allow",
-      "Action": [
+      "Action":[
         "s3:*",
         "sqs:*",
         "sns:*",
@@ -1235,7 +1236,7 @@ roles can ever do, regardless of what policies are attached later.
     {
       "Sid": "DenyBoundaryModification",
       "Effect": "Deny",
-      "Action": [
+      "Action":[
         "iam:DeleteRolePermissionsBoundary",
         "iam:PutRolePermissionsBoundary"
       ],
@@ -1249,11 +1250,11 @@ roles can ever do, regardless of what policies are attached later.
 // Platform team's IAM creation policy — MUST attach boundary
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "AllowCreateRolesWithBoundary",
       "Effect": "Allow",
-      "Action": [
+      "Action":[
         "iam:CreateRole",
         "iam:AttachRolePolicy",
         "iam:PutRolePolicy"
@@ -1269,7 +1270,7 @@ roles can ever do, regardless of what policies are attached later.
 }
 ```
 
-```
+```text
 Now the platform team:
   ✅ Can create roles prefixed with svc-*
   ✅ Must attach the ServiceRoleBoundary 
@@ -1285,19 +1286,20 @@ Now the platform team:
 
 ### Pattern 1: Role Assumption (Most Common)
 
-```
+```text
 Account A (CI/CD)                    Account B (Production)
 ┌─────────────────┐                 ┌─────────────────────┐
-│ Jenkins Role     │───AssumeRole──→│ Deploy Role          │
-│                  │                │                      │
-│ Policy:          │                │ Trust Policy:        │
-│ "Allow           │                │ "Allow Principal     │
-│  sts:AssumeRole  │                │  from Account A's    │
-│  on Deploy Role  │                │  Jenkins Role"       │
-│  in Account B"   │                │                      │
-│                  │                │ Permissions:          │
-│                  │                │ "EKS deploy, ECR pull"│
-└─────────────────┘                └─────────────────────┘
+│ Jenkins Role    │───AssumeRole───→│ Deploy Role         │
+│                 │                 │                     │
+│ Policy:         │                 │ Trust Policy:       │
+│ "Allow          │                 │ "Allow Principal    │
+│  sts:AssumeRole │                 │  from Account A's   │
+│  on Deploy Role │                 │  Jenkins Role"      │
+│  in Account B"  │                 │                     │
+│                 │                 │ Permissions:        │
+│                 │                 │ "EKS deploy,        │
+│                 │                 │  ECR pull"          │
+└─────────────────┘                 └─────────────────────┘
 ```
 
 ```hcl
@@ -1307,7 +1309,7 @@ resource "aws_iam_role" "cross_account_deploy" {
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Effect = "Allow"
         Principal = {
@@ -1331,7 +1333,7 @@ resource "aws_iam_role_policy" "jenkins_cross_account" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Effect   = "Allow"
         Action   = "sts:AssumeRole"
@@ -1344,7 +1346,7 @@ resource "aws_iam_role_policy" "jenkins_cross_account" {
 
 ### The Confused Deputy Problem
 
-```
+```text
 WITHOUT ExternalId:
 
 Third-party service "MonitorCorp" asks you to create a role 
@@ -1375,7 +1377,7 @@ RULE: ALWAYS use ExternalId for third-party cross-account access.
 // S3 bucket policy — grant cross-account access directly
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "AllowCICDAccountRead",
       "Effect": "Allow",
@@ -1386,7 +1388,7 @@ RULE: ALWAYS use ExternalId for third-party cross-account access.
         "s3:GetObject",
         "s3:ListBucket"
       ],
-      "Resource": [
+      "Resource":[
         "arn:aws:s3:::novamart-artifacts",
         "arn:aws:s3:::novamart-artifacts/*"
       ],
@@ -1400,7 +1402,7 @@ RULE: ALWAYS use ExternalId for third-party cross-account access.
 }
 ```
 
-```
+```text
 When to use which pattern:
 
 Resource-based policy (S3, KMS, SQS, SNS, Lambda):
@@ -1423,7 +1425,7 @@ Role assumption (everything else):
 
 ### OIDC Federation for CI/CD
 
-```
+```text
 THE OLD WAY:
   Create IAM user → Generate access keys → Store in Jenkins credentials
   Problems:
@@ -1441,17 +1443,17 @@ THE NEW WAY (OIDC Federation):
     - Audit trail includes pipeline metadata
 ```
 
-```
+```text
 ┌────────────────┐                    ┌─────────────┐
-│ Jenkins/GitHub │   1. JWT token     │ AWS STS     │
-│ Actions/GitLab │──────────────────→│             │
-│                │   (signed by CI    │ Validates   │
-│                │    provider's      │ against     │
-│                │    OIDC endpoint)  │ registered  │
+│ Jenkins/GitHub │    1. JWT token    │ AWS STS     │
+│ Actions/GitLab │───────────────────→│             │
+│                │    (signed by CI   │ Validates   │
+│                │     provider's     │ against     │
+│                │     OIDC endpoint) │ registered  │
 │                │                    │ OIDC        │
-│                │   2. Temp creds    │ provider    │
-│                │←──────────────────│             │
-│                │   (15min-12hr)     └─────────────┘
+│                │    2. Temp creds   │ provider    │
+│                │←───────────────────│             │
+│                │    (15min-12hr)    └─────────────┘
 │                │
 │  3. Use temp   │
 │     creds for  │
@@ -1465,8 +1467,8 @@ THE NEW WAY (OIDC Federation):
 # Register GitHub as an OIDC provider
 resource "aws_iam_openid_connect_provider" "github" {
   url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+  client_id_list  =["sts.amazonaws.com"]
+  thumbprint_list =["6938fd4d98bab03faadb97b34396831e3780aea1"]
 }
 
 # Role for GitHub Actions to assume
@@ -1475,7 +1477,7 @@ resource "aws_iam_role" "github_actions_deploy" {
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Effect = "Allow"
         Principal = {
@@ -1535,8 +1537,7 @@ pipeline {
   stages {
     stage('Deploy') {
       steps {
-        withCredentials([
-          [$class: 'AmazonWebServicesCredentialsBinding',
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
            credentialsId: 'aws-oidc-prod',
            roleArn: env.AWS_ROLE,
            roleSessionName: "jenkins-${BUILD_NUMBER}"]
@@ -1556,7 +1557,7 @@ pipeline {
 
 ### Systematic Debugging Framework
 
-```
+```text
 "Access Denied" is the most common and most frustrating AWS error.
 Here's the systematic approach:
 
@@ -1573,11 +1574,6 @@ STEP 1: IDENTIFY THE EXACT ERROR
   
   # This reveals the EXACT policy evaluation details
 
-STEP 2: VERIFY THE PRINCIPAL
-  # Who am I?
-  aws
-
-```
 STEP 2: VERIFY THE PRINCIPAL
   # Who am I?
   aws sts get-caller-identity
@@ -1658,47 +1654,47 @@ STEP 8: CHECK CLOUDTRAIL
 
 ### The Top 10 "Access Denied" Causes at NovaMart
 
-```
-┌───┬──────────────────────────────────────┬────────────────────────────────────┐
-│ # │ Cause                                │ Fix                                │
-├───┼──────────────────────────────────────┼────────────────────────────────────┤
-│ 1 │ S3: Missing bucket-level ARN         │ Need BOTH arn:...:bucket AND       │
-│   │ (only have object-level)             │ arn:...:bucket/* in Resource       │
-├───┼──────────────────────────────────────┼────────────────────────────────────┤
-│ 2 │ KMS: No kms:Decrypt permission       │ S3 SSE-KMS encrypted objects       │
-│   │ for encrypted objects                │ need KMS permissions too           │
-├───┼──────────────────────────────────────┼────────────────────────────────────┤
-│ 3 │ IRSA: Wrong namespace/SA in trust    │ Trust policy :sub must exactly     │
-│   │ policy condition                     │ match system:serviceaccount:ns:sa  │
-├───┼──────────────────────────────────────┼────────────────────────────────────┤
-│ 4 │ SCP blocking the action              │ Check SCPs on OU and account       │
-│   │                                      │ from management account            │
-├───┼──────────────────────────────────────┼────────────────────────────────────┤
-│ 5 │ Wrong account                        │ aws sts get-caller-identity FIRST  │
-│   │                                      │ before any debugging               │
-├───┼──────────────────────────────────────┼────────────────────────────────────┤
-│ 6 │ VPC endpoint policy denying          │ Default is allow-all but if        │
-│   │                                      │ customized, must include principal │
-├───┼──────────────────────────────────────┼────────────────────────────────────┤
-│ 7 │ Cross-account: identity policy       │ Cross-account needs BOTH:          │
-│   │ allows but resource policy doesn't   │ caller's identity policy +         │
-│   │ (or vice versa)                      │ target's resource policy           │
-│   │                                      │ (unless using role assumption)     │
-├───┼──────────────────────────────────────┼────────────────────────────────────┤
-│ 8 │ Permissions boundary too restrictive │ Boundary must ALSO allow the       │
-│   │                                      │ action (intersection model)        │
-├───┼──────────────────────────────────────┼────────────────────────────────────┤
-│ 9 │ Wildcard in wrong place              │ ec2:Describe* ≠ ec2:*Describe     │
-│   │                                      │ Action format is exact             │
-├───┼──────────────────────────────────────┼────────────────────────────────────┤
-│10 │ Implicit deny mistaken for explicit  │ Check if ANY policy has matching   │
-│   │ deny                                 │ Deny — different debugging path    │
-└───┴──────────────────────────────────────┴────────────────────────────────────┘
+```text
+┌───┬──────────────────────────────────────┬──────────────────────────────────────────┐
+│ # │ Cause                                │ Fix                                      │
+├───┼──────────────────────────────────────┼──────────────────────────────────────────┤
+│ 1 │ S3: Missing bucket-level ARN         │ Need BOTH arn:...:bucket AND             │
+│   │ (only have object-level)             │ arn:...:bucket/* in Resource             │
+├───┼──────────────────────────────────────┼──────────────────────────────────────────┤
+│ 2 │ KMS: No kms:Decrypt permission       │ S3 SSE-KMS encrypted objects             │
+│   │ for encrypted objects                │ need KMS permissions too                 │
+├───┼──────────────────────────────────────┼──────────────────────────────────────────┤
+│ 3 │ IRSA: Wrong namespace/SA in trust    │ Trust policy :sub must exactly           │
+│   │ policy condition                     │ match system:serviceaccount:ns:sa        │
+├───┼──────────────────────────────────────┼──────────────────────────────────────────┤
+│ 4 │ SCP blocking the action              │ Check SCPs on OU and account             │
+│   │                                      │ from management account                  │
+├───┼──────────────────────────────────────┼──────────────────────────────────────────┤
+│ 5 │ Wrong account                        │ aws sts get-caller-identity FIRST        │
+│   │                                      │ before any debugging                     │
+├───┼──────────────────────────────────────┼──────────────────────────────────────────┤
+│ 6 │ VPC endpoint policy denying          │ Default is allow-all but if              │
+│   │                                      │ customized, must include principal       │
+├───┼──────────────────────────────────────┼──────────────────────────────────────────┤
+│ 7 │ Cross-account: identity policy       │ Cross-account needs BOTH:                │
+│   │ allows but resource policy doesn't   │ caller's identity policy +               │
+│   │ (or vice versa)                      │ target's resource policy                 │
+│   │                                      │ (unless using role assumption)           │
+├───┼──────────────────────────────────────┼──────────────────────────────────────────┤
+│ 8 │ Permissions boundary too restrictive │ Boundary must ALSO allow the             │
+│   │                                      │ action (intersection model)              │
+├───┼──────────────────────────────────────┼──────────────────────────────────────────┤
+│ 9 │ Wildcard in wrong place              │ ec2:Describe* ≠ ec2:*Describe            │
+│   │                                      │ Action format is exact                   │
+├───┼──────────────────────────────────────┼──────────────────────────────────────────┤
+│10 │ Implicit deny mistaken for explicit  │ Check if ANY policy has matching         │
+│   │ deny                                 │ Deny — different debugging path          │
+└───┴──────────────────────────────────────┴──────────────────────────────────────────┘
 ```
 
 ### Production Debugging Scenario
 
-```
+```text
 SCENARIO: payment-svc pod can't read from S3 bucket novamart-payment-data
 
 STEP 1: Confirm the error
@@ -1758,56 +1754,56 @@ RESOLUTION:
 
 ## Part 10: IAM Security Best Practices — NovaMart Checklist
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│              IAM SECURITY CHECKLIST — PRODUCTION                      │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│ CREDENTIALS                                                          │
-│ ☐ No IAM users for service workloads (use roles everywhere)         │
-│ ☐ No long-lived access keys in production accounts                   │
-│ ☐ Break-glass IAM user exists with MFA + CloudWatch alarm on usage  │
-│ ☐ CI/CD uses OIDC federation, not access keys                       │
-│ ☐ All human access via IAM Identity Center (SSO)                    │
-│ ☐ MFA enforced for all human users (in IdP)                         │
-│ ☐ Access keys older than 90 days → alarm + auto-disable             │
-│                                                                      │
-│ LEAST PRIVILEGE                                                      │
-│ ☐ No wildcard (*) actions in production policies                    │
-│ ☐ No wildcard (*) resources in production policies                  │
-│ ☐ IRSA configured for every EKS service (pod-level isolation)       │
-│ ☐ Instance metadata blocked for pods (force IRSA usage)             │
-│ ☐ IAM Access Analyzer enabled (external access findings)            │
-│ ☐ IAM Access Analyzer unused access findings reviewed monthly       │
-│ ☐ Permission boundaries on all delegated role creation              │
-│ ☐ Quarterly access review: revoke unused permissions                │
-│                                                                      │
-│ ORGANIZATION                                                         │
-│ ☐ Multi-account strategy (separate prod/staging/dev)                │
-│ ☐ Management account has NO workloads                               │
-│ ☐ SCPs enforce region restrictions                                  │
-│ ☐ SCPs protect CloudTrail, GuardDuty, Config                       │
-│ ☐ SCPs prevent IAM user creation in member accounts                 │
-│ ☐ SCPs enforce encryption (S3, EBS, RDS)                            │
-│ ☐ SCP prevents leaving the organization                             │
-│                                                                      │
-│ AUDIT                                                                │
-│ ☐ CloudTrail enabled in ALL accounts, ALL regions                   │
-│ ☐ CloudTrail logs shipped to security account (immutable)           │
-│ ☐ IAM credential report generated weekly                            │
-│ ☐ Root user usage → immediate alarm + investigation                 │
-│ ☐ All IAM changes → CloudWatch alarm → Slack                       │
-│ ☐ Cross-account role assumptions logged and reviewed                │
-│                                                                      │
-│ EMERGENCY                                                            │
-│ ☐ Break-glass procedure documented and tested quarterly             │
-│ ☐ Break-glass credentials stored securely (physical safe or         │
-│   dedicated hardware token, NOT in a digital password manager       │
-│   that could be compromised in the same incident)                   │
-│ ☐ Root account MFA on hardware token (not SMS, not TOTP app)        │
-│ ☐ Root account email is a distribution list, not personal email     │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                  IAM SECURITY CHECKLIST — PRODUCTION                   │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│ CREDENTIALS                                                            │
+│ ☐ No IAM users for service workloads (use roles everywhere)            │
+│ ☐ No long-lived access keys in production accounts                     │
+│ ☐ Break-glass IAM user exists with MFA + CloudWatch alarm on usage     │
+│ ☐ CI/CD uses OIDC federation, not access keys                          │
+│ ☐ All human access via IAM Identity Center (SSO)                       │
+│ ☐ MFA enforced for all human users (in IdP)                            │
+│ ☐ Access keys older than 90 days → alarm + auto-disable                │
+│                                                                        │
+│ LEAST PRIVILEGE                                                        │
+│ ☐ No wildcard (*) actions in production policies                       │
+│ ☐ No wildcard (*) resources in production policies                     │
+│ ☐ IRSA configured for every EKS service (pod-level isolation)          │
+│ ☐ Instance metadata blocked for pods (force IRSA usage)                │
+│ ☐ IAM Access Analyzer enabled (external access findings)               │
+│ ☐ IAM Access Analyzer unused access findings reviewed monthly          │
+│ ☐ Permission boundaries on all delegated role creation                 │
+│ ☐ Quarterly access review: revoke unused permissions                   │
+│                                                                        │
+│ ORGANIZATION                                                           │
+│ ☐ Multi-account strategy (separate prod/staging/dev)                   │
+│ ☐ Management account has NO workloads                                  │
+│ ☐ SCPs enforce region restrictions                                     │
+│ ☐ SCPs protect CloudTrail, GuardDuty, Config                           │
+│ ☐ SCPs prevent IAM user creation in member accounts                    │
+│ ☐ SCPs enforce encryption (S3, EBS, RDS)                               │
+│ ☐ SCP prevents leaving the organization                                │
+│                                                                        │
+│ AUDIT                                                                  │
+│ ☐ CloudTrail enabled in ALL accounts, ALL regions                      │
+│ ☐ CloudTrail logs shipped to security account (immutable)              │
+│ ☐ IAM credential report generated weekly                               │
+│ ☐ Root user usage → immediate alarm + investigation                    │
+│ ☐ All IAM changes → CloudWatch alarm → Slack                           │
+│ ☐ Cross-account role assumptions logged and reviewed                   │
+│                                                                        │
+│ EMERGENCY                                                              │
+│ ☐ Break-glass procedure documented and tested quarterly                │
+│ ☐ Break-glass credentials stored securely (physical safe or            │
+│   dedicated hardware token, NOT in a digital password manager          │
+│   that could be compromised in the same incident)                      │
+│ ☐ Root account MFA on hardware token (not SMS, not TOTP app)           │
+│ ☐ Root account email is a distribution list, not personal email        │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### IAM Monitoring Alerts
@@ -1837,7 +1833,7 @@ resource "aws_cloudwatch_metric_alarm" "root_usage" {
   statistic           = "Sum"
   threshold           = 0
   alarm_description   = "CRITICAL: Root account used. Investigate immediately."
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
+  alarm_actions       =[aws_sns_topic.security_alerts.arn]
 }
 ```
 
@@ -1890,7 +1886,7 @@ resource "aws_cloudwatch_log_metric_filter" "access_key_created" {
 
 ## Part 11: IAM Failure Modes — Production War Stories
 
-```
+```text
 FAILURE MODE 1: Credential leak in Git
 ────────────────────────────────────────
   CAUSE: Developer commits .env file or hardcodes access keys
@@ -1954,11 +1950,11 @@ FAILURE MODE 5: Resource policy overrides everything (S3 public)
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "DenyDisablingS3PublicAccessBlock",
       "Effect": "Deny",
-      "Action": [
+      "Action":[
         "s3:PutBucketPublicAccessBlock",
         "s3:PutAccountPublicAccessBlock"
       ],
@@ -1973,7 +1969,7 @@ FAILURE MODE 5: Resource policy overrides everything (S3 public)
 }
 ```
 
-```
+```text
 FAILURE MODE 6: Tag-based ABAC bypass
 ─────────────────────────────────────────
   CAUSE: User can tag resources → changes their own access scope
@@ -2003,7 +1999,7 @@ FAILURE MODE 8: Service-linked role deletion blocks service
 
 ## Quick Reference Card
 
-```
+```text
 IAM AUTHORIZATION FLOW
 ──────────────────────
 Explicit Deny > Explicit Allow > Implicit Deny (default)
@@ -2060,7 +2056,6 @@ S3 public access change → IMMEDIATE page
 CloudTrail stopped → IMMEDIATE page
 ```
 
-
 ---
 
 ## Retention Questions — Phase 6, Lesson 1
@@ -2070,7 +2065,7 @@ CloudTrail stopped → IMMEDIATE page
 **Scenario:** Monday morning. payment-svc is throwing `AccessDenied` errors when trying to read from SQS queue `payment-processing`. This worked fine last week. No code changes were deployed to payment-svc. The on-call engineer tried restarting the pods — no change.
 
 1. Walk through your debugging steps in order, with exact commands. Start from confirming the principal identity through to root cause.
-2. During debugging, you discover `aws sts get-caller-identity` from inside the pod returns the **node instance role**, not the IRSA role. List ALL possible causes for this (at least 5) and the check command for each.
+2. During debugging, you discover `aws sts get-caller-identity` from inside the pod returns the **node instance role**, not the IRSA role. List ALL possible causes (at least 5) and the check command for each.
 3. The root cause turns out to be: a Terraform apply last Friday updated the EKS OIDC provider thumbprint but introduced a typo. The OIDC validation is now failing silently, so ALL IRSA roles in the cluster are broken — pods fall back to node role. How many services are affected and what's your mitigation plan? This is now a SEV1.
 4. Write the SCP that would prevent someone from accidentally deleting or modifying the OIDC provider configuration.
 
@@ -2112,7 +2107,7 @@ The following policies exist:
   "Resource": "*",
   "Condition": {
     "StringNotEquals": {
-      "s3:x-amz-server-side-encryption": ["aws:kms", "AES256"]
+      "s3:x-amz-server-side-encryption":["aws:kms", "AES256"]
     },
     "Null": {
       "s3:x-amz-server-side-encryption": "false"
@@ -2259,7 +2254,7 @@ aws iam get-role --role-name payment-svc-irsa-role --query 'Role.AssumeRolePolic
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [{
+  "Statement":[{
     "Effect": "Allow",
     "Principal": {
       "Federated": "arn:aws:iam::111111111111:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B71EXAMPLE"
@@ -2332,27 +2327,27 @@ aws sts assume-role-with-web-identity \
 
 ### 2. ALL Possible Causes When get-caller-identity Returns Node Role (≥5)
 
-```
+```text
 ┌───┬─────────────────────────────────────────────┬──────────────────────────────────────────┐
 │ # │ Cause                                       │ Check Command                            │
 ├───┼─────────────────────────────────────────────┼──────────────────────────────────────────┤
-│ 1 │ IRSA env vars not injected — mutating       │ kubectl -n payments exec deploy/          │
-│   │ admission webhook (pod-identity-webhook)     │ payment-svc -- env | grep AWS_            │
-│   │ not running or not configured                │                                          │
-│   │                                             │ kubectl -n kube-system get pods -l        │
-│   │                                             │   app=eks-pod-identity-webhook            │
-│   │                                             │ kubectl get mutatingwebhookconfigurations │
-│   │                                             │   | grep pod-identity                     │
+│ 1 │ IRSA env vars not injected — mutating       │ kubectl -n payments exec deploy/         │
+│   │ admission webhook (pod-identity-webhook)    │ payment-svc -- env | grep AWS_           │
+│   │ not running or not configured               │                                          │
+│   │                                             │ kubectl -n kube-system get pods -l       │
+│   │                                             │   app=eks-pod-identity-webhook           │
+│   │                                             │ kubectl get mutatingwebhookconfigurations│
+│   │                                             │   | grep pod-identity                    │
 ├───┼─────────────────────────────────────────────┼──────────────────────────────────────────┤
-│ 2 │ ServiceAccount missing IRSA annotation       │ kubectl -n payments get sa payment-svc-sa │
-│   │ (eks.amazonaws.com/role-arn)                 │   -o jsonpath='{.metadata.annotations}'  │
+│ 2 │ ServiceAccount missing IRSA annotation      │ kubectl -n payments get sa payment-svc-sa│
+│   │ (eks.amazonaws.com/role-arn)                │   -o jsonpath='{.metadata.annotations}'  │
 │   │                                             │                                          │
-│   │ Pods created BEFORE annotation was added     │ Check pod creation time vs annotation    │
-│   │ won't have the env vars — need pod restart   │ time. Env vars are injected at pod       │
+│   │ Pods created BEFORE annotation was added    │ Check pod creation time vs annotation    │
+│   │ won't have the env vars — need pod restart  │ time. Env vars are injected at pod       │
 │   │                                             │ creation, not dynamically.               │
 ├───┼─────────────────────────────────────────────┼──────────────────────────────────────────┤
 │ 3 │ IAM OIDC provider thumbprint mismatch       │ # Get actual thumbprint:                 │
-│   │ (Terraform typo, cert rotation, AWS change) │ echo | openssl s_client -servername       │
+│   │ (Terraform typo, cert rotation, AWS change) │ echo | openssl s_client -servername      │
 │   │                                             │   oidc.eks.us-east-1.amazonaws.com       │
 │   │                                             │   -connect oidc.eks...:443 2>/dev/null   │
 │   │                                             │   | openssl x509 -fingerprint -sha1      │
@@ -2361,24 +2356,24 @@ aws sts assume-role-with-web-identity \
 │   │                                             │ aws iam get-open-id-connect-provider     │
 │   │                                             │   --oidc-arn <arn> --query Thumbprint*   │
 ├───┼─────────────────────────────────────────────┼──────────────────────────────────────────┤
-│ 4 │ Trust policy condition mismatch — sub or    │ aws iam get-role --role-name              │
-│   │ aud doesn't match the token claims          │   payment-svc-irsa-role --query           │
+│ 4 │ Trust policy condition mismatch — sub or    │ aws iam get-role --role-name             │
+│   │ aud doesn't match the token claims          │   payment-svc-irsa-role --query          │
 │   │                                             │   Role.AssumeRolePolicyDocument          │
 │   │ Common: namespace or SA name typo in        │                                          │
 │   │ condition, or aud is "sts.amazonaws.com"    │ # Decode token to compare:               │
 │   │ in token but trust policy expects           │ cat /var/run/.../token | cut -d. -f2 |   │
-│   │ something else                              │   base64 -d | jq '.sub, .aud'           │
+│   │ something else                              │   base64 -d | jq '.sub, .aud'          │
 ├───┼─────────────────────────────────────────────┼──────────────────────────────────────────┤
 │ 5 │ OIDC provider deleted or recreated with     │ aws iam list-open-id-connect-providers   │
 │   │ different ARN — trust policy references     │   | jq .                                 │
 │   │ old ARN that no longer exists               │                                          │
 │   │                                             │ # Compare the OIDC ID in the trust       │
 │   │                                             │ # policy vs the actual cluster OIDC ID:  │
-│   │                                             │ aws eks describe-cluster --name           │
+│   │                                             │ aws eks describe-cluster --name          │
 │   │                                             │   novamart-prod --query                  │
 │   │                                             │   cluster.identity.oidc.issuer           │
 ├───┼─────────────────────────────────────────────┼──────────────────────────────────────────┤
-│ 6 │ Projected service account token volume      │ kubectl -n payments get pod               │
+│ 6 │ Projected service account token volume      │ kubectl -n payments get pod              │
 │   │ not mounted — pod spec missing the volume   │   payment-svc-xyz -o yaml | grep -A 10   │
 │   │ or the webhook failed to inject it          │   "projected"                            │
 │   │                                             │                                          │
@@ -2388,11 +2383,11 @@ aws sts assume-role-with-web-identity \
 ├───┼─────────────────────────────────────────────┼──────────────────────────────────────────┤
 │ 7 │ Token expired and kubelet not refreshing    │ # Inside the pod — check token expiry:   │
 │   │ it (rare, usually kubelet bug or clock      │ cat /var/run/.../token | cut -d. -f2 |   │
-│   │ skew on the node)                           │   base64 -d | jq '.exp' |               │
-│   │                                             │   xargs -I{} date -d @{}                │
+│   │ skew on the node)                           │   base64 -d | jq '.exp' |                │
+│   │                                             │   xargs -I{} date -d @{}                 │
 │   │                                             │                                          │
 │   │                                             │ # Check node time sync:                  │
-│   │                                             │ kubectl debug node/<node> -it             │
+│   │                                             │ kubectl debug node/<node> -it            │
 │   │                                             │   --image=busybox -- date                │
 ├───┼─────────────────────────────────────────────┼──────────────────────────────────────────┤
 │ 8 │ AWS SDK version too old — doesn't support   │ # Inside the pod:                        │
@@ -2405,7 +2400,7 @@ aws sts assume-role-with-web-identity \
 ├───┼─────────────────────────────────────────────┼──────────────────────────────────────────┤
 │ 9 │ Container overrides AWS_* env vars —        │ # Check deployment spec for hardcoded    │
 │   │ hardcoded AWS_ACCESS_KEY_ID or              │ # credentials that take precedence:      │
-│   │ AWS_PROFILE in the deployment spec          │ kubectl -n payments get deploy             │
+│   │ AWS_PROFILE in the deployment spec          │ kubectl -n payments get deploy           │
 │   │ takes precedence over IRSA token chain      │   payment-svc -o yaml | grep -i          │
 │   │                                             │   "AWS_ACCESS_KEY\|AWS_SECRET\|          │
 │   │                                             │    AWS_PROFILE\|AWS_DEFAULT_PROFILE"     │
@@ -2428,7 +2423,7 @@ kubectl get pods --all-namespaces -o json | \
 
 **EVERY pod using IRSA across the ENTIRE cluster is now using the node role instead of its scoped role.** This means:
 
-```
+```text
 Impact:
 ├── payment-svc:     Using node role → may lack SQS permissions → 503s on payments
 ├── order-svc:       Using node role → may lack RDS/S3 permissions → order failures
@@ -2445,7 +2440,7 @@ Impact:
 
 **Minute 0-2: Declare SEV1 and communicate**
 
-```
+```text
 🔴 SEV1 DECLARED — Cluster-wide IRSA failure
 
 Impact: ALL pods using IRSA are falling back to node instance role.
@@ -2577,7 +2572,7 @@ aws cloudtrail lookup-events \
 resource "aws_iam_openid_connect_provider" "eks" {
   url             = aws_eks_cluster.novamart.identity[0].oidc[0].issuer
   client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = ["9e99a48a9960b14926bb7f3b02e22da2b0ab7280"]  # TYPO HERE
+  thumbprint_list =["9e99a48a9960b14926bb7f3b02e22da2b0ab7280"]  # TYPO HERE
 }
 
 # CORRECT — dynamically computed thumbprint
@@ -2605,11 +2600,11 @@ terraform apply -target=aws_iam_openid_connect_provider.eks
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "ProtectEKSOIDCProvider",
       "Effect": "Deny",
-      "Action": [
+      "Action":[
         "iam:DeleteOpenIDConnectProvider",
         "iam:UpdateOpenIDConnectProviderThumbprint",
         "iam:RemoveClientIDFromOpenIDConnectProvider"
@@ -2617,7 +2612,7 @@ terraform apply -target=aws_iam_openid_connect_provider.eks
       "Resource": "arn:aws:iam::*:oidc-provider/oidc.eks.*.amazonaws.com/*",
       "Condition": {
         "StringNotLike": {
-          "aws:PrincipalArn": [
+          "aws:PrincipalArn":[
             "arn:aws:iam::*:role/NovaMartTerraformRole",
             "arn:aws:iam::*:role/BreakGlassRole"
           ]
@@ -2662,7 +2657,7 @@ if [ "$OIDC_CHANGES" -gt 0 ]; then
   
   ACTUAL_THUMBPRINT=$(echo | openssl s_client -servername "$OIDC_URL" -connect "$OIDC_URL:443" 2>/dev/null | openssl x509 -fingerprint -sha1 -noout | sed 's/://g' | awk -F= '{print tolower($2)}')
   
-  if [ "$PLANNED_THUMBPRINT" != "$ACTUAL_THUMBPRINT" ]; then
+  if[ "$PLANNED_THUMBPRINT" != "$ACTUAL_THUMBPRINT" ]; then
     echo "❌ THUMBPRINT MISMATCH!"
     echo "Planned:  $PLANNED_THUMBPRINT"
     echo "Actual:   $ACTUAL_THUMBPRINT"
@@ -2682,7 +2677,7 @@ fi
 
 **Tracing through the complete IAM policy evaluation chain:**
 
-```
+```text
 Cross-account access evaluation flow:
   Request: s3:PutObject to novamart-order-archive/*
   From: order-svc role in account 111111111111 (production)
@@ -2696,7 +2691,7 @@ Gate 1: SCP (applied to production account's OU)
   │
   │   The request HAS s3:x-amz-server-side-encryption = "aws:kms"
   │   → Null check: "false" means "deny if the key IS present AND doesn't match"
-  │   → StringNotEquals: "aws:kms" IS in the allowed list ["aws:kms", "AES256"]
+  │   → StringNotEquals: "aws:kms" IS in the allowed list["aws:kms", "AES256"]
   │   → Condition evaluates to FALSE (not-equals fails because it equals)
   │   → Deny does NOT apply
   │
@@ -2730,7 +2725,7 @@ Final result: ✅ THIS SHOULD WORK
 
 ### 2. Upload Without Any Encryption Flag
 
-```
+```text
 Request: s3:PutObject to novamart-order-archive/*
 With: NO x-amz-server-side-encryption header
 
@@ -2844,7 +2839,7 @@ aws kms generate-data-key \
   "Principal": {
     "AWS": "arn:aws:iam::111111111111:role/order-svc-irsa-role"
   },
-  "Action": [
+  "Action":[
     "kms:GenerateDataKey",
     "kms:Decrypt"
   ],
@@ -2857,7 +2852,7 @@ aws kms generate-data-key \
 ```json
 {
   "Effect": "Allow",
-  "Action": [
+  "Action":[
     "kms:GenerateDataKey",
     "kms:Decrypt"
   ],
@@ -2883,11 +2878,11 @@ aws ec2 describe-vpc-endpoints \
 
 ```json
 {
-  "Statement": [{
+  "Statement":[{
     "Effect": "Allow",
     "Principal": "*",
     "Action": "s3:*",
-    "Resource": [
+    "Resource":[
       "arn:aws:s3:::novamart-*",
       "arn:aws:s3:::novamart-*/*"
     ]
@@ -2916,7 +2911,7 @@ aws s3api get-bucket-policy --bucket novamart-order-archive --profile log-archiv
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "AllowCrossAccountS3Write",
       "Effect": "Allow",
@@ -2933,7 +2928,7 @@ aws s3api get-bucket-policy --bucket novamart-order-archive --profile log-archiv
     {
       "Sid": "AllowCrossAccountKMS",
       "Effect": "Allow",
-      "Action": [
+      "Action":[
         "kms:GenerateDataKey",
         "kms:Decrypt"
       ],
@@ -2948,14 +2943,14 @@ aws s3api get-bucket-policy --bucket novamart-order-archive --profile log-archiv
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "AllowOrgAccountsWrite",
       "Effect": "Allow",
       "Principal": {
         "AWS": "*"
       },
-      "Action": [
+      "Action":[
         "s3:PutObject"
       ],
       "Resource": "arn:aws:s3:::novamart-order-archive/*",
@@ -3004,7 +2999,7 @@ The original bucket policy used `"Principal": {"AWS": "arn:aws:iam::111111111111
 
 `aws:PrincipalOrgID` solves the first problem:
 
-```
+```text
 "aws:PrincipalOrgID": "o-novamart123"
 ```
 
@@ -3029,7 +3024,7 @@ This restricts to both the org AND the specific role — defense in depth.
 
 ### 1. AWS Account Structure for PCI-DSS
 
-```
+```text
 NovaMart AWS Organization (o-novamart123)
 │
 ├── Root Account (management only — no workloads)
@@ -3091,17 +3086,17 @@ NovaMart AWS Organization (o-novamart123)
 
 **Why this isolation matters for PCI scope:**
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
-│ PCI-DSS SCOPE REDUCTION                                         │
+│                     PCI-DSS SCOPE REDUCTION                     │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │ Without isolation:                                              │
-│   ALL of NovaMart's infrastructure is "in scope" for PCI       │
+│   ALL of NovaMart's infrastructure is "in scope" for PCI        │
 │   audit because cardholder data COULD flow to any system.       │
 │   200+ EC2 instances need PCI compliance. Cost: enormous.       │
 │                                                                 │
-│ With account-level isolation:                                    │
+│ With account-level isolation:                                   │
 │   Only the PCI OU accounts are in scope.                        │
 │   payment-svc + fraud-svc + their infrastructure.               │
 │   Maybe 20-30 instances instead of 200+.                        │
@@ -3114,7 +3109,7 @@ NovaMart AWS Organization (o-novamart123)
 │   3. Network isolation = VPC peering with security groups       │
 │      that only allow specific ports (no broad access)           │
 │   4. No shared credentials between PCI and non-PCI              │
-│   5. Separate EKS cluster (or node group) = no pod-to-pod      │
+│   5. Separate EKS cluster (or node group) = no pod-to-pod       │
 │      communication between PCI and non-PCI workloads            │
 │                                                                 │
 │ This is the "reduce PCI scope" strategy — the #1 cost           │
@@ -3128,11 +3123,11 @@ NovaMart AWS Organization (o-novamart123)
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "DenyIAMUserCreation",
       "Effect": "Deny",
-      "Action": [
+      "Action":[
         "iam:CreateUser",
         "iam:CreateLoginProfile",
         "iam:CreateAccessKey",
@@ -3158,7 +3153,7 @@ NovaMart AWS Organization (o-novamart123)
     {
       "Sid": "DenyCloudTrailModification",
       "Effect": "Deny",
-      "Action": [
+      "Action":[
         "cloudtrail:StopLogging",
         "cloudtrail:DeleteTrail",
         "cloudtrail:UpdateTrail",
@@ -3169,7 +3164,7 @@ NovaMart AWS Organization (o-novamart123)
     {
       "Sid": "DenyUnapprovedRegions",
       "Effect": "Deny",
-      "NotAction": [
+      "NotAction":[
         "iam:*",
         "sts:*",
         "organizations:*",
@@ -3186,7 +3181,7 @@ NovaMart AWS Organization (o-novamart123)
       "Resource": "*",
       "Condition": {
         "StringNotEquals": {
-          "aws:RequestedRegion": [
+          "aws:RequestedRegion":[
             "us-east-1",
             "us-west-2",
             "eu-west-1"
@@ -3197,7 +3192,7 @@ NovaMart AWS Organization (o-novamart123)
     {
       "Sid": "DenyS3PublicAccess",
       "Effect": "Deny",
-      "Action": [
+      "Action":[
         "s3:PutBucketPublicAccessBlock",
         "s3:PutAccountPublicAccessBlock"
       ],
@@ -3217,13 +3212,13 @@ NovaMart AWS Organization (o-novamart123)
     {
       "Sid": "ProtectLogArchiveBucket",
       "Effect": "Deny",
-      "Action": [
+      "Action":[
         "s3:DeleteBucket",
         "s3:DeleteObject",
         "s3:DeleteObjectVersion",
         "s3:PutLifecycleConfiguration"
       ],
-      "Resource": [
+      "Resource":[
         "arn:aws:s3:::novamart-cloudtrail-logs",
         "arn:aws:s3:::novamart-cloudtrail-logs/*"
       ]
@@ -3245,7 +3240,7 @@ NovaMart AWS Organization (o-novamart123)
 
 **Walk-through of every boundary:**
 
-```
+```text
 Developer authenticates via SSO (IAM Identity Center)
     │
     │ Boundary 1: SSO Permission Set Assignment
@@ -3336,7 +3331,7 @@ Developer authenticates via SSO (IAM Identity Center)
 
 **What's wrong:**
 
-```
+```text
 Problem 1: SHARED MFA SEED
   4 engineers share the TOTP seed. This means:
   - No individual accountability (CloudTrail shows "root" but not WHICH human)
@@ -3359,9 +3354,9 @@ Problem 3: 4 PEOPLE
 
 **The fix:**
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
-│ ROOT ACCOUNT BREAK-GLASS PROCEDURE                              │
+│               ROOT ACCOUNT BREAK-GLASS PROCEDURE                │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │ 1. HARDWARE MFA TOKEN (not software TOTP)                       │
@@ -3381,9 +3376,9 @@ Problem 3: 4 PEOPLE
 │      location has both factors                                  │
 │                                                                 │
 │ 3. DUAL-PERSON REQUIREMENT                                      │
-│    - Accessing the root account requires TWO senior engineers    │
-│    - Person A: has combination to the safe with the password     │
-│    - Person B: has key to the lockbox with the YubiKey           │
+│    - Accessing the root account requires TWO senior engineers   │
+│    - Person A: has combination to the safe with the password    │
+│    - Person B: has key to the lockbox with the YubiKey          │
 │    - Neither person alone can access root                       │
 │    - Log who opened what in a physical access log               │
 │                                                                 │
@@ -3452,7 +3447,7 @@ aws iam list-mfa-devices --user-name root
 
 **What `notification-svc` typically needs access to:**
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │ notification-svc IRSA Role — Legitimate Permissions          │
 ├──────────────────────────────────────────────────────────────┤
@@ -3479,10 +3474,7 @@ aws iam list-mfa-devices --user-name root
 
 **What the attacker CAN do:**
 
-```
-
-
-```
+```text
 WITH IRSA (scoped role):
 
 CAN:
@@ -3514,7 +3506,7 @@ CANNOT:
 
 **Blast radius summary with IRSA:**
 
-```
+```text
 Data exposure:   Customer emails, phone numbers, notification preferences
                  from DynamoDB + SQS messages (PII, but NOT payment data)
 Financial risk:  SES/SNS abuse for spam/phishing using NovaMart's identity
@@ -3526,7 +3518,7 @@ Infrastructure:  NONE — no ability to modify compute, networking, or IAM
 
 **If all pods use the node instance role, the attacker gets the node's permissions:**
 
-```
+```text
 Node instance role typically has:
 
 ec2:Describe*                  → Full visibility into all EC2 instances, VPCs,
@@ -3559,7 +3551,7 @@ curl http://169.254.169.254/latest/meta-data/iam/security-credentials/eks-node-r
 
 **What the attacker gains without IRSA:**
 
-```
+```text
 WITHOUT IRSA (node role):
 
 CAN (in addition to everything above):
@@ -3591,7 +3583,7 @@ BLAST RADIUS COMPARISON:
 ├────────────────────┼─────────────────────┼──────────────────────┤
 │ Data exposure      │ notification PII    │ ALL customer data    │
 │ Lateral movement   │ None                │ Full account recon   │
-│ Source code access  │ None                │ ALL container images │
+│ Source code access │ None                │ ALL container images │
 │ Secret exposure    │ None                │ Secrets Manager/SSM  │
 │ Infrastructure     │ None                │ Full EC2/VPC/EKS map │
 │ Cross-service      │ None                │ All services on node │
@@ -3606,7 +3598,7 @@ BLAST RADIUS COMPARISON:
 
 **Escalation Path 1: Create a new IAM role with admin permissions**
 
-```
+```text
 Attack: The attacker tries to create a new role with AdministratorAccess,
         then assume it.
 
@@ -3630,7 +3622,7 @@ Blocking controls:
 {
   "Sid": "EnforcePermissionsBoundary",
   "Effect": "Deny",
-  "Action": [
+  "Action":[
     "iam:CreateRole",
     "iam:AttachRolePolicy",
     "iam:PutRolePolicy"
@@ -3644,7 +3636,7 @@ Blocking controls:
 }
 ```
 
-```
+```text
 ├── Even if the attacker somehow creates a role, the permissions boundary
 │   caps its effective permissions to a safe subset
 └── CloudTrail + GuardDuty alert on IAM role creation from unexpected principal
@@ -3652,7 +3644,7 @@ Blocking controls:
 
 **Escalation Path 2: Access the Kubernetes API to read Secrets and pivot to other ServiceAccounts**
 
-```
+```text
 Attack: The attacker uses the pod's Kubernetes ServiceAccount token to
         access the Kubernetes API and read Secrets from other namespaces
         (which may contain database passwords, API keys).
@@ -3690,7 +3682,7 @@ automountServiceAccountToken: false  # No K8s API token mounted
 
 **Escalation Path 3: SSRF to the IMDS to steal the node role credentials**
 
-```
+```text
 Attack: The attacker uses the SSRF vulnerability to make a request from
         the pod to the EC2 Instance Metadata Service (IMDS) at
         169.254.169.254 to steal the node's IAM credentials.
@@ -3730,7 +3722,7 @@ resource "aws_launch_template" "eks_nodes" {
 }
 ```
 
-```
+```text
 ├── Layer 3: NetworkPolicy blocking IMDS IP
 │   Even if hop limit is misconfigured, block at the network level:
 ```
@@ -3747,7 +3739,7 @@ spec:
     - Egress
   egress:
     # Allow DNS
-    - to: []
+    - to:[]
       ports:
         - port: 53
           protocol: UDP
@@ -3761,7 +3753,7 @@ spec:
               - 169.254.169.254/32
 ```
 
-```
+```text
 └── All three must fail for the attacker to reach IMDS.
     Defense in depth: any single layer prevents the escalation.
 ```
@@ -3770,7 +3762,7 @@ spec:
 
 **This is a SECURITY incident, not an availability incident. The priorities are different:**
 
-```
+```text
 Availability incident priority: Restore service → Investigate → Prevent
 Security incident priority:     Contain → Preserve evidence → Eradicate → Restore → Investigate
 ```
@@ -3828,7 +3820,7 @@ aws iam put-role-policy \
   --policy-name EmergencyDenyAll \
   --policy-document '{
     "Version": "2012-10-17",
-    "Statement": [{
+    "Statement":[{
       "Sid": "DenyEverything",
       "Effect": "Deny",
       "Action": "*",
@@ -3847,7 +3839,7 @@ aws iam get-role-policy \
 
 **⚠️ This also breaks notification-svc for legitimate pods.** That's acceptable — containing the breach is more important than sending emails. Post a note:
 
-```
+```text
 🔴 SECURITY INCIDENT — notification-svc
 
 notification-svc IRSA role has been emergency-revoked.
@@ -3924,7 +3916,7 @@ aws guardduty list-findings \
   --finding-criteria '{
     "Criterion": {
       "resource.accessKeyDetails.userName": {
-        "Eq": ["notification-svc-irsa-role"]
+        "Eq":["notification-svc-irsa-role"]
       },
       "updatedAt": {
         "GreaterThanOrEqual": '$(date -u -d '24 hours ago' +%s000)'
@@ -3944,7 +3936,7 @@ aws cloudtrail lookup-events \
 
 **Action 5 (Minute 15-20): Notify stakeholders and begin coordinated response**
 
-```
+```text
 # Notifications in order:
 
 1. Security team (already in war room from Action 2)
@@ -3954,7 +3946,7 @@ aws cloudtrail lookup-events \
 4. Customer data assessment — did PII leak?
 ```
 
-```
+```text
 Message to #sec-inc-20240116-ssrf:
 
 📋 SECURITY INCIDENT STATUS — Minute 15
@@ -3976,7 +3968,7 @@ WHAT WE KNOW:
 - Attacker had access to: notification-svc IRSA role credentials
 - IRSA contained the blast radius — NO access to payment data,
   databases, or other services' resources
-- Duration of compromise: [UNKNOWN — checking CloudTrail for first suspicious call]
+- Duration of compromise:[UNKNOWN — checking CloudTrail for first suspicious call]
 
 WHAT WE DON'T KNOW YET:
 - When the compromise started (initial access time)
@@ -4022,7 +4014,7 @@ kubectl -n notifications delete pod "$POD_NAME"
 
 ## Summary
 
-```
+```text
 Q1: IRSA Debugging
   Debug ladder: get-caller-identity → env vars → token file → 
     ServiceAccount annotation → trust policy → OIDC provider → manual STS call
@@ -4050,14 +4042,13 @@ Q4: SSRF Blast Radius
   Security IR: Contain → Preserve evidence → Revoke → Assess → Notify
   NEVER delete the compromised pod before capturing forensics
 ```
-
 ---
 
 # Phase 6, Lesson 2: Secrets Management
 
 ## Why Secrets Management Is a Solved Problem That Everyone Gets Wrong
 
-```
+```text
 SECRETS IN THE WILD (real incidents):
 
 2023: Tesla — Kubernetes dashboard exposed, AWS credentials leaked
@@ -4095,7 +4086,7 @@ At NovaMart:
 
 ### What KMS Actually Does
 
-```
+```text
 KMS does NOT store your data. It stores and manages KEYS
 that encrypt your data.
 
@@ -4114,20 +4105,20 @@ DECRYPT:
   → throws away the plaintext key
 
 This is called ENVELOPE ENCRYPTION:
-  ┌────────────────────────────────────────────────┐
-  │                                                │
-  │  CMK (Customer Master Key) — lives in KMS      │
-  │  │                                             │
-  │  │ encrypts/decrypts                           │
-  │  ▼                                             │
-  │  Data Key (DEK) — generated by KMS             │
-  │  │                                             │
-  │  │ encrypts/decrypts                           │
-  │  ▼                                             │
-  │  Your actual data (S3 objects, EBS volumes,     │
-  │  RDS databases, DynamoDB tables, etc.)         │
-  │                                                │
-  └────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                                                            │
+│ CMK (Customer Master Key) — lives in KMS                   │
+│ │                                                          │
+│ │ encrypts/decrypts                                        │
+│ ▼                                                          │
+│ Data Key (DEK) — generated by KMS                          │
+│ │                                                          │
+│ │ encrypts/decrypts                                        │
+│ ▼                                                          │
+│ Your actual data (S3 objects, EBS volumes,                 │
+│ RDS databases, DynamoDB tables, etc.)                      │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
 
 Why envelope encryption?
   1. CMK never leaves KMS hardware (FIPS 140-2 validated HSMs)
@@ -4139,9 +4130,9 @@ Why envelope encryption?
 
 ### KMS Key Types
 
-```
+```text
 ┌────────────────────────┬─────────────────────────────────────────────┐
-│ Key Type               │ Details                                      │
+│ Key Type               │ Details                                     │
 ├────────────────────────┼─────────────────────────────────────────────┤
 │ AWS Owned Keys         │ AWS manages entirely. Free. No visibility.  │
 │ (aws/service)          │ Used by default for many services.          │
@@ -4149,49 +4140,49 @@ Why envelope encryption?
 │                        │ usage. NOT suitable for compliance.         │
 ├────────────────────────┼─────────────────────────────────────────────┤
 │ AWS Managed Keys       │ AWS creates and manages in YOUR account.    │
-│ (aws/s3, aws/ebs,     │ Free (no monthly fee, pay per use).        │
-│  aws/rds, etc.)        │ Auto-rotates every year.                   │
-│                        │ Visible in your KMS console.               │
-│                        │ You can see CloudTrail usage.              │
-│                        │ You CANNOT change key policy.              │
-│                        │ Cannot be used cross-account.              │
+│ (aws/s3, aws/ebs,      │ Free (no monthly fee, pay per use).         │
+│  aws/rds, etc.)        │ Auto-rotates every year.                    │
+│                        │ Visible in your KMS console.                │
+│                        │ You can see CloudTrail usage.               │
+│                        │ You CANNOT change key policy.               │
+│                        │ Cannot be used cross-account.               │
 ├────────────────────────┼─────────────────────────────────────────────┤
 │ Customer Managed Keys  │ YOU create, manage, and control.            │
-│ (CMK)                  │ $1/month + $0.03/10K API calls.            │
+│ (CMK)                  │ $1/month + $0.03/10K API calls.             │
 │                        │ Full key policy control.                    │
-│                        │ Can be used cross-account.                 │
+│                        │ Can be used cross-account.                  │
 │                        │ Can enable/disable, schedule deletion.      │
-│                        │ Custom rotation period (90-2560 days).     │
-│                        │ REQUIRED for PCI, HIPAA, SOC2 compliance.  │
+│                        │ Custom rotation period (90-2560 days).      │
+│                        │ REQUIRED for PCI, HIPAA, SOC2 compliance.   │
 │                        │                                             │
-│                        │ NovaMart: Use CMKs for all sensitive data. │
+│                        │ NovaMart: Use CMKs for all sensitive data.  │
 ├────────────────────────┼─────────────────────────────────────────────┤
 │ Multi-Region Keys      │ Same key material replicated across regions.│
-│ (MRK)                  │ Prefix: mrk-                               │
+│ (MRK)                  │ Prefix: mrk-                                │
 │                        │ Can decrypt in any region without cross-    │
-│                        │ region API calls.                          │
-│                        │ Use for: DR, global services, cross-region │
+│                        │ region API calls.                           │
+│                        │ Use for: DR, global services, cross-region  │
 │                        │ replication.                                │
-│                        │ Higher cost than single-region.            │
+│                        │ Higher cost than single-region.             │
 ├────────────────────────┼─────────────────────────────────────────────┤
 │ External Key Material  │ You provide the key material (BYOK).        │
 │                        │ You're responsible for durability.          │
-│                        │ Can set expiration date.                   │
-│                        │ Use case: regulatory requirement to        │
-│                        │ control key material lifecycle.            │
-│                        │ Rare at NovaMart.                          │
+│                        │ Can set expiration date.                    │
+│                        │ Use case: regulatory requirement to         │
+│                        │ control key material lifecycle.             │
+│                        │ Rare at NovaMart.                           │
 ├────────────────────────┼─────────────────────────────────────────────┤
-│ Custom Key Store       │ Keys backed by CloudHSM cluster you own.   │
-│ (CloudHSM backing)     │ FIPS 140-2 Level 3 (vs Level 2 for KMS). │
-│                        │ Most expensive. Most control.              │
-│                        │ Use case: regulatory mandate for L3 HSM.  │
-│                        │ Very rare.                                 │
+│ Custom Key Store       │ Keys backed by CloudHSM cluster you own.    │
+│ (CloudHSM backing)     │ FIPS 140-2 Level 3 (vs Level 2 for KMS).    │
+│                        │ Most expensive. Most control.               │
+│                        │ Use case: regulatory mandate for L3 HSM.    │
+│                        │ Very rare.                                  │
 └────────────────────────┴─────────────────────────────────────────────┘
 ```
 
 ### KMS Key Policy — The Critical Control
 
-```
+```text
 KMS key policies are RESOURCE-BASED policies, like S3 bucket policies.
 Unlike most AWS resources, KMS keys are LOCKED DOWN by default —
 even the account root cannot use a key unless the key policy allows it.
@@ -4204,7 +4195,7 @@ even root is locked out. The key becomes unusable.
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "RootAccess",
       "Effect": "Allow",
@@ -4218,7 +4209,7 @@ even root is locked out. The key becomes unusable.
       "Principal": {
         "AWS": "arn:aws:iam::888888888888:role/KMSAdminRole"
       },
-      "Action": [
+      "Action":[
         "kms:Create*",
         "kms:Describe*",
         "kms:Enable*",
@@ -4242,7 +4233,7 @@ even root is locked out. The key becomes unusable.
       "Principal": {
         "AWS": "arn:aws:iam::888888888888:role/payment-svc-irsa-role"
       },
-      "Action": [
+      "Action":[
         "kms:Encrypt",
         "kms:Decrypt",
         "kms:ReEncrypt*",
@@ -4255,7 +4246,7 @@ even root is locked out. The key becomes unusable.
       "Sid": "AllowS3Service",
       "Effect": "Allow",
       "Principal": {"AWS": "arn:aws:iam::888888888888:root"},
-      "Action": [
+      "Action":[
         "kms:Encrypt",
         "kms:Decrypt",
         "kms:ReEncrypt*",
@@ -4276,7 +4267,7 @@ even root is locked out. The key becomes unusable.
       "Principal": {
         "AWS": "arn:aws:iam::888888888888:role/payment-svc-irsa-role"
       },
-      "Action": [
+      "Action":[
         "kms:CreateGrant",
         "kms:ListGrants",
         "kms:RevokeGrant"
@@ -4292,7 +4283,7 @@ even root is locked out. The key becomes unusable.
 }
 ```
 
-```
+```text
 KEY POLICY CONCEPTS:
 
 1. Root statement: ALWAYS include root access.
@@ -4336,7 +4327,7 @@ resource "aws_kms_key" "payment_data" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Sid       = "RootAccess"
         Effect    = "Allow"
@@ -4348,7 +4339,7 @@ resource "aws_kms_key" "payment_data" {
         Sid       = "PaymentServiceUsage"
         Effect    = "Allow"
         Principal = { AWS = aws_iam_role.payment_svc.arn }
-        Action    = [
+        Action    =[
           "kms:Decrypt",
           "kms:GenerateDataKey",
           "kms:DescribeKey"
@@ -4359,7 +4350,7 @@ resource "aws_kms_key" "payment_data" {
         Sid       = "RDSServiceUsage"
         Effect    = "Allow"
         Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
-        Action    = [
+        Action    =[
           "kms:Encrypt",
           "kms:Decrypt",
           "kms:ReEncrypt*",
@@ -4395,7 +4386,7 @@ resource "aws_kms_alias" "payment_data" {
 
 ### KMS Failure Modes
 
-```
+```text
 FAILURE 1: Key policy locked out everyone
   CAUSE: Key policy doesn't include root access, admin role deleted
   RESULT: Key is PERMANENTLY unusable — all data encrypted with it
@@ -4452,7 +4443,7 @@ FAILURE 6: Multi-region key replication lag
 
 ### What Secrets Manager Does
 
-```
+```text
 Secrets Manager is a MANAGED SERVICE for storing and rotating secrets.
 
 KEY FEATURES:
@@ -4556,7 +4547,7 @@ resource "aws_db_instance" "payment" {
 
 ### Secret Rotation — How It Actually Works
 
-```
+```text
 ROTATION LIFECYCLE (4 steps, executed by Lambda):
 
 Step 1: CREATE SECRET
@@ -4611,7 +4602,7 @@ APPLICATION HANDLING:
 
 ### Secrets Manager Failure Modes
 
-```
+```text
 FAILURE 1: App doesn't refresh after rotation
   CAUSE: Application caches DB password at startup, never re-fetches
   SYMPTOM: After rotation, app can't connect to database
@@ -4667,7 +4658,7 @@ FAILURE 5: KMS key rotation breaks Secrets Manager
 
 ### Why Vault When You Have Secrets Manager?
 
-```
+```text
 Secrets Manager strengths:
   - Fully managed (no infrastructure to run)
   - Native AWS integration (RDS rotation, IRSA access)
@@ -4691,51 +4682,51 @@ NOVAMART STRATEGY:
 
 ### Vault Architecture
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────┐
-│                    VAULT ARCHITECTURE                             │
+│                        VAULT ARCHITECTURE                        │
 │                                                                  │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │                    VAULT CLUSTER (HA)                        │ │
-│  │                                                             │ │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐                 │ │
-│  │  │ Active   │  │ Standby  │  │ Standby  │                 │ │
-│  │  │ Node     │  │ Node     │  │ Node     │                 │ │
-│  │  │          │  │          │  │          │                 │ │
-│  │  │ API +    │  │ Forwards │  │ Forwards │                 │ │
-│  │  │ Processing│ │ to active│  │ to active│                 │ │
-│  │  └────┬─────┘  └──────────┘  └──────────┘                 │ │
-│  │       │                                                     │ │
-│  │       ▼                                                     │ │
-│  │  ┌─────────────────────────────────────┐                   │ │
-│  │  │         STORAGE BACKEND              │                   │ │
-│  │  │                                     │                   │ │
-│  │  │  Integrated Raft (recommended)      │                   │ │
-│  │  │  OR: Consul, DynamoDB, S3           │                   │ │
-│  │  │                                     │                   │ │
-│  │  │  All data encrypted at rest         │                   │ │
-│  │  │  with Vault's master key            │                   │ │
-│  │  └─────────────────────────────────────┘                   │ │
-│  │                                                             │ │
-│  │  SECRET ENGINES:           AUTH METHODS:                    │ │
-│  │  ├── KV v2 (static)       ├── Kubernetes (ServiceAccount)  │ │
-│  │  ├── Database (dynamic)   ├── AWS IAM (IRSA)              │ │
-│  │  ├── AWS (dynamic IAM)    ├── OIDC/JWT                    │ │
-│  │  ├── PKI (certificates)   ├── AppRole (CI/CD)             │ │
-│  │  ├── Transit (encryption) ├── LDAP/AD                     │ │
-│  │  └── SSH (signed keys)    └── Userpass (humans)           │ │
-│  │                                                             │ │
-│  │  AUDIT DEVICES:                                            │ │
-│  │  ├── File (local)                                          │ │
-│  │  ├── Syslog                                                │ │
-│  │  └── Socket (send to SIEM)                                 │ │
-│  │                                                             │ │
-│  └─────────────────────────────────────────────────────────────┘ │
+│ ┌──────────────────────────────────────────────────────────────┐ │
+│ │                      VAULT CLUSTER (HA)                      │ │
+│ │                                                              │ │
+│ │ ┌──────────┐  ┌──────────┐  ┌──────────┐                     │ │
+│ │ │ Active   │  │ Standby  │  │ Standby  │                     │ │
+│ │ │ Node     │  │ Node     │  │ Node     │                     │ │
+│ │ │          │  │          │  │          │                     │ │
+│ │ │ API +    │  │ Forwards │  │ Forwards │                     │ │
+│ │ │ Process  │  │ to active│  │ to active│                     │ │
+│ │ └────┬─────┘  └──────────┘  └──────────┘                     │ │
+│ │      │                                                       │ │
+│ │      ▼                                                       │ │
+│ │ ┌───────────────────────────────────────┐                    │ │
+│ │ │           STORAGE BACKEND             │                    │ │
+│ │ │                                       │                    │ │
+│ │ │ Integrated Raft (recommended)         │                    │ │
+│ │ │ OR: Consul, DynamoDB, S3              │                    │ │
+│ │ │                                       │                    │ │
+│ │ │ All data encrypted at rest            │                    │ │
+│ │ │ with Vault's master key               │                    │ │
+│ │ └───────────────────────────────────────┘                    │ │
+│ │                                                              │ │
+│ │ SECRET ENGINES:           AUTH METHODS:                      │ │
+│ │ ├── KV v2 (static)        ├── Kubernetes (ServiceAccount)    │ │
+│ │ ├── Database (dynamic)    ├── AWS IAM (IRSA)                 │ │
+│ │ ├── AWS (dynamic IAM)     ├── OIDC/JWT                       │ │
+│ │ ├── PKI (certificates)    ├── AppRole (CI/CD)                │ │
+│ │ ├── Transit (encryption)  ├── LDAP/AD                        │ │
+│ │ └── SSH (signed keys)     └── Userpass (humans)              │ │
+│ │                                                              │ │
+│ │ AUDIT DEVICES:                                               │ │
+│ │ ├── File (local)                                             │ │
+│ │ ├── Syslog                                                   │ │
+│ │ └── Socket (send to SIEM)                                    │ │
+│ │                                                              │ │
+│ └──────────────────────────────────────────────────────────────┘ │
 │                                                                  │
-│  SEAL/UNSEAL:                                                    │
-│  Vault starts SEALED — cannot process requests                   │
-│  Must be UNSEALED using unseal keys (Shamir's Secret Sharing)   │
-│  OR auto-unseal using AWS KMS (NovaMart's approach)             │
+│ SEAL/UNSEAL:                                                     │
+│ Vault starts SEALED — cannot process requests                    │
+│ Must be UNSEALED using unseal keys (Shamir's Secret Sharing)     │
+│ OR auto-unseal using AWS KMS (NovaMart's approach)               │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -4912,7 +4903,7 @@ path "secret/data/user/*" {
 
 ### Dynamic Secrets — The Killer Feature
 
-```
+```text
 STATIC SECRETS (traditional):
   Create password → store in vault → give to app → app uses it forever
   Problems:
@@ -5026,36 +5017,36 @@ spec:
           # /vault/secrets/stripe → Stripe API key
 ```
 
-```
+```text
 HOW VAULT AGENT SIDECAR WORKS:
 
-┌─────────────────────────────────────────────┐
-│ Pod                                         │
-│                                             │
-│ ┌─────────────────┐  ┌──────────────────┐  │
-│ │ Vault Agent     │  │ payment-svc      │  │
-│ │ (init + sidecar)│  │ (main container) │  │
-│ │                 │  │                  │  │
-│ │ 1. Auth to Vault│  │ 3. Reads secrets │  │
-│ │    via K8s SA   │  │    from shared   │  │
-│ │                 │  │    volume at     │  │
-│ │ 2. Fetches      │  │    /vault/secrets│  │
-│ │    secrets from │  │                  │  │
-│ │    Vault server │  │ 4. When secrets  │  │
-│ │                 │  │    are renewed,  │  │
-│ │ 5. Renews leases│  │    agent sends   │  │
-│ │    before TTL   │  │    SIGHUP to app │  │
-│ │    expires      │  │    (or app polls │  │
-│ │                 │  │    the file)     │  │
-│ │ 6. Writes new   │  │                  │  │
-│ │    secrets to   │  │                  │  │
-│ │    shared volume│  │                  │  │
-│ └────────┬────────┘  └──────────────────┘  │
-│          │                    ▲             │
-│          │   Shared Volume    │             │
-│          └────────────────────┘             │
-│           /vault/secrets/                   │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│ Pod                                          │
+│                                              │
+│ ┌─────────────────┐   ┌──────────────────┐   │
+│ │ Vault Agent     │   │ payment-svc      │   │
+│ │ (init + sidecar)│   │ (main container) │   │
+│ │                 │   │                  │   │
+│ │ 1. Auth to Vault│   │ 3. Reads secrets │   │
+│ │    via K8s SA   │   │    from shared   │   │
+│ │                 │   │    volume at     │   │
+│ │ 2. Fetches      │   │    /vault/secrets│   │
+│ │    secrets from │   │                  │   │
+│ │    Vault server │   │ 4. When secrets  │   │
+│ │                 │   │    are renewed,  │   │
+│ │ 5. Renews leases│   │    agent sends   │   │
+│ │    before TTL   │   │    SIGHUP to app │   │
+│ │    expires      │   │    (or app polls │   │
+│ │                 │   │    the file)     │   │
+│ │ 6. Writes new   │   │                  │   │
+│ │    secrets to   │   │                  │   │
+│ │    shared volume│   │                  │   │
+│ └────────┬────────┘   └──────────────────┘   │
+│          │                     ▲             │
+│          │   Shared Volume     │             │
+│          └─────────────────────┘             │
+│           /vault/secrets/                    │
+└──────────────────────────────────────────────┘
 
 LIFECYCLE:
   Init container (vault-agent-init):
@@ -5081,16 +5072,16 @@ LIFECYCLE:
 
 ### Vault vs External Secrets Operator — When to Use Which
 
-```
+```text
 TWO WAYS TO GET VAULT SECRETS INTO KUBERNETES:
 
 Method 1: Vault Agent Sidecar (Vault-native)
-  ┌─────────┐        ┌───────────┐
-  │ Pod with │──auth──│ Vault     │
-  │ Vault    │←secrets│ Server    │
-  │ Agent    │        │           │
-  │ sidecar  │        └───────────┘
-  └─────────┘
+  ┌───────────┐        ┌───────────┐
+  │ Pod with  │──auth─→│ Vault     │
+  │ Vault     │←secr───│ Server    │
+  │ Agent     │        │           │
+  │ sidecar   │        └───────────┘
+  └───────────┘
   
   ✅ Dynamic secrets (per-pod DB credentials)
   ✅ Automatic lease renewal
@@ -5101,21 +5092,21 @@ Method 1: Vault Agent Sidecar (Vault-native)
   ❌ App must read from file, not env var
 
 Method 2: External Secrets Operator (ESO)
-  ┌─────────────────┐       ┌───────────┐
-  │ External Secrets │──sync─│ Vault     │
+  ┌──────────────────┐       ┌───────────┐
+  │ External Secrets │──sync→│ Vault     │
   │ Operator         │←──────│ Server    │
   │                  │       └───────────┘
   │ Creates K8s      │       ┌───────────┐
-  │ Secret objects   │──sync─│ AWS       │
+  │ Secret objects   │──sync→│ AWS       │
   │ from external    │←──────│ Secrets   │
   │ sources          │       │ Manager   │
-  └────────┬────────┘       └───────────┘
+  └────────┬─────────┘       └───────────┘
            │
            ▼
-  ┌─────────────────┐
-  │ K8s Secret      │ ← Standard K8s Secret, usable as env var or volume
-  │ (in etcd)       │
-  └─────────────────┘
+  ┌──────────────────┐
+  │ K8s Secret       │ ← Standard K8s Secret, usable as env var/vol
+  │ (in etcd)        │
+  └──────────────────┘
   
   ✅ Standard K8s Secrets (env vars work)
   ✅ Multi-source (Vault, AWS SM, GCP SM, Azure KV)
@@ -5266,7 +5257,7 @@ spec:
 
 ### Vault Failure Modes
 
-```
+```text
 FAILURE 1: Vault sealed after restart
   CAUSE: Vault pod restarted but auto-unseal failed (KMS access issue)
   SYMPTOM: All secret reads return 503 "Vault is sealed"
@@ -5341,7 +5332,7 @@ FAILURE 6: Vault policy too restrictive — blocks legitimate access
 
 ### The TLS Certificate Lifecycle Problem
 
-```
+```text
 NovaMart has hundreds of TLS certificates:
   - Public-facing: *.novamart.com (ALB, CloudFront)
   - Internal: service-to-service mTLS (Istio)
@@ -5361,7 +5352,7 @@ It's also the most embarrassing — you had 90 days to renew.
 
 ### ACM — AWS Certificate Manager (Public Certificates)
 
-```
+```text
 ACM provides FREE public TLS certificates for AWS services:
   - ALB / NLB
   - CloudFront
@@ -5387,7 +5378,7 @@ resource "aws_acm_certificate" "novamart" {
   domain_name       = "novamart.com"
   validation_method = "DNS"
 
-  subject_alternative_names = [
+  subject_alternative_names =[
     "*.novamart.com",
     "api.novamart.com",
     "admin.novamart.com"
@@ -5443,7 +5434,7 @@ resource "aws_lb_listener" "https" {
 
 ### cert-manager — Kubernetes Certificate Automation
 
-```
+```text
 cert-manager handles certificates INSIDE Kubernetes:
   - Ingress TLS certificates (Let's Encrypt, ACM PCA)
   - Internal service certificates
@@ -5454,31 +5445,31 @@ cert-manager automates the full lifecycle:
   Request → Issue → Store (K8s Secret) → Renew → Repeat
 
 ┌─────────────────────────────────────────────────────────────────┐
-│                  cert-manager ARCHITECTURE                        │
-│                                                                  │
+│                  cert-manager ARCHITECTURE                      │
+│                                                                 │
 │  ┌──────────────┐                                               │
 │  │ Certificate  │  "I need a cert for api.novamart.com"         │
-│  │ Resource     │                                                │
-│  └──────┬───────┘                                                │
-│         │                                                        │
-│         ▼                                                        │
-│  ┌──────────────┐                                                │
-│  │ cert-manager │  Processes the request                         │
-│  │ controller   │                                                │
-│  └──────┬───────┘                                                │
-│         │                                                        │
-│         ▼                                                        │
+│  │ Resource     │                                               │
+│  └──────┬───────┘                                               │
+│         │                                                       │
+│         ▼                                                       │
+│  ┌──────────────┐                                               │
+│  │ cert-manager │  Processes the request                        │
+│  │ controller   │                                               │
+│  └──────┬───────┘                                               │
+│         │                                                       │
+│         ▼                                                       │
 │  ┌──────────────┐     ┌─────────────────────┐                   │
-│  │ Issuer /     │────→│ CA Backend          │                    │
-│  │ ClusterIssuer│     │ - Let's Encrypt     │                    │
-│  └──────────────┘     │ - Vault PKI         │                    │
-│                       │ - ACM Private CA    │                    │
-│         │             │ - Self-signed       │                    │
-│         ▼             └─────────────────────┘                    │
-│  ┌──────────────┐                                                │
+│  │ Issuer /     │────→│ CA Backend          │                   │
+│  │ ClusterIssuer│     │ - Let's Encrypt     │                   │
+│  └──────────────┘     │ - Vault PKI         │                   │
+│                       │ - ACM Private CA    │                   │
+│         │             │ - Self-signed       │                   │
+│         ▼             └─────────────────────┘                   │
+│  ┌──────────────┐                                               │
 │  │ K8s Secret   │  Contains: tls.crt + tls.key                  │
 │  │ (TLS type)   │  Automatically renewed before expiry          │
-│  └──────────────┘                                                │
+│  └──────────────┘                                               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -5599,7 +5590,7 @@ vault write pki_int/issue/novamart-internal \
   ttl=720h
 ```
 
-```
+```text
 WHY TWO-TIER CA (Root + Intermediate)?
 
   Root CA:
@@ -5701,7 +5692,7 @@ spec:
 
 ### Certificate Failure Modes
 
-```
+```text
 FAILURE 1: Let's Encrypt rate limit hit
   CAUSE: Too many certificate requests (5 certs per domain per week)
   SYMPTOM: cert-manager logs show "too many certificates already issued"
@@ -5760,7 +5751,7 @@ FAILURE 6: Clock skew breaks certificate validation
 
 ### The Anti-Patterns
 
-```
+```text
 ANTI-PATTERN 1: Secrets in environment variables (partially)
   RISK: env vars show up in:
     - /proc/<pid>/environ (any process on the container can read)
@@ -5812,72 +5803,72 @@ ANTI-PATTERN 6: Secrets in Terraform state
 
 ### NovaMart Secrets Architecture — Complete Flow
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────────┐
-│              NOVAMART SECRETS FLOW                                    │
+│                        NOVAMART SECRETS FLOW                         │
 │                                                                      │
-│  SECRET CREATION:                                                    │
-│  ┌────────────┐  ┌────────────────┐  ┌─────────────────────────┐    │
-│  │ Terraform  │  │ Vault CLI/API  │  │ AWS Console/CLI         │    │
-│  │ (infra     │  │ (app secrets,  │  │ (RDS managed passwords, │    │
-│  │  secrets)  │  │  dynamic creds)│  │  Secrets Manager)       │    │
-│  └─────┬──────┘  └───────┬────────┘  └───────────┬─────────────┘    │
-│        │                 │                        │                  │
-│        ▼                 ▼                        ▼                  │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                 SECRET STORES                                │    │
-│  │                                                              │    │
-│  │  ┌─────────────────┐  ┌──────────────────────────────────┐  │    │
-│  │  │ HashiCorp Vault │  │ AWS Secrets Manager               │  │    │
-│  │  │                 │  │                                   │  │    │
-│  │  │ • Dynamic DB    │  │ • RDS auto-rotation               │  │    │
-│  │  │   credentials   │  │ • AWS-native service creds       │  │    │
-│  │  │ • PKI (internal │  │ • Third-party API keys           │  │    │
-│  │  │   CA + certs)   │  │   (rotation via Lambda)          │  │    │
-│  │  │ • Transit       │  │                                   │  │    │
-│  │  │   encryption    │  │                                   │  │    │
-│  │  │ • Static KV     │  │                                   │  │    │
-│  │  │   (cross-cloud) │  │                                   │  │    │
-│  │  └────────┬────────┘  └──────────────┬────────────────────┘  │    │
-│  │           │                          │                       │    │
-│  └───────────┼──────────────────────────┼───────────────────────┘    │
-│              │                          │                            │
-│  SECRET DELIVERY TO KUBERNETES:                                      │
-│              │                          │                            │
-│  ┌───────────▼──────────────────────────▼───────────────────────┐    │
-│  │           External Secrets Operator                           │    │
-│  │  Syncs Vault + AWS SM → K8s Secrets (polling, 5-15min)       │    │
-│  └──────────────────────────┬───────────────────────────────────┘    │
-│                             │                                        │
-│  ┌──────────────────────────▼───────────────────────────────────┐    │
-│  │                    K8s Secrets (etcd)                          │    │
-│  │           Encrypted with KMS envelope encryption              │    │
-│  └──────────────────────────┬───────────────────────────────────┘    │
-│                             │                                        │
-│  ┌──────────────────────────▼───────────────────────────────────┐    │
-│  │                    APPLICATION PODS                            │    │
-│  │                                                               │    │
-│  │  Non-PCI services:        PCI services (payment-svc):        │    │
-│  │  envFrom K8s Secret       Vault Agent sidecar                │    │
-│  │  (via ESO)                (dynamic per-pod DB creds)         │    │
-│  │                           File mount at /vault/secrets/       │    │
-│  └───────────────────────────────────────────────────────────────┘    │
+│ SECRET CREATION:                                                     │
+│ ┌────────────┐  ┌────────────────┐  ┌─────────────────────────┐      │
+│ │ Terraform  │  │ Vault CLI/API  │  │ AWS Console/CLI         │      │
+│ │ (infra     │  │ (app secrets,  │  │ (RDS managed passwords, │      │
+│ │  secrets)  │  │  dynamic creds)│  │  Secrets Manager)       │      │
+│ └─────┬──────┘  └───────┬────────┘  └───────────┬─────────────┘      │
+│       │                 │                       │                    │
+│       ▼                 ▼                       ▼                    │
+│ ┌──────────────────────────────────────────────────────────────┐     │
+│ │                       SECRET STORES                          │     │
+│ │                                                              │     │
+│ │ ┌─────────────────┐  ┌──────────────────────────────────┐    │     │
+│ │ │ HashiCorp Vault │  │ AWS Secrets Manager              │    │     │
+│ │ │                 │  │                                  │    │     │
+│ │ │ • Dynamic DB    │  │ • RDS auto-rotation              │    │     │
+│ │ │   credentials   │  │ • AWS-native service creds       │    │     │
+│ │ │ • PKI (internal │  │ • Third-party API keys           │    │     │
+│ │ │   CA + certs)   │  │   (rotation via Lambda)          │    │     │
+│ │ │ • Transit       │  │                                  │    │     │
+│ │ │   encryption    │  │                                  │    │     │
+│ │ │ • Static KV     │  │                                  │    │     │
+│ │ │   (cross-cloud) │  │                                  │    │     │
+│ │ └────────┬────────┘  └──────────────┬───────────────────┘    │     │
+│ │          │                          │                        │     │
+│ └──────────┼──────────────────────────┼────────────────────────┘     │
+│            │                          │                              │
+│ SECRET DELIVERY TO KUBERNETES:        │                              │
+│            │                          │                              │
+│ ┌──────────▼──────────────────────────▼───────────────────────┐      │
+│ │                   External Secrets Operator                 │      │
+│ │ Syncs Vault + AWS SM → K8s Secrets (polling, 5-15min)       │      │
+│ └──────────────────────────┬──────────────────────────────────┘      │
+│                            │                                         │
+│ ┌──────────────────────────▼───────────────────────────────────┐     │
+│ │                       K8s Secrets (etcd)                     │     │
+│ │              Encrypted with KMS envelope encryption          │     │
+│ └──────────────────────────┬───────────────────────────────────┘     │
+│                            │                                         │
+│ ┌──────────────────────────▼───────────────────────────────────┐     │
+│ │                        APPLICATION PODS                      │     │
+│ │                                                              │     │
+│ │ Non-PCI services:               PCI services (payment-svc):  │     │
+│ │ envFrom K8s Secret              Vault Agent sidecar          │     │
+│ │ (via ESO)                       (dynamic per-pod DB creds)   │     │
+│ │                                 File mount at /vault/secrets/│     │
+│ └──────────────────────────────────────────────────────────────┘     │
 │                                                                      │
-│  SECRET ROTATION:                                                    │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │  Vault dynamic:  Automatic (TTL-based, per-pod)              │    │
-│  │  Vault static:   Manual or CI-triggered rotation             │    │
-│  │  AWS SM + RDS:   Automatic (Lambda rotation, 30-day)         │    │
-│  │  K8s Secrets:    ESO re-syncs → Reloader restarts pods       │    │
-│  └──────────────────────────────────────────────────────────────┘    │
+│ SECRET ROTATION:                                                     │
+│ ┌──────────────────────────────────────────────────────────────┐     │
+│ │ Vault dynamic:  Automatic (TTL-based, per-pod)               │     │
+│ │ Vault static:   Manual or CI-triggered rotation              │     │
+│ │ AWS SM + RDS:   Automatic (Lambda rotation, 30-day)          │     │
+│ │ K8s Secrets:    ESO re-syncs → Reloader restarts pods        │     │
+│ └──────────────────────────────────────────────────────────────┘     │
 │                                                                      │
-│  AUDIT:                                                              │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │  Vault:    Audit device → file/syslog → Loki                │    │
-│  │  AWS SM:   CloudTrail → S3 (immutable) + CloudWatch alarm   │    │
-│  │  KMS:      CloudTrail → every encrypt/decrypt logged        │    │
-│  │  K8s:      Audit logs → who read which Secret, when         │    │
-│  └──────────────────────────────────────────────────────────────┘    │
+│ AUDIT:                                                               │
+│ ┌──────────────────────────────────────────────────────────────┐     │
+│ │ Vault:    Audit device → file/syslog → Loki                  │     │
+│ │ AWS SM:   CloudTrail → S3 (immutable) + CloudWatch alarm     │     │
+│ │ KMS:      CloudTrail → every encrypt/decrypt logged          │     │
+│ │ K8s:      Audit logs → who read which Secret, when           │     │
+│ └──────────────────────────────────────────────────────────────┘     │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -5913,7 +5904,7 @@ resource "aws_eks_cluster" "main" {
 
 ## Quick Reference Card
 
-```
+```text
 KMS
 ────
 Envelope encryption: CMK (in KMS) encrypts Data Key, Data Key encrypts data
@@ -5980,14 +5971,14 @@ ANTI-PATTERNS
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "PaymentTeamOnly",
       "Effect": "Allow",
       "Principal": {
         "AWS": "arn:aws:iam::888888888888:role/payment-svc-irsa-role"
       },
-      "Action": [
+      "Action":[
         "kms:Encrypt",
         "kms:Decrypt",
         "kms:GenerateDataKey*",
@@ -6150,7 +6141,7 @@ NEW_PW=$(aws secretsmanager get-secret-value \
 K8S_PW=$(kubectl get secret payment-db-credentials -n payment \
   -o jsonpath='{.data.password}' | base64 -d)
 
-if [ "$NEW_PW" = "$K8S_PW" ]; then
+if[ "$NEW_PW" = "$K8S_PW" ]; then
   echo "K8s Secret matches Secrets Manager AWSCURRENT — rolling restart will fix it"
   kubectl rollout restart deployment/payment-svc -n payment
   kubectl rollout status deployment/payment-svc -n payment --timeout=120s
@@ -6221,40 +6212,40 @@ kubectl exec -n payment deploy/payment-svc -- wget -qO- http://localhost:8080/he
 
 ### Part 4: Prevention Architecture — End-to-End Secret Delivery
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                    SECRET ROTATION DELIVERY PIPELINE                         │
+│                       SECRET ROTATION DELIVERY PIPELINE                      │
 │                                                                              │
-│  ┌─────────────┐    ┌─────────────┐    ┌──────────────┐    ┌─────────────┐  │
-│  │  Secrets Mgr │───▶│  Rotation   │───▶│  Secrets Mgr │───▶│    ESO      │  │
-│  │  (trigger)   │    │  Lambda     │    │  (AWSCURRENT)│    │  (sync)     │  │
-│  └─────────────┘    └──────┬──────┘    └──────────────┘    └──────┬──────┘  │
-│                            │                                       │         │
-│                   ┌────────▼────────┐                    ┌────────▼───────┐  │
-│                   │  testSecret     │                    │  K8s Secret    │  │
-│                   │  step validates │                    │  updated       │  │
-│                   │  NEW cred works │                    └────────┬───────┘  │
-│                   │  AND old cred   │                             │          │
-│                   │  still works    │                    ┌────────▼───────┐  │
-│                   │  (dual-auth     │                    │  Reloader      │  │
-│                   │   window)       │                    │  detects hash  │  │
-│                   └─────────────────┘                    │  change        │  │
-│                                                          └────────┬───────┘  │
-│                                                                   │          │
-│                                                          ┌────────▼───────┐  │
-│                                                          │  Rolling       │  │
-│                                                          │  restart of    │  │
-│                                                          │  payment-svc   │  │
-│                                                          │  (RollingUpdate│  │
-│                                                          │   strategy)    │  │
-│                                                          └────────┬───────┘  │
-│                                                                   │          │
-│                                                          ┌────────▼───────┐  │
-│                                                          │  Readiness     │  │
-│                                                          │  probe confirms│  │
-│                                                          │  DB connection │  │
-│                                                          │  works         │  │
-│                                                          └────────────────┘  │
+│ ┌─────────────┐    ┌─────────────┐    ┌──────────────┐    ┌─────────────┐    │
+│ │ Secrets Mgr │───▶│ Rotation    │───▶│ Secrets Mgr  │───▶│    ESO      │    │
+│ │ (trigger)   │    │ Lambda      │    │ (AWSCURRENT) │    │  (sync)     │    │
+│ └─────────────┘    └──────┬──────┘    └──────────────┘    └──────┬──────┘    │
+│                           │                                      │           │
+│                  ┌────────▼────────┐                   ┌─────────▼──────┐    │
+│                  │ testSecret      │                   │ K8s Secret     │    │
+│                  │ step validates  │                   │ updated        │    │
+│                  │ NEW cred works  │                   └─────────┬──────┘    │
+│                  │ AND old cred    │                             │           │
+│                  │ still works     │                   ┌─────────▼──────┐    │
+│                  │ (dual-auth      │                   │ Reloader       │    │
+│                  │  window)        │                   │ detects hash   │    │
+│                  └─────────────────┘                   │ change         │    │
+│                                                        └─────────┬──────┘    │
+│                                                                  │           │
+│                                                        ┌─────────▼──────┐    │
+│                                                        │ Rolling        │    │
+│                                                        │ restart of     │    │
+│                                                        │ payment-svc    │    │
+│                                                        │ (RollingUpdate │    │
+│                                                        │  strategy)     │    │
+│                                                        └─────────┬──────┘    │
+│                                                                  │           │
+│                                                        ┌─────────▼──────┐    │
+│                                                        │ Readiness      │    │
+│                                                        │ probe confirms │    │
+│                                                        │ DB connection  │    │
+│                                                        │ works          │    │
+│                                                        └────────────────┘    │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -6446,7 +6437,7 @@ spring:
 
 **Layer 5: End-to-End Verification — Canary Test After Rotation**
 
-```yaml
+```hcl
 # EventBridge rule that triggers verification after rotation
 # This catches the case where ALL layers "succeed" but auth actually fails
 resource "aws_cloudwatch_event_rule" "rotation_complete" {
@@ -6459,7 +6450,7 @@ resource "aws_cloudwatch_event_rule" "rotation_complete" {
     detail = {
       eventName = ["RotationSucceeded"]
       requestParameters = {
-        secretId = ["payment/rds/app"]
+        secretId =["payment/rds/app"]
       }
     }
   })
@@ -6474,7 +6465,7 @@ resource "aws_cloudwatch_event_rule" "rotation_complete" {
 
 **Complete timeline for healthy rotation:**
 
-```
+```text
 T+0:00  Secrets Manager triggers rotation Lambda
 T+0:01  createSecret: new password generated, stored as AWSPENDING
 T+0:02  setSecret: password set on RDS (ALTER USER)
@@ -6526,43 +6517,22 @@ KMS is **unique among all AWS services**: the key policy is the **primary author
 
 This is the **KMS key policy trust model**, which is unique in all of AWS:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
-│            KMS KEY POLICY AUTHORIZATION MODEL                │
+│             KMS KEY POLICY AUTHORIZATION MODEL              │
 │                                                             │
-│  Every other AWS resource:                                  │
-│  ┌──────────┐     ┌─────────────┐                          │
-│  │IAM Policy│ OR  │Resource     │ = Access Granted          │
-│  │  allows  │     │Policy allows│                           │
-│  └──────────┘     └─────────────┘                          │
+│ Normal KMS key management:                                  │
+│   IAM User/Role → kms:PutKeyPolicy → Fix it                 │
+│   ❌ BLOCKED: Key policy doesn't allow ANY PutKeyPolicy      │
 │                                                             │
-│  KMS keys (unique):                                         │
-│  ┌──────────────────────┐                                   │
-│  │  Key Policy MUST     │──── AND ───▶ Access Granted       │
-│  │  grant access        │                                   │
-│  │  (directly or via    │    ┌──────────────┐              │
-│  │   root delegation)   │────│ If root      │              │
-│  └──────────────────────┘    │ principal in  │              │
-│                              │ key policy →  │              │
-│                              │ IAM policies  │              │
-│                              │ can ALSO      │              │
-│                              │ grant access  │              │
-│                              └──────────────┘              │
+│ Root user override:                                         │
+│   Root login → kms:PutKeyPolicy → Fix it                   │
+│   ❌ BLOCKED: Root not in key policy, IAM doesn't apply      │
 │                                                             │
-│  The root delegation statement:                             │
-│  "Principal": {"AWS": "arn:aws:iam::ACCOUNT:root"}         │
-│  "Action": "kms:*"                                          │
-│                                                             │
-│  This statement does TWO things:                            │
-│  1. Allows the root user direct access                      │
-│  2. ENABLES IAM policies to grant KMS access to other      │
-│     principals (the "delegation" effect)                    │
-│                                                             │
-│  WITHOUT this statement:                                    │
-│  - IAM policies granting kms:* are SILENTLY IGNORED        │
-│  - Only principals EXPLICITLY in the key policy have access │
-│  - If no principal in the key policy can PutKeyPolicy,      │
-│    the key is PERMANENTLY LOCKED                            │
+│ ONLY recovery path:                                         │
+│   AWS Support request FROM the root user account            │
+│   → AWS re-adds root principal to key policy                │
+│   → You can then fix the rest via normal API calls          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -6575,22 +6545,22 @@ In the junior engineer's policy:
 
 This is one of the **hardest recovery scenarios in AWS** because you cannot fix it through normal API calls.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
-│                KMS KEY POLICY RECOVERY                       │
+│                 KMS KEY POLICY RECOVERY                     │
 │                                                             │
-│  Normal KMS key management:                                 │
-│    IAM User/Role → kms:PutKeyPolicy → Fix it               │
-│    ❌ BLOCKED: Key policy doesn't allow ANY PutKeyPolicy    │
+│ Normal KMS key management:                                  │
+│   IAM User/Role → kms:PutKeyPolicy → Fix it                 │
+│   ❌ BLOCKED: Key policy doesn't allow ANY PutKeyPolicy      │
 │                                                             │
-│  Root user override:                                        │
-│    Root login → kms:PutKeyPolicy → Fix it                   │
-│    ❌ BLOCKED: Root not in key policy, IAM doesn't apply    │
+│ Root user override:                                         │
+│   Root login → kms:PutKeyPolicy → Fix it                   │
+│   ❌ BLOCKED: Root not in key policy, IAM doesn't apply      │
 │                                                             │
-│  ONLY recovery path:                                        │
-│    AWS Support request FROM the root user account           │
-│    → AWS re-adds root principal to key policy               │
-│    → You can then fix the rest via normal API calls         │
+│ ONLY recovery path:                                         │
+│   AWS Support request FROM the root user account            │
+│   → AWS re-adds root principal to key policy                │
+│   → You can then fix the rest via normal API calls          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -6656,7 +6626,7 @@ terraform apply -target=aws_kms_key.payment
 ```json
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "EnableRootAccountAccess",
       "Effect": "Allow",
@@ -6671,12 +6641,12 @@ terraform apply -target=aws_kms_key.payment
       "Sid": "KeyAdministrators",
       "Effect": "Allow",
       "Principal": {
-        "AWS": [
+        "AWS":[
           "arn:aws:iam::888888888888:role/SecurityTeamAdmin",
           "arn:aws:iam::888888888888:role/InfraTeamAdmin"
         ]
       },
-      "Action": [
+      "Action":[
         "kms:Create*",
         "kms:Describe*",
         "kms:Enable*",
@@ -6699,12 +6669,12 @@ terraform apply -target=aws_kms_key.payment
       "Sid": "KeyAdministratorsDenyDataOps",
       "Effect": "Deny",
       "Principal": {
-        "AWS": [
+        "AWS":[
           "arn:aws:iam::888888888888:role/SecurityTeamAdmin",
           "arn:aws:iam::888888888888:role/InfraTeamAdmin"
         ]
       },
-      "Action": [
+      "Action":[
         "kms:Encrypt",
         "kms:Decrypt",
         "kms:ReEncrypt*",
@@ -6718,7 +6688,7 @@ terraform apply -target=aws_kms_key.payment
       "Principal": {
         "AWS": "arn:aws:iam::888888888888:role/payment-svc-irsa-role"
       },
-      "Action": [
+      "Action":[
         "kms:Encrypt",
         "kms:Decrypt",
         "kms:GenerateDataKey*",
@@ -6755,7 +6725,7 @@ terraform apply -target=aws_kms_key.payment
       "Principal": {
         "AWS": "arn:aws:iam::888888888888:role/secrets-rotation-lambda-role"
       },
-      "Action": [
+      "Action":[
         "kms:Decrypt",
         "kms:Encrypt",
         "kms:GenerateDataKey*",
@@ -6774,7 +6744,7 @@ terraform apply -target=aws_kms_key.payment
       "Principal": {
         "AWS": "arn:aws:iam::888888888888:role/payment-svc-irsa-role"
       },
-      "Action": [
+      "Action":[
         "kms:CreateGrant",
         "kms:ListGrants",
         "kms:RevokeGrant"
@@ -6860,16 +6830,16 @@ class KMSKeyPolicyHasRootAccess(BaseResourceCheck):
         except (json.JSONDecodeError, TypeError):
             return CheckResult.UNKNOWN
 
-        for statement in policy_doc.get("Statement", []):
+        for statement in policy_doc.get("Statement",[]):
             principal = statement.get("Principal", {})
-            aws_principals = principal.get("AWS", [])
+            aws_principals = principal.get("AWS",[])
             if isinstance(aws_principals, str):
                 aws_principals = [aws_principals]
             
             for p in aws_principals:
                 if p.endswith(":root") and statement.get("Action") == "kms:*":
                     return CheckResult.PASSED
-                if p.endswith(":root") and "kms:*" in statement.get("Action", []):
+                if p.endswith(":root") and "kms:*" in statement.get("Action",[]):
                     return CheckResult.PASSED
 
         return CheckResult.FAILED
@@ -6883,44 +6853,44 @@ check = KMSKeyPolicyHasRootAccess()
 
 ### Part 1: Impact Analysis Per Secret Delivery Mechanism
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│           VAULT QUORUM LOSS — IMPACT MATRIX                  │
-│                                                              │
-│  Mechanism        │ Immediate Impact    │ Time Bomb          │
-│  ─────────────────┼─────────────────────┼──────────────────  │
-│  Vault Agent      │ ✅ Cached secrets   │ ⏰ TTL expiry:     │
-│  Sidecars         │    still served     │    credentials     │
-│  (dynamic DB      │    from local disk  │    stop working    │
-│   creds)          │    template cache   │    at TTL+grace    │
-│                   │                     │    (e.g. 60 min)   │
-│  ─────────────────┼─────────────────────┼──────────────────  │
-│  External Secrets │ ✅ K8s Secrets      │ ⏰ Secrets become  │
-│  Operator (ESO)   │    already exist    │    stale but       │
-│  (static secrets) │    in-cluster       │    remain usable   │
-│                   │    Pods unaffected  │    until manually   │
-│                   │                     │    rotated in Vault │
-│  ─────────────────┼─────────────────────┼──────────────────  │
-│  cert-manager     │ ✅ Existing certs   │ ⏰ New cert        │
-│  (Vault PKI       │    valid until      │    issuance fails  │
-│   issuer)         │    expiry           │    Istio mTLS      │
-│                   │                     │    renewal fails    │
-│                   │                     │    (typ. 24h TTL)   │
-│  ─────────────────┼─────────────────────┼──────────────────  │
-│  New pod starts   │ ❌ FAILS IMMEDIATELY│ Pod stuck in       │
-│  (any mechanism)  │    init container   │ CrashLoopBackOff   │
-│                   │    or sidecar can't │ Can't scale up on  │
-│                   │    fetch secrets    │ Black Friday!       │
-│  ─────────────────┼─────────────────────┼──────────────────  │
-│  HPA scaling      │ ❌ CRITICALLY       │ New replicas fail  │
-│  events           │    BROKEN           │ to start → cluster │
-│                   │                     │ can't scale for    │
-│                   │                     │ Black Friday load  │
-│  ─────────────────┼─────────────────────┼──────────────────  │
-│  ArgoCD deploys   │ ❌ Any deployment   │ Rollback also      │
-│                   │    that creates new │ won't work if it   │
-│                   │    pods FAILS       │ needs new pods     │
-└──────────────────────────────────────────────────────────────┘
+```text
+┌──────────────────────────────────────────────────────────────────────┐
+│                  VAULT QUORUM LOSS — IMPACT MATRIX                   │
+├─────────────────┬─────────────────────┬──────────────────────────────┤
+│ Mechanism       │ Immediate Impact    │ Time Bomb                    │
+├─────────────────┼─────────────────────┼──────────────────────────────┤
+│ Vault Agent     │ ✅ Cached secrets   │ ⏰ TTL expiry:               │
+│ Sidecars        │    still served     │    credentials               │
+│ (dynamic DB     │    from local disk  │    stop working              │
+│  creds)         │    template cache   │    at TTL+grace              │
+│                 │                     │    (e.g. 60 min)             │
+├─────────────────┼─────────────────────┼──────────────────────────────┤
+│ External Secrets│ ✅ K8s Secrets      │ ⏰ Secrets become            │
+│ Operator (ESO)  │    already exist    │    stale but                 │
+│ (static secrets)│    in-cluster       │    remain usable             │
+│                 │    Pods unaffected  │    until manually            │
+│                 │                     │    rotated in Vault          │
+├─────────────────┼─────────────────────┼──────────────────────────────┤
+│ cert-manager    │ ✅ Existing certs   │ ⏰ New cert                  │
+│ (Vault PKI      │    valid until      │    issuance fails            │
+│  issuer)        │    expiry           │    Istio mTLS                │
+│                 │                     │    renewal fails             │
+│                 │                     │    (typ. 24h TTL)            │
+├─────────────────┼─────────────────────┼──────────────────────────────┤
+│ New pod starts  │ ❌ FAILS IMMEDIATELY│ Pod stuck in                 │
+│ (any mechanism) │    init container   │ CrashLoopBackOff             │
+│                 │    or sidecar can't │ Can't scale up on            │
+│                 │    fetch secrets    │ Black Friday!                │
+├─────────────────┼─────────────────────┼──────────────────────────────┤
+│ HPA scaling     │ ❌ CRITICALLY       │ New replicas fail            │
+│ events          │    BROKEN           │ to start → cluster           │
+│                 │                     │ can't scale for              │
+│                 │                     │ Black Friday load            │
+├─────────────────┼─────────────────────┼──────────────────────────────┤
+│ ArgoCD deploys  │ ❌ Any deployment   │ Rollback also                │
+│                 │    that creates new │ won't work if it             │
+│                 │    pods FAILS       │ needs new pods               │
+└─────────────────┴─────────────────────┴──────────────────────────────┘
 ```
 
 **Critical cascading failure on Black Friday:**
@@ -7087,30 +7057,30 @@ vault operator raft remove-peer <node-3-id>
 
 **Security Implication:**
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
-│              ORPHANED DYNAMIC CREDENTIALS                     │
+│                 ORPHANED DYNAMIC CREDENTIALS                 │
 │                                                              │
-│  Normal lifecycle:                                           │
-│  Vault creates user → TTL expires → Vault runs:             │
-│    DROP USER "v-payment-xxxx";                               │
-│  ✅ User gone, credentials useless                           │
+│ Normal lifecycle:                                            │
+│ Vault creates user → TTL expires → Vault runs:               │
+│   DROP USER "v-payment-xxxx";                                │
+│ ✅ User gone, credentials useless                            │
 │                                                              │
-│  During outage:                                              │
-│  Vault creates user → TTL expires → Vault is DOWN →          │
-│    DROP USER never runs                                      │
-│  ⚠️  User STILL EXISTS in PostgreSQL with valid password     │
-│  ⚠️  These are zombie accounts: nobody's using them,         │
-│     nobody's monitoring them, but they CAN be used           │
+│ During outage:                                               │
+│ Vault creates user → TTL expires → Vault is DOWN →           │
+│   DROP USER never runs                                       │
+│ ⚠️ User STILL EXISTS in PostgreSQL with valid password       │
+│ ⚠️ These are zombie accounts: nobody's using them,           │
+│    nobody's monitoring them, but they CAN be used            │
 │                                                              │
-│  Risk: If any of these passwords were logged, cached,        │
-│  or intercepted, an attacker has valid PostgreSQL             │
-│  credentials that Vault doesn't know about and won't revoke  │
+│ Risk: If any of these passwords were logged, cached,         │
+│ or intercepted, an attacker has valid PostgreSQL             │
+│ credentials that Vault doesn't know about and won't revoke   │
 │                                                              │
-│  Blast radius: 50+ PostgreSQL users across multiple          │
-│  databases, each with whatever privileges the Vault          │
-│  dynamic role grants (likely SELECT/INSERT/UPDATE/DELETE     │
-│  on payment tables)                                          │
+│ Blast radius: 50+ PostgreSQL users across multiple           │
+│ databases, each with whatever privileges the Vault           │
+│ dynamic role grants (likely SELECT/INSERT/UPDATE/DELETE      │
+│ on payment tables)                                           │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -7202,37 +7172,37 @@ aws rds download-db-log-file-portion \
 
 ### Part 4: Architecture Changes for Vault Resilience
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                 VAULT HA ARCHITECTURE — POST-INCIDENT                    │
+│                   VAULT HA ARCHITECTURE — POST-INCIDENT                  │
 │                                                                          │
-│  us-east-1a          us-east-1b          us-east-1c                     │
-│  ┌──────────┐        ┌──────────┐        ┌──────────┐                   │
-│  │ Vault    │        │ Vault    │        │ Vault    │                   │
-│  │ Node 1   │◄──────▶│ Node 2   │◄──────▶│ Node 3   │                   │
-│  │ (Raft)   │  Raft  │ (Leader) │  Raft  │ (Raft)   │                   │
-│  └──────────┘  Repl  └──────────┘  Repl  └──────────┘                   │
-│       │                    │                    │                         │
-│       │         ┌──────────▼──────────┐         │                        │
-│       │         │  NLB (cross-AZ)     │         │                        │
-│       │         │  Active health      │         │                        │
-│       │         │  checks (8200)      │         │                        │
-│       │         └─────────────────────┘         │                        │
-│       │                                          │                        │
-│  ┌────▼────┐                              ┌─────▼────┐                   │
-│  │Vault    │                              │Vault     │                   │
-│  │Node 4   │   ◄── Additional Raft voter  │Node 5    │  ◄── Non-voter   │
-│  │(Raft)   │       5-node = tolerates 2   │(read     │      replica for │
-│  └─────────┘       node failures          │replica)  │      read scaling│
-│                                           └──────────┘                   │
+│ us-east-1a          us-east-1b          us-east-1c                       │
+│ ┌──────────┐        ┌──────────┐        ┌──────────┐                     │
+│ │ Vault    │        │ Vault    │        │ Vault    │                     │
+│ │ Node 1   │◄──────▶│ Node 2   │◄──────▶│ Node 3   │                     │
+│ │ (Raft)   │  Raft  │ (Leader) │  Raft  │ (Raft)   │                     │
+│ └──────────┘  Repl  └──────────┘  Repl  └──────────┘                     │
+│      │                    │                    │                         │
+│      │         ┌──────────▼──────────┐         │                         │
+│      │         │  NLB (cross-AZ)     │         │                         │
+│      │         │  Active health      │         │                         │
+│      │         │  checks (8200)      │         │                         │
+│      │         └─────────────────────┘         │                         │
+│      │                                         │                         │
+│ ┌────▼────┐                             ┌──────▼───┐                     │
+│ │Vault    │                             │Vault     │                     │
+│ │Node 4   │  ◄── Additional Raft voter  │Node 5    │  ◄── Non-voter      │
+│ │(Raft)   │      5-node = tolerates 2   │(read     │      replica for    │
+│ └─────────┘      node failures          │replica)  │      read scaling   │
+│                                         └──────────┘                     │
 │                                                                          │
-│  DR Region (us-west-2):                                                  │
-│  ┌─────────────────────────────────────────┐                            │
-│  │  Vault DR Cluster (Performance Standby) │                            │
-│  │  - Raft snapshot replication every 1h   │                            │
-│  │  - Can be promoted if us-east-1 fails   │                            │
-│  │  - NOT active — no split-brain risk     │                            │
-│  └─────────────────────────────────────────┘                            │
+│ DR Region (us-west-2):                                                   │
+│ ┌─────────────────────────────────────────┐                              │
+│ │ Vault DR Cluster (Performance Standby)  │                              │
+│ │ - Raft snapshot replication every 1h    │                              │
+│ │ - Can be promoted if us-east-1 fails    │                              │
+│ │ - NOT active — no split-brain risk      │                              │
+│ └─────────────────────────────────────────┘                              │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -7306,7 +7276,7 @@ cluster_addr = "https://vault-node-1.vault-internal:8201"
 - 7-node: tolerates 3 failures but adds latency on writes (more replication). Overkill for most deployments.
 
 **AZ distribution for 5 nodes:**
-```
+```text
 us-east-1a: Node 1, Node 4   (2 nodes)
 us-east-1b: Node 2, Node 5   (2 nodes)  
 us-east-1c: Node 3            (1 node)
@@ -7417,7 +7387,7 @@ vault operator raft snapshot save "${SNAPSHOT_FILE}"
 
 # Verify snapshot integrity
 SNAPSHOT_SIZE=$(stat -c%s "${SNAPSHOT_FILE}")
-if [ "${SNAPSHOT_SIZE}" -lt 1024 ]; then
+if[ "${SNAPSHOT_SIZE}" -lt 1024 ]; then
   echo "ERROR: Snapshot too small (${SNAPSHOT_SIZE} bytes) — likely corrupt"
   exit 1
 fi
@@ -7472,7 +7442,7 @@ spec:
           containers:
             - name: snapshot
               image: hashicorp/vault:1.15.4
-              command: ["/bin/bash", "/scripts/raft-snapshot.sh"]
+              command:["/bin/bash", "/scripts/raft-snapshot.sh"]
               env:
                 - name: VAULT_ADDR
                   value: "https://vault-active.vault.svc.cluster.local:8200"
@@ -7659,7 +7629,7 @@ spec:
 
 **Summary decision tree for Vault outages:**
 
-```
+```text
 Vault unreachable?
 ├── Is quorum lost or just a single node?
 │   ├── Single node: Raft self-heals. Monitor vault_raft_peers. No action.
@@ -7993,7 +7963,7 @@ aws pi get-resource-metrics \
       "Metric": "db.sql.queries",
       "GroupBy": {
         "Group": "db.user",
-        "Dimensions": ["db.user.name"],
+        "Dimensions":["db.user.name"],
         "Limit": 10
       }
     }
@@ -8034,46 +8004,46 @@ grep -E "GRANT|ALTER ROLE|CREATE ROLE|COPY|pg_dump" /tmp/rds-logs-incident.txt
 
 **The CISO is right. Rotate now.** Here's the exact reasoning:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
-│                 DECISION ANALYSIS                                │
+│                        DECISION ANALYSIS                        │
 │                                                                 │
-│  Option A: Rotate now (2 PM, peak traffic)                      │
-│  ├── Risk: Brief connection interruption during password change  │
-│  ├── Duration: 10-30 seconds for RDS master password change     │
-│  │   (PostgreSQL applies immediately, no restart required)       │
-│  ├── Impact: Some payment requests may fail during transition    │
-│  ├── Cost: ~$8K-$25K (30 sec of degraded service × $50K/min)   │
-│  └── Mitigation: Application retry logic + circuit breaker      │
+│ Option A: Rotate now (2 PM, peak traffic)                       │
+│ ├── Risk: Brief connection interruption during password change  │
+│ ├── Duration: 10-30 seconds for RDS master password change      │
+│ │   (PostgreSQL applies immediately, no restart required)       │
+│ ├── Impact: Some payment requests may fail during transition    │
+│ ├── Cost: ~$8K-$25K (30 sec of degraded service × $50K/min)     │
+│ └── Mitigation: Application retry logic + circuit breaker       │
 │                                                                 │
-│  Option B: Wait until midnight                                   │
-│  ├── Risk: 10 MORE HOURS of attacker access to production       │
-│  │   payment database containing PCI cardholder data             │
-│  ├── Impact if exploited during those 10 hours:                 │
-│  │   ├── Complete payment DB exfiltration                       │
-│  │   ├── PCI DSS breach notification (all cardholders)          │
-│  │   ├── PCI compliance revocation                              │
-│  │   ├── Card brand fines ($50K-$500K per brand)                │
-│  │   ├── Customer lawsuits                                      │
-│  │   ├── Brand damage (unquantifiable)                          │
-│  │   └── Regulatory penalties (GDPR if EU customers: 4% revenue)│
-│  └── The VP is optimizing for uptime. The CISO is optimizing    │
-│      for security. For a PCI-scoped credential leak,            │
-│      SECURITY WINS. PCI DSS Requirement 8.2.4 requires          │
-│      immediate credential change when compromise is suspected.  │
+│ Option B: Wait until midnight                                   │
+│ ├── Risk: 10 MORE HOURS of attacker access to production        │
+│ │   payment database containing PCI cardholder data             │
+│ ├── Impact if exploited during those 10 hours:                  │
+│ │   ├── Complete payment DB exfiltration                        │
+│ │   ├── PCI DSS breach notification (all cardholders)           │
+│ │   ├── PCI compliance revocation                               │
+│ │   ├── Card brand fines ($50K-$500K per brand)                 │
+│ │   ├── Customer lawsuits                                       │
+│ │   ├── Brand damage (unquantifiable)                           │
+│ │   └── Regulatory penalties (GDPR if EU customers: 4% revenue) │
+│ └── The VP is optimizing for uptime. The CISO is optimizing     │
+│     for security. For a PCI-scoped credential leak,             │
+│     SECURITY WINS. PCI DSS Requirement 8.2.4 requires           │
+│     immediate credential change when compromise is suspected.   │
 │                                                                 │
-│  VERDICT: Rotate NOW. The cost of a 30-second blip is           │
-│  negligible compared to 10 hours of exposure.                   │
+│ VERDICT: Rotate NOW. The cost of a 30-second blip is            │
+│ negligible compared to 10 hours of exposure.                    │
 │                                                                 │
-│  IMPORTANT NUANCE about the "brief RDS restart" premise:        │
-│  For PostgreSQL, master password changes via modify-db-instance  │
-│  do NOT require a restart. The premise of the question assumed   │
-│  a restart, but for PostgreSQL on RDS, apply-immediately works  │
-│  without downtime. For MySQL/Aurora MySQL, a restart MAY be      │
-│  needed — in that case, do a failover to the read replica:      │
-│  aws rds failover-db-cluster --db-cluster-identifier payment-db │
-│  Password change happens on the old primary, failover switches  │
-│  traffic to the replica (seconds of downtime, not minutes).     │
+│ IMPORTANT NUANCE about the "brief RDS restart" premise:         │
+│ For PostgreSQL, master password changes via modify-db-instance  │
+│ do NOT require a restart. The premise of the question assumed   │
+│ a restart, but for PostgreSQL on RDS, apply-immediately works   │
+│ without downtime. For MySQL/Aurora MySQL, a restart MAY be      │
+│ needed — in that case, do a failover to the read replica:       │
+│ aws rds failover-db-cluster --db-cluster-identifier payment-db  │
+│ Password change happens on the old primary, failover switches   │
+│ traffic to the replica (seconds of downtime, not minutes).      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -8131,9 +8101,8 @@ regex = '''postgresql://[^:]+:[^@]+@[^/]*\.rds\.amazonaws\.com'''
 tags = ["secret", "rds"]
 severity = "CRITICAL"
 
-# Allowlist: paths that are expected to contain secret-like patterns
-[allowlist]
-paths = [
+# Allowlist: paths that are expected to contain secret-like patterns[allowlist]
+paths =[
   '''\.secrets\.baseline$''',
   '''test/fixtures/.*\.json$''',
   '''docs/examples/.*'''
@@ -8209,7 +8178,7 @@ jobs:
           payload: |
             {
               "text": "🚨 SECRET DETECTED in ${{ github.repository }} by ${{ github.actor }}",
-              "blocks": [
+              "blocks":[
                 {
                   "type": "section",
                   "text": {
@@ -8259,26 +8228,26 @@ gh api repos/novamart/payment-svc -X PATCH \
 
 The root cause isn't "we didn't scan" — it's "the developer had the production secret on their machine in the first place." Fix the architecture:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
-│       SECRET ARCHITECTURE — ZERO DEVELOPER ACCESS            │
-│                                                              │
-│  BEFORE (broken):                                            │
-│  Developer → aws secretsmanager get-secret-value → clipboard │
-│  → paste into config file → commit → push → INCIDENT         │
-│                                                              │
-│  AFTER (correct):                                            │
-│  Developer: NEVER has production secrets                      │
-│  ├── Dev environment: uses LOCAL secrets (different DB)       │
-│  ├── Staging: ESO injects staging secrets (different creds)  │
-│  └── Prod: ESO injects prod secrets (no human access)        │
-│                                                              │
-│  How to enforce:                                             │
-│  1. IAM policy: Deny GetSecretValue for production secrets   │
-│     from developer roles                                     │
-│  2. Separate AWS accounts: devs can't even reach prod acct   │
-│  3. Secrets Manager resource policy: restrict to IRSA roles  │
-│  4. SCP: Deny secrets access from non-production accounts    │
+│         SECRET ARCHITECTURE — ZERO DEVELOPER ACCESS         │
+│                                                             │
+│ BEFORE (broken):                                            │
+│ Developer → aws secretsmanager get-secret-value → clipboard │
+│ → paste into config file → commit → push → INCIDENT         │
+│                                                             │
+│ AFTER (correct):                                            │
+│ Developer: NEVER has production secrets                     │
+│ ├── Dev environment: uses LOCAL secrets (different DB)      │
+│ ├── Staging: ESO injects staging secrets (different creds)  │
+│ └── Prod: ESO injects prod secrets (no human access)        │
+│                                                             │
+│ How to enforce:                                             │
+│ 1. IAM policy: Deny GetSecretValue for production secrets   │
+│    from developer roles                                     │
+│ 2. Separate AWS accounts: devs can't even reach prod acct   │
+│ 3. Secrets Manager resource policy: restrict to IRSA roles  │
+│ 4. SCP: Deny secrets access from non-production accounts    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -8286,11 +8255,11 @@ The root cause isn't "we didn't scan" — it's "the developer had the production
 // IAM policy: block developer access to production secrets
 {
   "Version": "2012-10-17",
-  "Statement": [
+  "Statement":[
     {
       "Sid": "DenyProdSecretAccess",
       "Effect": "Deny",
-      "Action": [
+      "Action":[
         "secretsmanager:GetSecretValue",
         "secretsmanager:GetResourcePolicy",
         "secretsmanager:DescribeSecret"
@@ -8298,7 +8267,7 @@ The root cause isn't "we didn't scan" — it's "the developer had the production
       "Resource": "arn:aws:secretsmanager:*:888888888888:secret:payment/*",
       "Condition": {
         "StringNotLike": {
-          "aws:PrincipalArn": [
+          "aws:PrincipalArn":[
             "arn:aws:iam::888888888888:role/payment-svc-irsa-role",
             "arn:aws:iam::888888888888:role/secrets-rotation-lambda-role",
             "arn:aws:iam::888888888888:role/external-secrets-operator-role",
@@ -8318,7 +8287,7 @@ resource "aws_secretsmanager_secret_policy" "payment_db" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Sid       = "RestrictToServiceRoles"
         Effect    = "Deny"
@@ -8327,7 +8296,7 @@ resource "aws_secretsmanager_secret_policy" "payment_db" {
         Resource  = "*"
         Condition = {
           StringNotEquals = {
-            "aws:PrincipalArn" = [
+            "aws:PrincipalArn" =[
               "arn:aws:iam::888888888888:role/payment-svc-irsa-role",
               "arn:aws:iam::888888888888:role/secrets-rotation-lambda-role",
               "arn:aws:iam::888888888888:role/external-secrets-operator-role"
@@ -8377,29 +8346,31 @@ resource "aws_secretsmanager_secret_policy" "payment_db" {
 
 **Prevention layers summary:**
 
-┌──────────────────────────────────────────────────────────────────────┐
-│                    DEFENSE IN DEPTH — SECRET LEAK PREVENTION         │
-│                                                                      │
-│  Layer             │ Tool                │ Catches What Others Miss   │
-│  ──────────────────┼─────────────────────┼────────────────────────── │
-│  1. Architecture   │ Account isolation   │ Devs can't GET the secret │
-│                    │ + resource policies │ in the first place         │
-│  2. Pre-commit     │ Gitleaks + detect-  │ Blocks before commit      │
-│                    │ secrets             │ (fastest feedback)         │
-│  3. Push protection│ GitHub native       │ Blocks at git push even   │
-│                    │                     │ if pre-commit is skipped   │
-│  4. CI scan        │ Gitleaks in GHA     │ Catches web UI commits,   │
-│                    │                     │ automated pushes           │
-│  5. Post-push      │ GitGuardian /       │ Catches secrets in ALL    │
-│     monitoring     │ GitHub secret scan  │ existing history, forks,  │
-│                    │                     │ and mirrors                │
-│  6. Runtime        │ Secrets Manager     │ Auto-rotation means even  │
-│     rotation       │ rotation + ESO      │ leaked creds expire       │
-│                    │                     │ before exploitation        │
-│  7. Network        │ Security groups +   │ Even with valid creds,    │
-│     containment    │ PrivateLink         │ attacker can't reach DB   │
-│                    │                     │ from outside VPC           │
-└──────────────────────────────────────────────────────────────────────┘
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│               DEFENSE IN DEPTH — SECRET LEAK PREVENTION                │
+├──────────────────┬─────────────────────┬───────────────────────────────┤
+│ Layer            │ Tool                │ Catches What Others Miss      │
+├──────────────────┼─────────────────────┼───────────────────────────────┤
+│ 1. Architecture  │ Account isolation   │ Devs can't GET the secret     │
+│                  │ + resource policies │ in the first place            │
+│ 2. Pre-commit    │ Gitleaks + detect-  │ Blocks before commit          │
+│                  │ secrets             │ (fastest feedback)            │
+│ 3. Push          │ GitHub native       │ Blocks at git push even       │
+│    protection    │                     │ if pre-commit is skipped      │
+│ 4. CI scan       │ Gitleaks in GHA     │ Catches web UI commits,       │
+│                  │                     │ automated pushes              │
+│ 5. Post-push     │ GitGuardian /       │ Catches secrets in ALL        │
+│    monitoring    │ GitHub secret scan  │ existing history, forks,      │
+│                  │                     │ and mirrors                   │
+│ 6. Runtime       │ Secrets Manager     │ Auto-rotation means even      │
+│    rotation      │ rotation + ESO      │ leaked creds expire           │
+│                  │                     │ before exploitation           │
+│ 7. Network       │ Security groups +   │ Even with valid creds,        │
+│    containment   │ PrivateLink         │ attacker can't reach DB       │
+│                  │                     │ from outside VPC              │
+└──────────────────┴─────────────────────┴───────────────────────────────┘
+```
 
 Layer 1 prevents 95% of incidents. Layers 2-5 are for the remaining 5%.
 Layers 6-7 limit blast radius when all prevention fails.
@@ -8408,30 +8379,30 @@ Layers 6-7 limit blast radius when all prevention fails.
 
 ## Summary: Key Principles From This Lesson
 
+```text
 ┌──────────────────────────────────────────────────────────────────┐
-│  1. SECRET DELIVERY IS A CHAIN — every link must be monitored    │
-│     Secrets Manager → ESO → K8s Secret → Pod Volume → App Pool  │
-│     Failure at ANY link = outage. Test the full chain.           │
+│ 1. SECRET DELIVERY IS A CHAIN — every link must be monitored     │
+│    Secrets Manager → ESO → K8s Secret → Pod Volume → App Pool    │
+│    Failure at ANY link = outage. Test the full chain.            │
 │                                                                  │
-│  2. KMS ROOT PRINCIPAL IS NON-NEGOTIABLE                         │
-│     Without it, the key is permanently unmanageable.             │
-│     Only AWS Support can recover. Put it in every key policy.    │
-│     CI check: Checkov custom rule to enforce this.               │
+│ 2. KMS ROOT PRINCIPAL IS NON-NEGOTIABLE                          │
+│    Without it, the key is permanently unmanageable.              │
+│    Only AWS Support can recover. Put it in every key policy.     │
+│    CI check: Checkov custom rule to enforce this.                │
 │                                                                  │
-│  3. VAULT OUTAGE ≠ JUST VAULT PROBLEM                           │
-│     It blocks HPA scaling, pod restarts, deployments, AND        │
-│     cert renewal. Graceful degradation (caching, static          │
-│     fallback) is mandatory for critical-path services.           │
+│ 3. VAULT OUTAGE ≠ JUST VAULT PROBLEM                             │
+│    It blocks HPA scaling, pod restarts, deployments, AND         │
+│    cert renewal. Graceful degradation (caching, static           │
+│    fallback) is mandatory for critical-path services.            │
 │                                                                  │
-│  4. INCIDENT RESPONSE ORDER: CONTAIN → PRESERVE → REVOKE        │
-│     Revoking first without containment leaves the attack         │
-│     surface open. Preserving evidence before changes enables     │
-│     forensics. Get the order right.                              │
+│ 4. INCIDENT RESPONSE ORDER: CONTAIN → PRESERVE → REVOKE          │
+│    Revoking first without containment leaves the attack          │
+│    surface open. Preserving evidence before changes enables      │
+│    forensics. Get the order right.                               │
 │                                                                  │
-│  5. ARCHITECTURE > SCANNING                                      │
-│     If developers can't access production secrets, they can't    │
-│     leak them. Account isolation + resource policies + IRSA      │
-│     eliminate the class of incident, not just detect it.          │
+│ 5. ARCHITECTURE > SCANNING                                       │
+│    If developers can't access production secrets, they can't     │
+│    leak them. Account isolation + resource policies + IRSA       │
+│    eliminate the class of incident, not just detect it.          │
 └──────────────────────────────────────────────────────────────────┘
-
-
+```
