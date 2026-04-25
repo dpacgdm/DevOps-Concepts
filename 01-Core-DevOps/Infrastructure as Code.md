@@ -1,3 +1,5 @@
+--- START OF FILE Paste April 25, 2026 - 2:15PM ---
+
 # Phase 4: Infrastructure as Code
 ## Lesson 1: Terraform — Architecture, HCL Deep Dive, State
 
@@ -13,64 +15,64 @@ Jenkins can break your builds. Terraform can break your company.
 
 ## 1. How Terraform Works — Core Architecture
 
-```
+```text
 ┌───────────────────────────────────────────────────────────┐
-│                    YOUR MACHINE / CI AGENT                  │
-│                                                            │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │                 Terraform CLI                        │   │
-│  │                                                      │   │
-│  │  ┌──────────┐    ┌──────────┐    ┌──────────────┐   │   │
-│  │  │  HCL     │    │  Core    │    │  Providers   │   │   │
-│  │  │  Parser  │───►│  Engine  │───►│  (Plugins)   │   │   │
-│  │  │          │    │          │    │              │   │   │
-│  │  │ .tf files│    │ Builds   │    │ aws 5.x     │   │   │
-│  │  │ → AST    │    │ resource │    │ google 5.x  │   │   │
-│  │  │          │    │ graph    │    │ azurerm 3.x │   │   │
-│  │  │          │    │          │    │ kubernetes  │   │   │
-│  │  │          │    │ Calculates│   │ helm        │   │   │
-│  │  │          │    │ diff     │    │ vault       │   │   │
-│  │  │          │    │ (plan)   │    │ ...         │   │   │
-│  │  └──────────┘    └─────┬────┘    └──────┬──────┘   │   │
-│  │                        │                │           │   │
-│  │                        ▼                ▼           │   │
-│  │              ┌──────────────────────────────────┐   │   │
-│  │              │         State File               │   │   │
-│  │              │   terraform.tfstate               │   │   │
-│  │              │                                   │   │   │
-│  │              │   Maps: HCL resource definition   │   │   │
-│  │              │      ↕ Real-world resource        │   │   │
-│  │              │                                   │   │   │
-│  │              │   Contains: resource IDs,         │   │   │
-│  │              │   attributes, dependencies,       │   │   │
-│  │              │   metadata, sensitive values      │   │   │
-│  │              └──────────────┬────────────────────┘   │   │
-│  └─────────────────────────────┼────────────────────────┘   │
-│                                │                            │
-└────────────────────────────────┼────────────────────────────┘
+│                 YOUR MACHINE / CI AGENT                   │
+│                                                           │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │                    Terraform CLI                    │  │
+│  │                                                     │  │
+│  │  ┌──────────┐    ┌──────────┐    ┌──────────────┐   │  │
+│  │  │   HCL    │    │   Core   │    │  Providers   │   │  │
+│  │  │  Parser  ├───►│  Engine  ├───►│  (Plugins)   │   │  │
+│  │  │          │    │          │    │              │   │  │
+│  │  │ .tf files│    │ Builds   │    │ aws 5.x      │   │  │
+│  │  │   → AST  │    │ resource │    │ google 5.x   │   │  │
+│  │  │          │    │ graph    │    │ azurerm 3.x  │   │  │
+│  │  │          │    │          │    │ kubernetes   │   │  │
+│  │  │          │    │ Calculates│   │ helm         │   │  │
+│  │  │          │    │ diff     │    │ vault        │   │  │
+│  │  │          │    │ (plan)   │    │ ...          │   │  │
+│  │  └──────────┘    └─────┬────┘    └──────┬───────┘   │  │
+│  │                        │                │           │  │
+│  │                        ▼                ▼           │  │
+│  │              ┌──────────────────────────────────┐   │  │
+│  │              │            State File            │   │  │
+│  │              │         terraform.tfstate        │   │  │
+│  │              │                                  │   │  │
+│  │              │   Maps: HCL resource definition  │   │  │
+│  │              │      ↕ Real-world resource       │   │  │
+│  │              │                                  │   │  │
+│  │              │   Contains: resource IDs,        │   │  │
+│  │              │   attributes, dependencies,      │   │  │
+│  │              │   metadata, sensitive values     │   │  │
+│  │              └──────────────┬───────────────────┘   │  │
+│  └─────────────────────────────┼───────────────────────┘  │
+│                                │                          │
+└────────────────────────────────┼──────────────────────────┘
                                  │
                     ┌────────────▼────────────┐
-                    │     Remote Backend       │
-                    │     (S3 + DynamoDB)      │
-                    │                          │
-                    │  S3: state file storage  │
-                    │  DynamoDB: state locking │
-                    │  (prevents concurrent    │
-                    │   apply = corruption)    │
-                    └────────────┬─────────────┘
+                    │      Remote Backend     │
+                    │     (S3 + DynamoDB)     │
+                    │                         │
+                    │ S3: state file storage  │
+                    │ DynamoDB: state locking │
+                    │ (prevents concurrent    │
+                    │  apply = corruption)    │
+                    └────────────┬────────────┘
                                  │
                     ┌────────────▼────────────┐
-                    │       AWS APIs           │
-                    │  (Provider makes API     │
-                    │   calls to create/       │
-                    │   update/delete          │
-                    │   resources)             │
+                    │         AWS APIs        │
+                    │  (Provider makes API    │
+                    │   calls to create/      │
+                    │   update/delete         │
+                    │   resources)            │
                     └─────────────────────────┘
 ```
 
 ### The Terraform Workflow — What Actually Happens
 
-```
+```text
 terraform init
 ├── Downloads providers (plugins) to .terraform/providers/
 ├── Initializes backend (S3, DynamoDB)
@@ -104,17 +106,17 @@ terraform destroy
 
 ### The Resource Graph — Why Order Matters
 
-```
+```text
 terraform graph | dot -Tpng > graph.png
 
 Example dependency graph for an EKS setup:
 
   VPC ──────────────┬──────────────────┐
-   │                │                   │
-   ▼                ▼                   ▼
+   │                │                  │
+   ▼                ▼                  ▼
   Subnets      Internet GW        NAT Gateway
-   │                │                   │
-   ▼                ▼                   ▼
+   │                │                  │
+   ▼                ▼                  ▼
   Route Tables ─────┘              Route Tables
    │
    ▼
@@ -210,7 +212,7 @@ variable "enable_monitoring" {
 # Collection types
 variable "availability_zones" {
   type    = list(string)
-  default = ["us-east-1a", "us-east-1b", "us-east-1c"]
+  default =["us-east-1a", "us-east-1b", "us-east-1c"]
 }
 
 variable "instance_tags" {
@@ -233,7 +235,7 @@ variable "services" {
     public    = optional(bool, false)    # Optional with default
   }))
   
-  default = [
+  default =[
     {
       name     = "order-service"
       port     = 8080
@@ -255,13 +257,13 @@ variable "db_password" {
 
 ### Variable Precedence (Lowest to Highest)
 
-```
+```text
 1. default value in variable block        (lowest priority)
 2. Environment variable: TF_VAR_name
 3. terraform.tfvars file (auto-loaded)
 4. *.auto.tfvars files (auto-loaded, alphabetical)
 5. -var-file=custom.tfvars flag
-6. -var="name=value" flag                  (highest priority)
+6. -var="name=value" flag                 (highest priority)
 
 PRODUCTION PATTERN:
 ├── terraform.tfvars         → common values (region, project)
@@ -322,7 +324,7 @@ locals {
 
   # Flattening nested structures
   subnet_configs = flatten([
-    for az in var.availability_zones : [
+    for az in var.availability_zones :[
       {
         az     = az
         cidr   = cidrsubnet(var.vpc_cidr, 8, index(var.availability_zones, az))
@@ -348,7 +350,7 @@ data "aws_ami" "amazon_linux" {
   
   filter {
     name   = "name"
-    values = ["al2023-ami-*-x86_64"]
+    values =["al2023-ami-*-x86_64"]
   }
 }
 
@@ -391,13 +393,13 @@ resource "aws_instance" "bastion" {
 # For expressions
 locals {
   # List comprehension
-  private_subnets = [for s in aws_subnet.main : s.id if s.tags["Type"] == "private"]
+  private_subnets =[for s in aws_subnet.main : s.id if s.tags["Type"] == "private"]
   
   # Map comprehension
   subnet_map = { for s in aws_subnet.main : s.availability_zone => s.id }
   
   # Filtering
-  prod_services = [for svc in var.services : svc if svc.replicas >= 3]
+  prod_services =[for svc in var.services : svc if svc.replicas >= 3]
 }
 
 # Dynamic blocks (avoid repetitive nested blocks)
@@ -463,8 +465,8 @@ resource "aws_subnet" "private" {
 # If you remove the MIDDLE element from the list,
 # all subsequent resources get DESTROYED and RECREATED
 # because they're indexed by position.
-# Before: [az-a, az-b, az-c] → index [0, 1, 2]
-# Remove az-b: [az-a, az-c] → index [0, 1]
+# Before: [az-a, az-b, az-c] → index[0, 1, 2]
+# Remove az-b: [az-a, az-c] → index[0, 1]
 # az-c was index 2, now index 1 → Terraform thinks it changed → DESTROY + CREATE
 
 # FOR_EACH — for resources with unique keys (PREFERRED)
@@ -528,13 +530,13 @@ resource "aws_ecs_service" "svc" {
       "type": "string"
     }
   },
-  "resources": [
+  "resources":[
     {
       "mode": "managed",
       "type": "aws_vpc",
       "name": "main",
       "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
-      "instances": [
+      "instances":[
         {
           "schema_version": 1,
           "attributes": {
@@ -545,7 +547,7 @@ resource "aws_ecs_service" "svc" {
           },
           "sensitive_attributes": [],
           "private": "...",
-          "dependencies": []
+          "dependencies":[]
         }
       ]
     },
@@ -553,7 +555,7 @@ resource "aws_ecs_service" "svc" {
       "mode": "managed",
       "type": "aws_db_instance",
       "name": "main",
-      "instances": [
+      "instances":[
         {
           "attributes": {
             "password": "SuperSecret123!",   // ← YES, IN PLAINTEXT
@@ -670,7 +672,7 @@ resource "aws_dynamodb_table" "locks" {
 
 ### State Locking — Why It Exists
 
-```
+```text
 WITHOUT LOCKING:
   Engineer A: terraform apply (reads state)
   Engineer B: terraform apply (reads SAME state)
@@ -861,7 +863,7 @@ terraform {
 
 ## 5. NovaMart State Architecture
 
-```
+```text
 S3 Bucket: novamart-terraform-state
 ├── bootstrap/
 │   └── terraform.tfstate          # S3 bucket, DynamoDB, KMS key
@@ -907,7 +909,7 @@ WHY SPLIT:
 
 ## Quick Reference Card
 
-```
+```text
 TERRAFORM WORKFLOW:
   init → plan → apply (→ destroy only if decommissioning)
   init: downloads providers, modules, configures backend
@@ -1013,7 +1015,7 @@ This design prioritizes **High Availability (HA)** and **EKS Compatibility**. I 
 
 ```hcl
 variable "vpc_cidr" { default = "10.0.0.0/16" }
-variable "azs"      { default = ["us-east-1a", "us-east-1b", "us-east-1c"] }
+variable "azs"      { default =["us-east-1a", "us-east-1b", "us-east-1c"] }
 
 # Subnet Map for calculation
 locals {
@@ -1447,7 +1449,7 @@ Modules solve this: **define once, instantiate many times with different paramet
 
 ### Module Structure
 
-```
+```text
 terraform/
 ├── modules/                         # Reusable modules (shared library)
 │   ├── vpc/
@@ -1696,12 +1698,12 @@ output "public_subnet_ids" {
 
 output "private_subnet_ids" {
   description = "List of private subnet IDs"
-  value       = [for s in aws_subnet.private : s.id]
+  value       =[for s in aws_subnet.private : s.id]
 }
 
 output "data_subnet_ids" {
   description = "List of data subnet IDs"
-  value       = [for s in aws_subnet.data : s.id]
+  value       =[for s in aws_subnet.data : s.id]
 }
 
 output "private_subnet_map" {
@@ -1711,7 +1713,7 @@ output "private_subnet_map" {
 
 output "nat_gateway_ips" {
   description = "NAT Gateway public IPs"
-  value       = [for eip in aws_eip.nat : eip.public_ip]
+  value       =[for eip in aws_eip.nat : eip.public_ip]
 }
 ```
 
@@ -1725,7 +1727,7 @@ module "vpc" {
 
   name               = "novamart-prod"
   cidr               = "10.0.0.0/16"
-  azs                = ["us-east-1a", "us-east-1b", "us-east-1c"]
+  azs                =["us-east-1a", "us-east-1b", "us-east-1c"]
   enable_nat_gateway = true
   single_nat_gateway = false    # HA — one NAT per AZ in prod
 
@@ -1742,7 +1744,7 @@ module "vpc" {
 
   name               = "novamart-dev"
   cidr               = "10.1.0.0/16"
-  azs                = ["us-east-1a", "us-east-1b"]   # Only 2 AZs in dev
+  azs                =["us-east-1a", "us-east-1b"]   # Only 2 AZs in dev
   enable_nat_gateway = true
   single_nat_gateway = true    # Cost savings — not HA, acceptable for dev
 
@@ -1800,7 +1802,7 @@ module "vpc" {
 
 ### Module Design Patterns
 
-```
+```text
 PATTERN 1: THIN WRAPPER (recommended for NovaMart)
   Module provides: opinionated defaults for your company
   User configures: just the essentials (name, environment, size)
@@ -1852,7 +1854,7 @@ PATTERN 3: FACTORY (generating resources dynamically)
 
 ### Module Anti-Patterns
 
-```
+```text
 ANTI-PATTERN 1: "The God Module"
   One module creates VPC + EKS + RDS + S3 + IAM + everything
   → Blast radius is everything. Can't test components independently.
@@ -1912,7 +1914,7 @@ resource "aws_instance" "web" {
 
 ### Workspaces vs Directory Structure — The Great Debate
 
-```
+```text
 WORKSPACES (terraform workspace):
 ├── Same code, different state
 ├── Switch with: terraform workspace select prod
@@ -1947,33 +1949,33 @@ NOVAMART CHOICE: Directory structure
 
 ### The Golden Pipeline
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
-│                   Terraform CI/CD Flow                         │
-│                                                               │
-│  PR Created/Updated                                           │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │                                                          │  │
-│  │  1. terraform fmt -check -recursive  (formatting)        │  │
-│  │  2. terraform init -backend=false    (syntax validation) │  │
-│  │  3. terraform validate               (config validation) │  │
-│  │  4. tflint                            (linting)          │  │
-│  │  5. checkov / tfsec                   (security scan)    │  │
-│  │  6. terraform plan                    (diff preview)     │  │
-│  │  7. Post plan output as PR comment    (review)           │  │
-│  │                                                          │  │
-│  └─────────────────────────────────────────────────────────┘  │
-│                                                               │
-│  PR Merged to main                                            │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │                                                          │  │
-│  │  8. terraform init                                       │  │
-│  │  9. terraform plan -out=tfplan                           │  │
-│  │  10. Manual approval (for prod)                          │  │
-│  │  11. terraform apply tfplan                              │  │
-│  │  12. Slack notification                                  │  │
-│  │                                                          │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│                     Terraform CI/CD Flow                     │
+│                                                              │
+│  PR Created/Updated                                          │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │                                                        │  │
+│  │  1. terraform fmt -check -recursive  (formatting)      │  │
+│  │  2. terraform init -backend=false    (syntax check)    │  │
+│  │  3. terraform validate               (config validate) │  │
+│  │  4. tflint                           (linting)         │  │
+│  │  5. checkov / tfsec                  (security scan)   │  │
+│  │  6. terraform plan                   (diff preview)    │  │
+│  │  7. Post plan output as PR comment   (review)          │  │
+│  │                                                        │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+│  PR Merged to main                                           │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │                                                        │  │
+│  │  8. terraform init                                     │  │
+│  │  9. terraform plan -out=tfplan                         │  │
+│  │  10. Manual approval (for prod)                        │  │
+│  │  11. terraform apply tfplan                            │  │
+│  │  12. Slack notification                                │  │
+│  │                                                        │  │
+│  └────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -2147,7 +2149,7 @@ jobs:
 
 ### Separation of Plan and Apply IAM Roles
 
-```
+```text
 TerraformPlanRole:
 ├── S3: GetObject on state bucket (read state)
 ├── DynamoDB: GetItem, PutItem on lock table (acquire lock for plan)
@@ -2190,7 +2192,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        layer: [network, security, platform, data]
+        layer:[network, security, platform, data]
         environment: [prod]
     steps:
       - uses: actions/checkout@v4
@@ -2218,7 +2220,7 @@ jobs:
             -H 'Content-Type: application/json' \
             -d '{
               "text": "⚠️ Terraform drift detected in ${{ matrix.layer }} (${{ matrix.environment }})\nSomeone made manual changes. Review and reconcile.",
-              "attachments": [{
+              "attachments":[{
                 "color": "warning",
                 "text": "Run `terraform plan` in ${{ matrix.layer }} to see details."
               }]
@@ -2242,7 +2244,7 @@ resource "aws_eks_cluster" "this" {
     subnet_ids              = var.subnet_ids
     endpoint_private_access = true
     endpoint_public_access  = var.endpoint_public_access
-    security_group_ids      = [aws_security_group.cluster.id]
+    security_group_ids      =[aws_security_group.cluster.id]
   }
 
   encryption_config {
@@ -2254,7 +2256,7 @@ resource "aws_eks_cluster" "this" {
 
   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
-  depends_on = [
+  depends_on =[
     aws_iam_role_policy_attachment.cluster_AmazonEKSClusterPolicy,
     aws_iam_role_policy_attachment.cluster_AmazonEKSVPCResourceController,
   ]
@@ -2331,7 +2333,7 @@ module "irsa_ebs_csi" {
   oidc_provider_url  = module.eks.oidc_provider_url
   namespace          = "kube-system"
   service_account    = "ebs-csi-controller-sa"
-  policy_arns        = ["arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"]
+  policy_arns        =["arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"]
 }
 ```
 
@@ -2425,7 +2427,7 @@ data "aws_ssm_parameter" "vpc_id" {
 
 ## Quick Reference Card
 
-```
+```text
 MODULES:
   Structure: main.tf, variables.tf, outputs.tf, versions.tf
   Source: local path, git (pin ref=vX.Y.Z), registry (pin version)
@@ -2500,7 +2502,7 @@ variable "vpc_config" {
     cidr = string
     azs  = list(string)
   })
-  default = { cidr = "10.0.0.0/16", azs = ["us-east-1a", "us-east-1b", "us-east-1c"] }
+  default = { cidr = "10.0.0.0/16", azs =["us-east-1a", "us-east-1b", "us-east-1c"] }
 }
 
 variable "eks_config" {
@@ -2626,7 +2628,7 @@ jobs:
 
   # 3. Apply: Sequential execution based on hard-coded dependency order
   apply:
-    needs: [detect-changes, plan]
+    needs:[detect-changes, plan]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
@@ -2850,7 +2852,7 @@ apply-network:
     - run: terraform apply tfplan
 
 apply-security:
-  needs: [apply-network]    # Waits for network to complete
+  needs:[apply-network]    # Waits for network to complete
   if: github.event_name == 'push' && contains(...)
   steps:
     - run: terraform apply tfplan
@@ -3055,8 +3057,8 @@ terraform apply -target=aws_db_instance.main
 
 ## Score Summary
 
-| Question | Score | Key Gap |
-|----------|-------|---------|
+| Failure | Symptoms | Root Cause | Fix |
+|---------|----------|------------|-----|
 | Q1 | 4.0/5 | No security enforcement in module, no validation blocks, no outputs |
 | Q2 | 3.5/5 | Apply without saved plan, for loop doesn't handle failures, paths-filter syntax wrong |
 | Q3 | 4.5/5 | Excellent — `manage_master_user_password` is the correct modern answer. Minor: state history, broader secret pattern |
@@ -3080,7 +3082,7 @@ Proceeding to **Phase 4, Lesson 3.**
 
 ### Why Test Infrastructure Code?
 
-```
+```text
 WITHOUT TESTING:
   Engineer writes module → "terraform plan looks good" → merges
   Three months later: someone calls the module with 
@@ -3187,7 +3189,7 @@ metadata:
   category: "CONVENTION"
 definition:
   cond_type: "attribute"
-  resource_types: ["aws_instance", "aws_s3_bucket", "aws_rds_cluster"]
+  resource_types:["aws_instance", "aws_s3_bucket", "aws_rds_cluster"]
   attribute: "tags.Environment"
   operator: "exists"
 ```
@@ -3280,7 +3282,7 @@ run "rejects_single_az" {
     azs = ["us-east-1a"]    # Only 1 AZ — should fail validation
   }
 
-  expect_failures = [
+  expect_failures =[
     var.azs    # Expect the validation on var.azs to fail
   ]
 }
@@ -3317,7 +3319,7 @@ func TestVPCModule(t *testing.T) {
         Vars: map[string]interface{}{
             "name": "terratest-vpc",
             "cidr": "10.99.0.0/16",
-            "azs":  []string{"us-east-1a", "us-east-1b"},
+            "azs":[]string{"us-east-1a", "us-east-1b"},
             "enable_nat_gateway": true,
             "single_nat_gateway": true,
             "tags": map[string]string{
@@ -3358,7 +3360,7 @@ func TestVPCModule(t *testing.T) {
 }
 ```
 
-```
+```text
 TERRATEST: Creates REAL AWS resources, tests them, destroys them.
 ├── Pro: Tests actual AWS behavior, catches provider bugs
 ├── Pro: Tests cross-resource interactions (SG + instance + ALB)
@@ -3376,25 +3378,25 @@ RUN STRATEGY:
 
 ### Testing Pyramid for Terraform
 
-```
-                    ┌─────────────┐
+```text
+                    ┌──────────────┐
                     │  Terratest   │  Slow, expensive, real resources
                     │  (Go)        │  Run: nightly, on module release
-                    ├─────────────┤
+                    ├──────────────┤
                     │  terraform   │  Fast, plan-only or real
                     │  test        │  Run: every PR
-                    │  (HCL)      │
-                    ├─────────────┤
+                    │  (HCL)       │
+                    ├──────────────┤
                     │  Checkov /   │  Fast, no API calls
                     │  tfsec       │  Run: every PR
                     │  (Security)  │
-                    ├─────────────┤
+                    ├──────────────┤
                     │  TFLint      │  Fast, catches typos/invalid types
                     │  (Linting)   │  Run: every PR
-                    ├─────────────┤
+                    ├──────────────┤
                     │  validate +  │  Instant, basic syntax
                     │  fmt         │  Run: every PR (pre-commit)
-                    └─────────────┘
+                    └──────────────┘
 ```
 
 ---
@@ -3403,7 +3405,7 @@ RUN STRATEGY:
 
 ### Why Managed Terraform?
 
-```
+```text
 SELF-MANAGED TERRAFORM (NovaMart current):
 ├── State in S3 + DynamoDB (you manage backup, access, encryption)
 ├── Locking via DynamoDB (you manage table, handle stuck locks)
@@ -3492,7 +3494,7 @@ main = rule {
 
 ### When to Use What — Decision Framework
 
-```
+```text
 SELF-MANAGED (S3 + DynamoDB + CI pipeline):
 ├── Full control, no vendor dependency
 ├── Cost: just S3 + DynamoDB (~$5/mo) + CI compute
@@ -3652,7 +3654,7 @@ terraform apply
 
 ### Refactoring Checklist
 
-```
+```text
 SAFE REFACTORING PROCESS:
 1. Plan the refactoring (document what moves where)
 2. Write moved/import blocks FIRST
@@ -3768,7 +3770,7 @@ terraform init -upgrade
 
 ## Quick Reference Card
 
-```
+```text
 TESTING PYRAMID:
   fmt + validate     → Every commit (pre-commit hook)
   TFLint             → Every PR (catches invalid types, unused vars)
@@ -3988,24 +3990,24 @@ Upgrading providers across 15 modules is a high-risk activity because of "hidden
 
 You're right — I dropped Phases 7-9 from the progress tracker. That was sloppy. Here's the corrected tracker that will be used going forward:
 
-```
+```text
 PART 1: FOUNDATIONS (Phases 0-6)
   Phase 0: Linux Deep Dive                    ████████████████████ 100% ✅
-  Phase 1: Networking                          ████████████████████ 100% ✅
-  Phase 2: Git, Docker, K8s                    ████████████████████ 100% ✅
-  Phase 3: CI/CD Pipelines                     ████████████████████ 100% ✅
-  Phase 4: IaC (Terraform/Ansible)             ████████████░░░░░░░░  60%
-  Phase 5: Observability & SRE                 ░░░░░░░░░░░░░░░░░░░░   0%
-  Phase 6: Security, Compliance, AWS Services  ░░░░░░░░░░░░░░░░░░░░   0%
+  Phase 1: Networking                         ████████████████████ 100% ✅
+  Phase 2: Git, Docker, K8s                   ████████████████████ 100% ✅
+  Phase 3: CI/CD Pipelines                    ████████████████████ 100% ✅
+  Phase 4: IaC (Terraform/Ansible)            ████████████░░░░░░░░  60%
+  Phase 5: Observability & SRE                ░░░░░░░░░░░░░░░░░░░░   0%
+  Phase 6: Security, Compliance, AWS Services ░░░░░░░░░░░░░░░░░░░░   0%
 
 PART 2: BUILD
-  Phase 7: Build NovaMart from scratch         ░░░░░░░░░░░░░░░░░░░░   0%
+  Phase 7: Build NovaMart from scratch        ░░░░░░░░░░░░░░░░░░░░   0%
 
 PART 3: OPERATE
-  Phase 8: NovaMart Production Simulation      ░░░░░░░░░░░░░░░░░░░░   0%
+  Phase 8: NovaMart Production Simulation     ░░░░░░░░░░░░░░░░░░░░   0%
 
 PART 4: INTERVIEW
-  Phase 9: FAANG Interview Prep                ░░░░░░░░░░░░░░░░░░░░   0%
+  Phase 9: FAANG Interview Prep               ░░░░░░░░░░░░░░░░░░░░   0%
 
 Overall: ~38%
 ```
@@ -4083,7 +4085,7 @@ If you delete the stack before the update completes, you get the OLD DeletionPol
 
 3. **Missing: the dual-management window.** Between "Terraform imports the buckets" and "CFN stack is deleted," both tools think they manage the same resources. If someone runs `terraform apply` during this window, Terraform might change bucket settings that CFN then tries to revert on its next drift detection. The safe approach:
 
-```
+```text
 Timeline:
   T0: Import into Terraform, verify zero-diff
   T1: Lock Terraform (no applies) 
@@ -4200,7 +4202,7 @@ run "fails_with_small_subnet" {
   }
 
   # Expect the precondition to fire
-  expect_failures = [
+  expect_failures =[
     aws_nat_gateway.this
   ]
 }
@@ -4245,13 +4247,13 @@ class NoOpenSG(BaseResourceCheck):
     def __init__(self):
         name = "Ensure no security group allows 0.0.0.0/0 ingress"
         id = "CUSTOM_SG_001"
-        supported_resources = ["aws_security_group", "aws_security_group_rule"]
-        categories = [CheckCategories.NETWORKING]
+        supported_resources =["aws_security_group", "aws_security_group_rule"]
+        categories =[CheckCategories.NETWORKING]
         super().__init__(name=name, id=id, categories=categories, 
                         supported_resources=supported_resources)
 
     def scan_resource_conf(self, conf):
-        ingress = conf.get("ingress", [])
+        ingress = conf.get("ingress",[])
         for rule in ingress:
             cidrs = rule.get("cidr_blocks", [[]])
             if "0.0.0.0/0" in cidrs[0] if isinstance(cidrs[0], list) else cidrs:
@@ -4291,7 +4293,7 @@ main = rule {
 
 3. **Missing: enforcement hierarchy.** The three tools aren't alternatives — they're layers:
 
-```
+```text
 PIPELINE STAGE:        TOOL:           ENFORCEMENT:
 ─────────────────────────────────────────────────────
 Pre-commit hook    →   Checkov      →  Developer feedback (fast)
@@ -4320,7 +4322,7 @@ AWS Config catches manual console changes that bypass Terraform entirely.
 
 1. **The upgrade should NOT be bottom-up by module — it should be by environment.** You said "VPC module → EKS module → root modules." But the provider version is pinned in the ROOT module, not in child modules. Child modules declare `required_providers` with constraints, but the root module's lock file determines the actual version. The correct sequence:
 
-```
+```text
 dev (all layers) → staging (all layers) → prod (all layers)
 NOT:
 VPC module → EKS module → RDS module (across all envs simultaneously)
@@ -4390,7 +4392,7 @@ The migration requires import blocks for the new separate resources because they
 
 ## Why Ansible at NovaMart (When We Have Terraform)
 
-```
+```text
 TERRAFORM vs ANSIBLE — DIFFERENT JOBS:
 
 Terraform:
@@ -4418,7 +4420,7 @@ NovaMart uses BOTH:
 
 ### When Do You Use Ansible in a Kubernetes-Native World?
 
-```
+```text
 "If everything runs in K8s, why do we need Ansible?"
 
 ANSWER: Not everything runs in K8s.
@@ -4444,54 +4446,54 @@ NovaMart systems managed by Ansible:
 
 ## 1. Ansible Architecture — How It Works
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
-│                    CONTROL NODE                               │
-│                    (Your laptop or CI agent)                   │
-│                                                               │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────┐   │
-│  │ Ansible CLI  │  │  Inventory   │  │   Playbooks        │   │
-│  │              │  │              │  │   (YAML)           │   │
-│  │ ansible      │  │ - Static     │  │                    │   │
-│  │ ansible-      │  │   (INI/YAML)│  │ - Tasks            │   │
-│  │  playbook    │  │ - Dynamic    │  │ - Handlers         │   │
-│  │ ansible-     │  │   (scripts,  │  │ - Variables        │   │
-│  │  galaxy      │  │   AWS, etc.) │  │ - Templates (Jinja)│   │
-│  │ ansible-     │  │              │  │ - Roles            │   │
-│  │  vault       │  │              │  │                    │   │
-│  └──────┬──────┘  └──────┬───────┘  └────────┬───────────┘   │
-│         │                │                    │               │
-│         └────────────────┼────────────────────┘               │
-│                          │                                    │
-│  ┌───────────────────────▼─────────────────────────────────┐  │
-│  │                  Ansible Engine                          │  │
-│  │                                                          │  │
-│  │  1. Reads inventory (who to configure)                   │  │
-│  │  2. Reads playbook (what to do)                          │  │
-│  │  3. For each host:                                       │  │
-│  │     a. Generates Python module code                      │  │
-│  │     b. Copies module to target via SSH/SCP               │  │
-│  │     c. Executes module on target                         │  │
-│  │     d. Captures JSON output (changed: true/false)        │  │
-│  │     e. Removes temporary files                           │  │
-│  │  4. Reports results (ok, changed, failed, unreachable)   │  │
-│  └─────────────────────────┬───────────────────────────────┘  │
-└────────────────────────────┼──────────────────────────────────┘
-                             │ SSH (default, port 22)
-                             │ WinRM (Windows)
-                             │ Local (control node itself)
-                             │ Docker (container connection)
-              ┌──────────────┼──────────────────┐
-              │              │                   │
-       ┌──────▼──────┐ ┌────▼─────┐ ┌──────────▼──────┐
-       │ Managed Node │ │ Managed  │ │ Managed Node    │
-       │ (web-1)      │ │ Node     │ │ (db-1)          │
-       │              │ │ (web-2)  │ │                  │
-       │ Requires:    │ │          │ │ No Ansible agent │
-       │ - Python 3   │ │          │ │ installed.       │
-       │ - SSH access  │ │          │ │ Just SSH + Python│
-       │              │ │          │ │                  │
-       └──────────────┘ └──────────┘ └─────────────────┘
+│                         CONTROL NODE                         │
+│                  (Your laptop or CI agent)                   │
+│                                                              │
+│  ┌──────────────┐  ┌────────────────┐  ┌──────────────────┐  │
+│  │ Ansible CLI  │  │   Inventory    │  │    Playbooks     │  │
+│  │              │  │                │  │      (YAML)      │  │
+│  │ ansible      │  │ - Static       │  │                  │  │
+│  │ ansible-     │  │   (INI/YAML)   │  │ - Tasks          │  │
+│  │  playbook    │  │ - Dynamic      │  │ - Handlers       │  │
+│  │ ansible-     │  │   (scripts,    │  │ - Variables      │  │
+│  │  galaxy      │  │   AWS, etc.)   │  │ - Templates      │  │
+│  │ ansible-     │  │                │  │ - Roles          │  │
+│  │  vault       │  │                │  │                  │  │
+│  └──────┬───────┘  └────────┬───────┘  └────────┬─────────┘  │
+│         │                   │                   │            │
+│         └───────────────────┼───────────────────┘            │
+│                             │                                │
+│  ┌──────────────────────────▼─────────────────────────────┐  │
+│  │                      Ansible Engine                    │  │
+│  │                                                        │  │
+│  │  1. Reads inventory (who to configure)                 │  │
+│  │  2. Reads playbook (what to do)                        │  │
+│  │  3. For each host:                                     │  │
+│  │     a. Generates Python module code                    │  │
+│  │     b. Copies module to target via SSH/SCP             │  │
+│  │     c. Executes module on target                       │  │
+│  │     d. Captures JSON output (changed: true/false)      │  │
+│  │     e. Removes temporary files                         │  │
+│  │  4. Reports results (ok, changed, failed, unreachable) │  │
+│  └──────────────────────────┬─────────────────────────────┘  │
+└─────────────────────────────┼────────────────────────────────┘
+                              │
+                              │ SSH (default, port 22)
+                              │ WinRM (Windows)
+                              │ Local (control node itself)
+                              │ Docker (container connection)
+        ┌─────────────────────┼─────────────────────┐
+        │                     │                     │
+ ┌──────▼───────┐      ┌──────▼───────┐      ┌──────▼───────┐
+ │ Managed Node │      │ Managed Node │      │ Managed Node │
+ │   (web-1)    │      │   (web-2)    │      │    (db-1)    │
+ │              │      │              │      │              │
+ │ Requires:    │      │              │      │ No Ansible   │
+ │ - Python 3   │      │              │      │ agent. Just  │
+ │ - SSH access │      │              │      │ SSH + Python.│
+ └──────────────┘      └──────────────┘      └──────────────┘
 ```
 
 **The key insight: Ansible is AGENTLESS.** No daemon runs on managed nodes. Ansible SSHs in, copies a Python script, runs it, reads the JSON output, and disconnects. This is why Ansible is popular for environments where you can't install agents (network devices, locked-down servers, temporary infrastructure).
@@ -4509,9 +4511,7 @@ host_key_checking = False          # For dynamic cloud instances (use known_host
 retry_files_enabled = False        # Don't create .retry files
 stdout_callback   = yaml           # Human-readable output (not default JSON)
 forks             = 20             # Parallel host connections (default: 5)
-timeout           = 30             # SSH connection timeout
-
-[privilege_escalation]
+timeout           = 30             # SSH connection timeout[privilege_escalation]
 become            = True           # Use sudo by default
 become_method     = sudo
 become_user       = root
@@ -4525,7 +4525,7 @@ ssh_args          = -o ControlMaster=auto -o ControlPersist=60s -o StrictHostKey
 ```
 
 **Pipelining explained:**
-```
+```text
 WITHOUT PIPELINING (default):
   For each task:
     1. SSH connect
@@ -4584,9 +4584,7 @@ monitoring
 [webservers:vars]
 ansible_user=ec2-user
 http_port=8080
-max_connections=1000
-
-[dbservers:vars]
+max_connections=1000[dbservers:vars]
 ansible_user=postgres
 ansible_port=22
 pg_version=16
@@ -4724,7 +4722,7 @@ ansible -i inventory/aws_ec2.yml all -m ping
 
 ### Variable Precedence — The 22-Level Hierarchy
 
-```
+```text
 Ansible has 22 levels of variable precedence.
 You DON'T need to memorize all 22.
 You need to know the IMPORTANT ones and the PATTERN.
@@ -4755,7 +4753,7 @@ THE RULE:
 
 ### group_vars and host_vars Directory Structure
 
-```
+```text
 inventory/
 ├── hosts.yml                    # Inventory file
 ├── group_vars/
@@ -5263,7 +5261,7 @@ http {
 
 ### Role Structure
 
-```
+```text
 roles/
 └── nginx/
     ├── defaults/           # Default variables (LOWEST priority — easy to override)
@@ -5545,7 +5543,7 @@ ansible-galaxy collection install -r requirements.yml
 
 ## Quick Reference Card
 
-```
+```text
 ANSIBLE ARCHITECTURE:
   Control node → SSH → Managed nodes (agentless)
   No daemon on targets. Just Python + SSH.
@@ -5704,8 +5702,7 @@ compose:
 ### The ansible.cfg
 
 ```ini
-# ansible.cfg — placed in the project root (or /etc/ansible/ansible.cfg)
-[defaults]
+# ansible.cfg — placed in the project root (or /etc/ansible/ansible.cfg)[defaults]
 # Point to the dynamic inventory file
 inventory = inventory/aws_ec2.yml
 
@@ -5733,14 +5730,10 @@ fact_caching_timeout = 86400
 stdout_callback = yaml
 
 # Retry files clutter the repo
-retry_files_enabled = False
-
-[privilege_escalation]
+retry_files_enabled = False[privilege_escalation]
 become = True
 become_method = sudo
-become_user = root
-
-[ssh_connection]
+become_user = root[ssh_connection]
 # Bastion / Jump host configuration
 # ALL connections route through the bastion's public IP
 ssh_args = -o ProxyCommand="ssh -W %h:%p -q -i ~/.ssh/novamart-bastion.pem ec2-user@bastion.novamart.internal" -o ControlMaster=auto -o ControlPersist=60s -o StrictHostKeyChecking=no
@@ -5754,7 +5747,7 @@ control_path_dir = ~/.ansible/cp
 
 **How the bastion connection works step by step:**
 
-```
+```text
 Control Node                  Bastion (public IP)           Target (private IP)
 ─────────────                 ───────────────────           ───────────────────
 ansible-playbook runs
@@ -5793,7 +5786,8 @@ ansible-inventory -i inventory/aws_ec2.yml --graph
 #   |  |--10.0.2.5
 
 # Test connectivity through bastion
-ansible all -m ping -i inventory/aws_ec2.yml --limit role_webserver
+ansible all -m ping -i inventory/aws_ec2.yml --
+limit role_webserver
 
 # Test that ansible_user is set correctly per OS
 ansible-inventory -i inventory/aws_ec2.yml --host 10.0.1.15 | grep ansible_user
@@ -5989,9 +5983,7 @@ ansible-inventory -i inventory/aws_ec2.yml --host 10.0.1.15 | grep ansible_user
 Description=Prometheus Node Exporter v{{ node_exporter_version }}
 Documentation=https://prometheus.io/docs/guides/node-exporter/
 After=network-online.target
-Wants=network-online.target
-
-[Service]
+Wants=network-online.target[Service]
 Type=simple
 User=node_exporter
 Group=node_exporter
@@ -6015,7 +6007,7 @@ WantedBy=multi-user.target
 
 **Why `serial: 5` and not `serial: 1` or `serial: 50`:**
 
-```
+```text
 serial: 1   → 50 hosts × ~30s each = 25 minutes. Safe but slow.
 serial: 5   → 10 batches × ~30s = 5 minutes. 90% of fleet still healthy if a batch fails.
 serial: 50  → All at once. If the new binary is broken, ALL monitoring is down. Never do this.
@@ -6032,7 +6024,7 @@ serial: "20%" → Also valid. Scales automatically with fleet size.
 
 **Problem 1: `forks: 5` (default)**
 
-```
+```text
 What's happening:
   Ansible processes only 5 hosts in parallel. With 50 hosts, that's 10 sequential
   batches per task. If each task takes 2 seconds per host:
@@ -6054,7 +6046,7 @@ Impact: ~5x throughput improvement on parallel tasks.
 
 **Problem 2: `gather_facts: true` on every play**
 
-```
+```text
 What's happening:
   gather_facts runs the 'setup' module on every host at the start of EVERY play.
   This SSHes into each host, executes ~30 system commands (uname, df, ip addr, 
@@ -6093,7 +6085,7 @@ Impact: Saves 8-10 minutes across 4 plays.
 
 **Problem 3: No pipelining**
 
-```
+```text
 What's happening:
   Without pipelining, for EVERY task on EVERY host, Ansible:
     1. Opens SSH connection (or reuses ControlPersist)
@@ -6129,7 +6121,7 @@ Impact: 3-5x faster per task due to reduced SSH overhead.
 
 **Problem 4: `serial: 1`**
 
-```
+```text
 What's happening:
   serial: 1 means Ansible processes ONE host at a time, SEQUENTIALLY.
   This COMPLETELY NEGATES the forks setting.
@@ -6169,7 +6161,7 @@ Impact: Changes from sequential (50 × T) to parallel (ceil(50/forks) × T).
 
 **Problem 5: Using `command` instead of native modules**
 
-```
+```text
 What's happening — example:
   # BAD: Not idempotent, no change detection, slow
   - name: Install nginx
@@ -6233,7 +6225,7 @@ Impact: Eliminates unnecessary operations on 2nd+ runs. First run: same speed.
 
 ### Estimated Runtime After All Fixes
 
-```
+```text
 BEFORE:
   forks=5, serial=1, gather_facts everywhere, no pipelining, all commands
   
@@ -6268,7 +6260,7 @@ AFTER:
 
 ### The Three Modules
 
-```
+```text
                     command              shell                raw
                     ─────────           ──────               ────
 Executes via:       execv() directly    /bin/sh -c "..."     Sends string over SSH
@@ -6414,7 +6406,7 @@ Native modules implement this contract internally. The `yum` module checks if a 
 
 `command` and `shell` **cannot know what your command does.** From Ansible's perspective, it ran a command and it exited 0. Was something changed? Ansible has no idea. So it **always reports `changed`**.
 
-```
+```text
 Run 1: ansible-playbook site.yml
   TASK [Create directory] → changed  (actually created it)
   TASK [Set timezone]     → changed  (actually changed it)
@@ -6489,7 +6481,7 @@ Run 2: ansible-playbook site.yml
 
 **The decision tree:**
 
-```
+```text
 Need to run something on a target?
 │
 ├─→ Does a native module exist? (apt, yum, file, copy, template, systemd, user...)
@@ -6541,7 +6533,7 @@ Not wrong — yours works — but unnecessary complexity.
 
 **What was missing (minor):**
 
-```
+```text
 1. Plugin-level caching to reduce AWS API calls:
    cache: true
    cache_plugin: jsonfile
@@ -6650,7 +6642,7 @@ At NovaMart ($50K/min outage cost), any fleet-wide change should have visibility
 
 **What was missing:**
 
-```
+```text
 1. strategy: free
    Default strategy is 'linear': all hosts must complete task N 
    before ANY host starts task N+1.
@@ -6727,7 +6719,7 @@ This is a subtle trap. `creates` is evaluated on the **target host**, but `ansib
 
 ## Overall Score: 4.6/5
 
-```
+```text
 Q1: 4.5/5  — Comprehensive, honest about tricky parts, minor gaps (caching, IAM auth)
 Q2: 4.5/5  — Production-grade playbook, Prometheus analysis is senior-level, minor gather_subset error
 Q3: 4.5/5  — All 5 problems nailed, realistic estimate, missed strategy:free and async
@@ -6752,7 +6744,7 @@ Moving to **Phase 4, Lesson 5: Ansible Advanced — Vault, Testing, Performance,
 
 ### The Problem
 
-```
+```text
 Your playbook needs:
   - Database passwords
   - API keys
@@ -6861,8 +6853,7 @@ echo 'MyVaultPassword123' > ~/.vault_pass
 chmod 600 ~/.vault_pass
 ansible-playbook site.yml --vault-password-file ~/.vault_pass
 
-# In ansible.cfg:
-[defaults]
+# In ansible.cfg:[defaults]
 vault_password_file = ~/.vault_pass
 # Now you never need to pass --vault-password-file
 
@@ -6892,7 +6883,7 @@ ansible-playbook site.yml \
 
 ### Vault vs External Secrets — When to Use What
 
-```
+```text
                     Ansible Vault              HashiCorp Vault / AWS SM
                     ─────────────              ──────────────────────────
 Encryption:         AES-256 (file-level)       AES-256 (service-level)
@@ -6934,7 +6925,7 @@ NovaMart pattern:
 
 ### The Performance Hierarchy
 
-```
+```text
 BIGGEST IMPACT → SMALLEST IMPACT:
 
 1. Architecture: Don't use Ansible where it's not needed
@@ -6958,7 +6949,7 @@ Let's cover #6 since #1-5 were in Lesson 4.
 ```yaml
 # Problem: Installing Java takes 60 seconds.
 # With forks:25 and 50 hosts, that's 2 rounds × 60s = 120s BLOCKED.
-# Other tasks can't start until Java installs on ALL hosts in the batch.
+# Other tasks can can't start until Java installs on ALL hosts in the batch.
 
 # Solution: async
 - name: Install Java (async)
@@ -7039,7 +7030,7 @@ Let's cover #6 since #1-5 were in Lesson 4.
 
 ### Mitogen — The Ansible Accelerator
 
-```
+```text
 Mitogen replaces Ansible's default SSH + temporary file execution model
 with a persistent Python interpreter on the remote host that receives
 code over an efficient binary channel.
@@ -7076,7 +7067,7 @@ CAVEATS:
 
 ### Performance Comparison
 
-```
+```text
 50 HOSTS, 20 TASKS, AVERAGE TASK: 3 SECONDS
 
 Configuration                              Estimated Time
@@ -7098,7 +7089,7 @@ Mitogen is the cherry on top.
 
 ### Why Test Ansible Code
 
-```
+```text
 "It worked on my machine" is bad enough for application code.
 For infrastructure code it's CATASTROPHIC.
 
@@ -7123,10 +7114,10 @@ With Molecule:
 
 ### Molecule Architecture
 
-```
+```text
 ┌────────────────────────────────────────────────┐
-│                  Molecule                        │
-│                                                  │
+│                  Molecule                      │
+│                                                │
 │  ┌──────────┐   ┌──────────┐   ┌──────────┐    │
 │  │ Create   │──▶│ Converge │──▶│ Verify   │    │
 │  │          │   │          │   │          │    │
@@ -7137,8 +7128,8 @@ With Molecule:
 │  │  EC2/    │   │          │   │ (verify  │    │
 │  │  Vagrant)│   │          │   │  state)  │    │
 │  └──────────┘   └──────────┘   └──────────┘    │
-│       │              │              │            │
-│       ▼              ▼              ▼            │
+│       │              │              │          │
+│       ▼              ▼              ▼          │
 │  ┌──────────┐   ┌──────────┐   ┌──────────┐    │
 │  │ Idempot. │   │ Side     │   │ Destroy  │    │
 │  │          │   │ Effect   │   │          │    │
@@ -7367,7 +7358,7 @@ pipeline {
 
 ### Molecule Limitations and Advanced Patterns
 
-```
+```text
 LIMITATION 1: Docker containers ≠ real servers
   - systemd in Docker is hacky (privileged mode, cgroup mounts)
   - No real kernel (shared with host)
@@ -7383,7 +7374,7 @@ LIMITATION 1: Docker containers ≠ real servers
       instance_type: t3.micro
       region: us-east-1
       vpc_subnet_id: subnet-xxx
-      security_groups: [sg-xxx]
+      security_groups:[sg-xxx]
   # Slower (2-3 min to provision) but tests on real infra
 
 LIMITATION 2: Can't test reboot scenarios
@@ -7408,14 +7399,14 @@ LIMITATION 3: Secrets
 
 ### Pattern 1: Terraform Provisions, Ansible Configures
 
-```
+```text
 THE MOST COMMON PATTERN AT NOVAMART:
 
-┌──────────┐         ┌──────────────┐         ┌──────────────┐
+┌──────────┐         ┌──────────────┐          ┌──────────────┐
 │Terraform │────────▶│  EC2 + Tags  │────────▶│   Ansible    │
 │          │ creates │  + SG + Key  │ discovers│   dynamic    │
 │ main.tf  │         │              │ via tags │   inventory  │
-└──────────┘         └──────────────┘         └──────┬───────┘
+└──────────┘         └──────────────┘          └──────┬───────┘
                                                       │
                                               ┌───────▼────────┐
                                               │   Playbooks    │
@@ -7437,7 +7428,7 @@ resource "aws_instance" "bastion" {
   subnet_id     = module.vpc.public_subnets[0]
   key_name      = aws_key_pair.ansible.key_name
 
-  vpc_security_group_ids = [aws_security_group.bastion.id]
+  vpc_security_group_ids =[aws_security_group.bastion.id]
 
   tags = {
     Name        = "bastion-${var.environment}"
@@ -7508,7 +7499,7 @@ vpc_cidr: "10.0.0.0/16"
 
 ### Pattern 3: Ansible as Terraform Provisioner (AVOID)
 
-```hcl
+```text
 # This pattern exists but is PROBLEMATIC:
 resource "aws_instance" "web" {
   # ...
@@ -7541,35 +7532,35 @@ resource "aws_instance" "web" {
 
 ### Pattern 4: The NovaMart CI/CD Integration
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
-│                    Jenkins Pipeline                            │
-│                                                                │
-│  Stage 1: Terraform Plan/Apply                                 │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ terraform init → plan → apply                             │  │
-│  │ Creates: EC2, SGs, IAM, etc.                              │  │
-│  │ Tags: Role, Environment, ManagedBy:ansible                │  │
-│  │ Outputs: endpoints, IPs, ARNs → saved as artifacts        │  │
-│  └────────────────────────┬─────────────────────────────────┘  │
-│                           │                                    │
-│  Stage 2: Sync Terraform outputs to Ansible vars               │
-│  ┌────────────────────────▼─────────────────────────────────┐  │
-│  │ terraform output -json → group_vars/env/terraform.yml     │  │
-│  └────────────────────────┬─────────────────────────────────┘  │
-│                           │                                    │
-│  Stage 3: Ansible Configuration                                │
-│  ┌────────────────────────▼─────────────────────────────────┐  │
-│  │ ansible-playbook -i inventory/aws_ec2.yml site.yml        │  │
-│  │ Dynamic inventory discovers new/existing hosts            │  │
-│  │ Configures: packages, users, services, monitoring         │  │
-│  └────────────────────────┬─────────────────────────────────┘  │
-│                           │                                    │
-│  Stage 4: Verification                                         │
-│  ┌────────────────────────▼─────────────────────────────────┐  │
-│  │ ansible-playbook verify.yml → health checks on all hosts  │  │
-│  │ Smoke tests, port checks, endpoint validation             │  │
-│  └──────────────────────────────────────────────────────────┘  │
+│                       Jenkins Pipeline                       │
+│                                                              │
+│  Stage 1: Terraform Plan/Apply                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ terraform init → plan → apply                          │  │
+│  │ Creates: EC2, SGs, IAM, etc.                           │  │
+│  │ Tags: Role, Environment, ManagedBy:ansible             │  │
+│  │ Outputs: endpoints, IPs, ARNs → saved as artifacts     │  │
+│  └────────────────────────┬───────────────────────────────┘  │
+│                           │                                  │
+│  Stage 2: Sync Terraform outputs to Ansible vars             │
+│  ┌────────────────────────▼───────────────────────────────┐  │
+│  │ terraform output -json → group_vars/env/terraform.yml  │  │
+│  └────────────────────────┬───────────────────────────────┘  │
+│                           │                                  │
+│  Stage 3: Ansible Configuration                              │
+│  ┌────────────────────────▼───────────────────────────────┐  │
+│  │ ansible-playbook -i inventory/aws_ec2.yml site.yml     │  │
+│  │ Dynamic inventory discovers new/existing hosts         │  │
+│  │ Configures: packages, users, services, monitoring      │  │
+│  └────────────────────────┬───────────────────────────────┘  │
+│                           │                                  │
+│  Stage 4: Verification                                       │
+│  ┌────────────────────────▼───────────────────────────────┐  │
+│  │ ansible-playbook verify.yml → health checks on hosts   │  │
+│  │ Smoke tests, port checks, endpoint validation          │  │
+│  └────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -7579,7 +7570,7 @@ resource "aws_instance" "web" {
 
 ### What Tower/AWX Adds
 
-```
+```text
 Ansible CLI:
   ✓ Runs playbooks from command line
   ✗ No web UI
@@ -7605,25 +7596,25 @@ Ansible Tower (commercial) / AWX (open source upstream):
 
 ### Tower/AWX Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────┐
-│                 AWX / Tower                           │
-│                                                       │
-│  ┌──────────┐  ┌──────────┐  ┌────────────────────┐  │
-│  │ Web UI   │  │ REST API │  │  Task Engine        │  │
-│  │ (React)  │  │          │  │  (runs playbooks    │  │
-│  │          │  │          │  │   in containers)    │  │
-│  └────┬─────┘  └────┬─────┘  └────────┬───────────┘  │
-│       │              │                 │               │
-│  ┌────▼──────────────▼─────────────────▼───────────┐  │
-│  │              PostgreSQL                          │  │
-│  │  (Jobs, inventories, credentials, audit logs)    │  │
-│  └─────────────────────────────────────────────────┘  │
-│                                                       │
-│  ┌─────────────────────────────────────────────────┐  │
-│  │              Redis                               │  │
-│  │  (Task queue, caching)                           │  │
-│  └─────────────────────────────────────────────────┘  │
+│                     AWX / Tower                     │
+│                                                     │
+│  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │
+│  │  Web UI  │  │ REST API │  │   Task Engine     │  │
+│  │ (React)  │  │          │  │  (runs playbooks  │  │
+│  │          │  │          │  │   in containers)  │  │
+│  └────┬─────┘  └────┬─────┘  └────────┬──────────┘  │
+│       │             │                 │             │
+│  ┌────▼─────────────▼─────────────────▼──────────┐  │
+│  │                  PostgreSQL                   │  │
+│  │ (Jobs, inventories, credentials, audit logs)  │  │
+│  └───────────────────────────────────────────────┘  │
+│                                                     │
+│  ┌───────────────────────────────────────────────┐  │
+│  │                    Redis                      │  │
+│  │            (Task queue, caching)              │  │
+│  └───────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────┘
 
 Key concepts:
@@ -7674,7 +7665,7 @@ Workflow: "Provision New Web Server"
 
 ### Tower/AWX vs Jenkins for Ansible
 
-```
+```text
                         Tower/AWX                Jenkins + Ansible
                         ─────────                ─────────────────
 Purpose:                Run Ansible              Run EVERYTHING
@@ -7869,7 +7860,7 @@ ansible-playbook site.yml --skip-tags "install"     # Everything except install
 
 ## Quick Reference Card
 
-```
+```text
 ANSIBLE VAULT:
   encrypt/decrypt/view/edit/rekey/encrypt_string
   Naming: vault_<var> in vault.yml → reference as <var> in vars.yml
@@ -7913,6 +7904,7 @@ IMPORTS vs INCLUDES:
   import_tasks: static, parsed at load time, tags propagate
   include_tasks: dynamic, parsed at runtime, can use variables in filename
 ```
+
 Set 1:
 Q1. A NovaMart engineer commits a plaintext database password to group_vars/production/vars.yml, pushes it to Bitbucket, and then realizes the mistake. Walk through the COMPLETE incident response: immediate actions (first 5 minutes), remediation (next hour), and prevention (permanent). Include the exact Ansible Vault commands to encrypt the file, the Git commands to scrub history, and the process changes to ensure this never happens again. What do you do about the password that was already exposed?
 
@@ -8186,7 +8178,7 @@ grep -r "SuperSecret123" /var/log/jenkins/ /var/log/ansible/
 
 **1. Pre-commit hook to detect secrets:**
 
-```bash
+```yaml
 # .pre-commit-config.yaml (in the repo root)
 repos:
   - repo: https://github.com/gitleaks/gitleaks
@@ -8198,7 +8190,8 @@ repos:
     rev: v6.22.0
     hooks:
       - id: ansible-lint
-
+```
+```bash
 # Install hooks for the team
 pre-commit install
 
@@ -8241,7 +8234,7 @@ stage('Secret Scan') {
 
 **4. Bitbucket branch permission — block pushes to main without CI passing:**
 
-```
+```text
 Repository Settings → Branch permissions → main:
   ✓ Require passing builds (includes the secret scan stage)
   ✓ Require pull request (no direct pushes)
@@ -8276,7 +8269,7 @@ vault_password_file = ./vault_pass_client.sh
 
 ### Summary: What Happened to the Exposed Password
 
-```
+```text
 Timeline:
   T+0min:   Password committed to Bitbucket in plaintext
   T+2min:   Engineer realizes mistake
@@ -8299,7 +8292,7 @@ the password no longer works because it was rotated in minute 3.
 
 ### Role Structure
 
-```
+```text
 roles/kernel_tuning/
 ├── defaults/
 │   └── main.yml
@@ -8620,7 +8613,7 @@ It does NOT validate that the kernel parameter actually took effect in an isolat
           text: "🔧 Kernel tuning rollout starting: batch {{ ansible_play_batch }} of {{ ansible_play_hosts | length }} hosts"
       delegate_to: localhost
       run_once: true
-      tags: [notify]
+      tags:[notify]
 
   roles:
     - role: kernel_tuning
@@ -8640,7 +8633,7 @@ It does NOT validate that the kernel parameter actually took effect in an isolat
 
 ### What Happens When 5 Hosts Fail Mid-Rollout
 
-```
+```text
 Scenario: serial: [1, 5, "25%"], max_fail_percentage: 10, fleet: 200 hosts
 
 Batch 1 (canary):  1 host → succeeds → continue
@@ -8680,16 +8673,16 @@ The 145 untouched hosts:
 
 ### Architecture Overview
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────┐
 │                        Jenkins Pipeline                          │
 │                                                                  │
-│  ┌─────────┐   ┌──────────┐   ┌──────────┐   ┌──────────────┐  │
-│  │Terraform│──→│ Wait for │──→│ Ansible  │──→│  Smoke Test  │  │
-│  │  Apply  │   │ Readiness│   │Configure │   │  & Notify    │  │
-│  └─────────┘   └──────────┘   └──────────┘   └──────────────┘  │
-│       │              ↑              │                             │
-│       │         SSH ready?          │                             │
+│  ┌─────────┐   ┌──────────┐   ┌──────────┐   ┌──────────────┐    │
+│  │Terraform│──→│ Wait for │──→│ Ansible  │──→│  Smoke Test  │    │
+│  │  Apply  │   │ Readiness│   │Configure │   │  & Notify    │    │
+│  └─────────┘   └──────────┘   └──────────┘   └──────────────┘    │
+│       │              ↑              │                            │
+│       │         SSH ready?          │                            │
 │       ↓         Port 22 open?      ↓                             │
 │  Outputs:       cloud-init done?   Inventory:                    │
 │  instance IPs                      aws_ec2 plugin                │
@@ -8964,7 +8957,7 @@ print(d['tf_bastion_public_ips'][0])
 import yaml
 with open('ansible/terraform_outputs.yml') as f:
     d = yaml.safe_load(f)
-for ip in d.get('tf_vault_private_ips', []) + d.get('tf_monitoring_private_ips', []):
+for ip in d.get('tf_vault_private_ips',[]) + d.get('tf_monitoring_private_ips',[]):
     print(ip)
 " | while read private_ip; do
                             for i in $(seq 1 30); do
@@ -8989,8 +8982,7 @@ for ip in d.get('tf_vault_private_ips', []) + d.get('tf_monitoring_private_ips',
         stage('Ansible Configure') {
             steps {
                 dir('ansible') {
-                    withCredentials([
-                        [$class: 'AmazonWebServicesCredentialsBinding',
+                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
                          credentialsId: 'aws-dr-deployer'],
                         sshUserPrivateKey(credentialsId: 'novamart-dr-ssh-key',
                                          keyFileVariable: 'SSH_KEY')
@@ -9010,7 +9002,7 @@ hosts = data.get('_meta', {}).get('hostvars', {})
 print(len(hosts))
 ")
                             
-                            if [ "$DISCOVERED" -lt 15 ]; then
+                            if[ "$DISCOVERED" -lt 15 ]; then
                                 echo "ERROR: Expected 15 instances, discovered $DISCOVERED"
                                 exit 1
                             fi
@@ -9073,7 +9065,7 @@ print(len(hosts))
 
 ### What Happens If Terraform Succeeds But Ansible Fails on 3 of 15 Hosts
 
-```
+```text
 Scenario: Terraform creates all 15 instances. Ansible configures 12 successfully.
 3 Vault servers fail during TLS certificate deployment.
 
@@ -9114,15 +9106,15 @@ Key design principle: Ansible and Terraform are INDEPENDENTLY re-runnable.
 
 ### Secrets Handling Across Both Tools in CI
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
-│                    Jenkins Credentials Store                  │
+│                   Jenkins Credentials Store                 │
 │  (or HashiCorp Vault with Jenkins Vault plugin)             │
-│                                                              │
+│                                                             │
 │  aws-dr-deployer        → AWS_ACCESS_KEY_ID/SECRET          │
 │  novamart-dr-ssh-key    → SSH private key for EC2           │
-│  ansible-vault-password → Ansible Vault decryption password  │
-│  slack-webhook          → Slack notification URL             │
+│  ansible-vault-password → Ansible Vault decryption password │
+│  slack-webhook          → Slack notification URL            │
 └─────────────────────────────────────────────────────────────┘
          │
          │ injected at runtime via withCredentials()
@@ -9130,19 +9122,19 @@ Key design principle: Ansible and Terraform are INDEPENDENTLY re-runnable.
          │ never written to workspace or logs
          ↓
 ┌─────────────────────────────────────────────────────────────┐
-│                    Pipeline Runtime                           │
-│                                                              │
-│  Terraform:                                                  │
-│    AWS creds → environment variables (AWS_ACCESS_KEY_ID)     │
-│    State encryption → S3 backend with SSE-KMS                │
-│    Sensitive outputs → marked sensitive = true               │
-│                                                              │
-│  Ansible:                                                    │
-│    SSH key → ANSIBLE_PRIVATE_KEY_FILE env var                │
-│    Vault password → --vault-password-file (tmpfs)            │
-│    Secrets in playbooks → ansible-vault encrypted files      │
-│    Runtime secrets → no_log: true on tasks with passwords    │
-│    HashiCorp Vault lookups → hashi_vault lookup plugin       │
+│                       Pipeline Runtime                      │
+│                                                             │
+│  Terraform:                                                 │
+│    AWS creds → environment variables (AWS_ACCESS_KEY_ID)    │
+│    State encryption → S3 backend with SSE-KMS               │
+│    Sensitive outputs → marked sensitive = true              │
+│                                                             │
+│  Ansible:                                                   │
+│    SSH key → ANSIBLE_PRIVATE_KEY_FILE env var               │
+│    Vault password → --vault-password-file (tmpfs)           │
+│    Secrets in playbooks → ansible-vault encrypted files     │
+│    Runtime secrets → no_log: true on tasks with passwords   │
+│    HashiCorp Vault lookups → hashi_vault lookup plugin      │
 └─────────────────────────────────────────────────────────────┘
 
 What NEVER happens:
@@ -9159,7 +9151,7 @@ What NEVER happens:
 
 ### The Error
 
-```
+```text
 TASK [nginx : Start nginx] fatal: [web-14]: FAILED! => 
 {"msg": "Could not find the requested service nginx: host"}
 ```
@@ -9215,7 +9207,7 @@ systemctl list-unit-files | grep -i "nginx\|httpd"
 
 **Possible Cause 3: The service name differs between OS/package versions**
 
-```bash
+```text
 # Amazon Linux 2 nginx from amazon-linux-extras:
 # Service name: nginx
 # Unit file: /usr/lib/systemd/system/nginx.service
@@ -9262,7 +9254,7 @@ In production EC2:
 
 **Problem: Docker containers don't run systemd by default.** When Molecule tests run in Docker:
 
-```
+```text
 Docker container:
   - PID 1 is /bin/bash or /sbin/init (faked)
   - systemd is NOT running as the init system
@@ -9381,7 +9373,7 @@ scenario:
 
 ### The Fundamental Limitation of Docker-Based Molecule Testing
 
-```
+```text
 What Docker CAN validate:
   ✓ Package installation logic
   ✓ Template rendering
@@ -9430,7 +9422,7 @@ The rule:
 
 ### Repository Layout
 
-```
+```text
 novamart-ansible/
 ├── ansible.cfg
 ├── vault_pass_client.sh            # Executable script, NOT a file with the password
@@ -9459,25 +9451,25 @@ novamart-ansible/
 
 ### Where the Ansible Vault Password Lives
 
-```
+```text
                     ┌─────────────────────────────┐
-                    │     HashiCorp Vault          │
-                    │                              │
-                    │  secret/novamart/ansible/    │
-                    │    vault_password: "xxxx"    │
-                    │    ssh_key: "-----BEGIN..."  │
-                    │                              │
+                    │       HashiCorp Vault       │
+                    │                             │
+                    │  secret/novamart/ansible/   │
+                    │    vault_password: "xxxx"   │
+                    │    ssh_key: "-----BEGIN..." │
+                    │                             │
                     └──────────┬──────────────────┘
                                │
                     ┌──────────┴──────────────────┐
-                    │                              │
-              ┌─────▼─────┐                 ┌──────▼──────┐
-              │  Jenkins   │                │    AWX       │
-              │            │                │              │
-              │ vault_pass │                │ Credential   │
-              │ _client.sh │                │ Type: Vault  │
-              │ uses AppRole│               │ uses AppRole │
-              └────────────┘                └─────────────┘
+                    │                             │
+              ┌─────▼─────┐                 ┌─────▼──────┐
+              │  Jenkins  │                 │    AWX     │
+              │           │                 │            │
+              │ vault_pass│                 │ Credential │
+              │ _client.sh│                 │ Type: Vault│
+              │uses AppRole                 │uses AppRole│
+              └───────────┘                 └────────────┘
 
 The Ansible Vault password NEVER:
   ✗ Exists as a file on disk (except briefly in tmpfs during execution)
@@ -9570,7 +9562,7 @@ pipeline {
 
 ### How AWX Retrieves the Vault Password
 
-```
+```text
 AWX Credential Types:
   1. "Vault" credential type (built-in)
      - Stores the Ansible Vault password
@@ -9628,7 +9620,7 @@ AWX Configuration:
 
 ### Bootstrap Secrets vs Runtime App Secrets
 
-```
+```text
 BOOTSTRAP SECRETS (in Ansible Vault):
   Purpose: Secrets Ansible needs to CONFIGURE infrastructure
   Examples:
@@ -9669,7 +9661,7 @@ The handoff:
 
 ### Rotation When a Platform Engineer Leaves
 
-```
+```text
 IMMEDIATE (within 1 hour of departure):
   1. Revoke the engineer's HashiCorp Vault token and all associated leases
      vault token revoke -accessor <engineer_accessor>
@@ -9731,7 +9723,7 @@ WITHIN 1 WEEK:
 
 ### Failure Mode: What If .vault_pass Gets Committed
 
-```
+```text
 If the vault_pass_client.sh file is committed (it shouldn't be — it's in .gitignore):
   Impact: LOW — the script itself doesn't contain secrets.
   It's a SCRIPT that retrieves secrets from HashiCorp Vault.
@@ -9761,7 +9753,7 @@ If a .vault_pass FILE (containing the actual password) is committed:
 
 **1. `forks = 10` — too few for 120 hosts**
 
-```
+```text
 Problem: 120 hosts ÷ 10 forks = 12 sequential rounds per task.
 Fix: forks = 30-50 (depends on control node RAM — ~100MB per fork).
 
@@ -9776,7 +9768,7 @@ Fix: forks = 30-50 (depends on control node RAM — ~100MB per fork).
 
 **2. `serial: 1` — the parallelism killer**
 
-```
+```text
 Problem: serial: 1 processes ONE host at a time regardless of forks setting.
   120 hosts × sequential = all tasks run 120 times in series.
   This is the SINGLE BIGGEST bottleneck. Nothing else matters until this is fixed.
@@ -9795,7 +9787,7 @@ Fix: Remove serial entirely for patching playbooks.
 
 **3. `gather_facts: true` on 5 plays**
 
-```
+```text
 Problem: 5 plays × 120 hosts × ~3 seconds per gather = 30 minutes just on facts.
   Even with forks=40: 5 plays × 3 rounds × 3 seconds = 45 seconds.
   But with serial:1: 5 plays × 120 hosts × 3 seconds = 1800 seconds = 30 minutes.
@@ -9829,7 +9821,7 @@ Fix — three layers:
 
 **4. No fact caching**
 
-```
+```text
 Problem: Every playbook invocation re-gathers facts from all 120 hosts.
   If the patching playbook calls 3 child playbooks via include, that's 3 gathers.
   If a CI pipeline runs the playbook then a verification playbook, that's 2 gathers.
@@ -9850,7 +9842,7 @@ Fix: Already covered above — jsonfile caching with 1-hour TTL.
 
 **5. `strategy: linear` (default)**
 
-```
+```text
 Problem: Linear strategy waits for ALL hosts to finish task N before 
   ANY host starts task N+1.
   
@@ -9881,7 +9873,7 @@ Fix: strategy: free for independent configuration tasks
 
 **6. Package installs are long-running**
 
-```
+```text
 Problem: yum update or apt upgrade can take 60-120 seconds per host.
   With linear strategy: all hosts blocked until the slowest finishes.
   With 120 hosts and forks=40: 3 rounds × 120s = 360s just for patching.
@@ -9918,7 +9910,7 @@ Fix: async + poll pattern for long-running tasks
 
 **7. Loops over packages instead of passing lists**
 
-```
+```text
 Problem:
   # BAD: 10 packages = 10 separate SSH round-trips × 10 yum transactions
   - name: Install required packages
@@ -9965,7 +9957,7 @@ Fix:
 
 **8. Dynamic inventory calls AWS every run with no inventory cache**
 
-```
+```text
 Problem: Every ansible-playbook invocation calls ec2:DescribeInstances 
   across all regions. This takes 3-8 seconds and counts against API rate limits.
   
@@ -9994,7 +9986,7 @@ Fix: Enable plugin-level inventory caching
 
 **9. Bastion SSH with no ControlPersist**
 
-```
+```text
 Problem: Without ControlPersist, every task on every host opens a NEW SSH 
   connection through the bastion. SSH handshake through a bastion:
   
@@ -10026,7 +10018,7 @@ Fix in ansible.cfg:
 
 ### Which Fixes Give the Largest Gains
 
-```
+```text
 RANK  FIX                        TIME SAVED       EFFORT
 ─────────────────────────────────────────────────────────
 #1    Remove serial: 1           ~50 minutes       1 line change
@@ -10043,7 +10035,7 @@ Total saved: ~70 minutes → we get to the target runtime
 
 ### What I Would NOT Optimize Yet
 
-```
+```text
 1. Mitogen (Ansible strategy plugin replacement)
    - Replaces Ansible's SSH + module execution with a custom protocol
    - 3-7x speedup on task execution
@@ -10064,7 +10056,7 @@ Rule: Fix configuration before changing architecture.
 
 ### Realistic Post-Fix Runtime Estimate
 
-```
+```text
 BEFORE: 70 minutes
   serial: 1 → everything sequential
   No caching → redundant fact gathering and API calls
@@ -10290,7 +10282,7 @@ become_user = root
 
 ### Directory Structure
 
-```
+```text
 roles/vault_server/
 ├── defaults/
 │   └── main.yml              # Default variables (Vault version, ports, paths)
@@ -10330,7 +10322,7 @@ roles/vault_server/
 
 ### Docker vs EC2 Tradeoffs
 
-```
+```text
                          Docker                    EC2
                          ──────                    ───
 Speed                    30-90 seconds             5-10 minutes
@@ -10593,7 +10585,7 @@ scenario:
 
 ### What Idempotence Must Prove
 
-```
+```text
 The idempotence step in the test_sequence runs converge.yml a SECOND time.
 
 It MUST show:
@@ -10722,13 +10714,13 @@ scenario:
       ansible.builtin.uri:
         url: "https://localhost:8200/v1/sys/health"
         validate_certs: false
-        status_code: [200, 429, 472, 473, 501, 503]
+        status_code:[200, 429, 472, 473, 501, 503]
         # 200=initialized+unsealed, 429=standby, 472=DR secondary
         # 473=perf standby, 501=not initialized, 503=sealed
       register: health
       retries: 10
       delay: 3
-      until: health.status in [200, 501, 503]
+      until: health.status in[200, 501, 503]
 
     # === REAL FIREWALL RULES ===
     - name: Verify firewall allows Vault API port (RedHat)
@@ -10838,7 +10830,7 @@ pipeline {
 
 ### 5 Production Failure Modes Molecule WOULD Catch
 
-```
+```text
 1. WRONG FILE PERMISSIONS ON vault.hcl
    Symptom: Vault refuses to start — "permission denied reading config"
    Molecule catches: verify.yml checks mode='0640', owner=vault
@@ -10862,7 +10854,7 @@ pipeline {
 
 ### 3 Production Failure Modes Molecule Would MISS
 
-```
+```text
 1. FIREWALL BLOCKS VAULT PORT IN VPC SECURITY GROUP
    Why missed: Molecule (even EC2) uses a permissive test security group.
    Production uses tightly scoped SGs managed by Terraform.
@@ -10888,14 +10880,14 @@ pipeline {
 
 ### Why local-exec/remote-exec Is a Trap
 
-```
+```text
 resource "aws_instance" "web" {
   ami           = "ami-xxxxx"
   instance_type = "t3.micro"
 
   # THE TRAP:
   provisioner "remote-exec" {
-    inline = ["sudo yum install -y nginx"]
+    inline =["sudo yum install -y nginx"]
   }
 }
 
@@ -10934,7 +10926,7 @@ The correct separation:
 
 ### Pipeline Stages
 
-```
+```text
 ┌─────────┐    ┌──────────┐    ┌───────────┐    ┌─────────┐    ┌────────┐    ┌──────┐
 │Terraform│───→│  Output  │───→│   Wait    │───→│ Ansible │───→│ Smoke  │───→│Notify│
 │  Apply  │    │  Sync    │    │  Ready    │    │Configure│    │ Tests  │    │      │
@@ -11123,7 +11115,7 @@ while true; do
     break
   fi
 
-  if [ "$ELAPSED" -ge "$MAX_WAIT" ]; then
+  if[ "$ELAPSED" -ge "$MAX_WAIT" ]; then
     echo "ERROR: Timeout waiting for instances: $NOT_READY"
     exit 1
   fi
@@ -11159,7 +11151,7 @@ for ip in $PRIVATE_IPS; do
       echo "✓ $ip SSH ready"
       break
     fi
-    if [ "$attempt" -eq 10 ]; then
+    if[ "$attempt" -eq 10 ]; then
       echo "ERROR: Cannot reach $ip via SSH after 10 attempts"
       exit 1
     fi
@@ -11172,7 +11164,7 @@ echo "All instances ready for Ansible configuration."
 
 ### Re-Running Ansible Without Re-Running Terraform
 
-```
+```text
 This is the KEY advantage of the decoupled pattern:
 
   # Scenario 1: Ansible role update (new nginx config)
@@ -11196,7 +11188,7 @@ This is the KEY advantage of the decoupled pattern:
 
 ### Rollback and Verification
 
-```
+```text
 ANSIBLE ROLLBACK:
   Option A: Git revert the playbook change, re-run
     git revert HEAD
@@ -11228,7 +11220,7 @@ VERIFICATION:
 
 ### What Drift Each Tool Can and Cannot Detect
 
-```
+```text
                         Terraform               Ansible
                         ─────────               ───────
 DETECTS:
@@ -11274,7 +11266,7 @@ CANNOT DETECT:
 
 ### Responsibility Matrix
 
-```
+```text
 FUNCTION                          JENKINS              AWX
 ──────────────────────────────────────────────────────────────
 CI/CD Application Delivery        ✓ PRIMARY            ✗
@@ -11327,7 +11319,7 @@ Approvals for Prod Changes        △ MANUAL GATES       ✓ WORKFLOW
 
 ### The Key Insight: Why Both Exist
 
-```
+```text
 Jenkins = DEVELOPER tool
   - Triggered by code changes (git push)
   - Builds, tests, deploys applications
@@ -11356,68 +11348,68 @@ Overlap zone:
 
 **AWX Implementation:**
 
-```
+```text
 Step 1: Create separate inventories
   ┌─────────────────────────────────────────┐
-  │ AWX Inventories                          │
-  │                                          │
-  │ "NovaMart Staging"                       │
-  │   Source: AWS EC2 dynamic                │
-  │   Filter: tag:Environment = staging      │
+  │ AWX Inventories                         │
+  │                                         │
+  │ "NovaMart Staging"                      │
+  │   Source: AWS EC2 dynamic               │
+  │   Filter: tag:Environment = staging     │
   │   Sync: every 5 minutes                 │
-  │                                          │
-  │ "NovaMart Production"                    │
-  │   Source: AWS EC2 dynamic                │
-  │   Filter: tag:Environment = production   │
+  │                                         │
+  │ "NovaMart Production"                   │
+  │   Source: AWS EC2 dynamic               │
+  │   Filter: tag:Environment = production  │
   │   Sync: every 5 minutes                 │
   └─────────────────────────────────────────┘
 
 Step 2: Create the job template
   ┌─────────────────────────────────────────┐
-  │ Job Template: "Restart Service"          │
-  │                                          │
-  │ Playbook: playbooks/restart_service.yml  │
-  │ Inventory: (selected at launch time)     │
-  │ Credentials: SSH key for staging         │
-  │                                          │
-  │ Survey (form presented to user):         │
-  │   Service Name: [____________]           │
-  │   (dropdown: novamart-api, nginx,        │
-  │    node_exporter, vault)                 │
-  │                                          │
-  │ Limit: (optional host pattern)           │
+  │ Job Template: "Restart Service"         │
+  │                                         │
+  │ Playbook: playbooks/restart_service.yml │
+  │ Inventory: (selected at launch time)    │
+  │ Credentials: SSH key for staging        │
+  │                                         │
+  │ Survey (form presented to user):        │
+  │   Service Name: [____________]          │
+  │   (dropdown: novamart-api, nginx,       │
+  │    node_exporter, vault)                │
+  │                                         │
+  │ Limit: (optional host pattern)          │
   └─────────────────────────────────────────┘
 
 Step 3: RBAC — this is where AWX enforces safety
   ┌─────────────────────────────────────────┐
   │ AWX Organizations & Teams               │
-  │                                          │
-  │ Organization: NovaMart                   │
-  │   Team: Developers                       │
-  │     Members: dev-alice, dev-bob          │
-  │     Permissions:                         │
-  │       "NovaMart Staging" inventory → USE │
-  │       "Restart Service" template → EXEC  │
-  │       "NovaMart Production" inventory    │
-  │         → NO ACCESS (not granted)        │
-  │                                          │
-  │   Team: SRE                              │
-  │     Members: sre-carol, sre-dave         │
-  │     Permissions:                         │
-  │       "NovaMart Staging" → ADMIN         │
-  │       "NovaMart Production" → USE        │
-  │       "Restart Service" template → EXEC  │
-  │       (Production requires approval      │
-  │        workflow — see below)             │
-  │                                          │
-  │   Team: Platform                         │
-  │     Permissions: ADMIN on everything     │
+  │                                         │
+  │ Organization: NovaMart                  │
+  │   Team: Developers                      │
+  │     Members: dev-alice, dev-bob         │
+  │     Permissions:                        │
+  │       "NovaMart Staging" inventory → USE│
+  │       "Restart Service" template → EXEC │
+  │       "NovaMart Production" inventory   │
+  │         → NO ACCESS (not granted)       │
+  │                                         │
+  │   Team: SRE                             │
+  │     Members: sre-carol, sre-dave        │
+  │     Permissions:                        │
+  │       "NovaMart Staging" → ADMIN        │
+  │       "NovaMart Production" → USE       │
+  │       "Restart Service" template → EXEC │
+  │       (Production requires approval     │
+  │        workflow — see below)            │
+  │                                         │
+  │   Team: Platform                        │
+  │     Permissions: ADMIN on everything    │
   └─────────────────────────────────────────┘
 ```
 
 **What happens when dev-alice tries to restart staging:**
 
-```
+```text
 1. Alice logs into AWX UI
 2. Clicks "Restart Service" job template
 3. Survey form appears:
@@ -11436,7 +11428,7 @@ Step 3: RBAC — this is where AWX enforces safety
 
 **What happens when dev-alice tries to touch production:**
 
-```
+```text
 She can't. The "NovaMart Production" inventory is not granted to the 
 Developers team. When she launches the job template:
   - Production inventory doesn't appear in the dropdown
@@ -11477,7 +11469,7 @@ Workflow:
 
 ### Why Jenkins Permissions Are Weaker for This Use Case
 
-```
+```text
 JENKINS RBAC MODEL:
   ┌──────────────────────────────────────────────────────────┐
   │ Jenkins permissions are FOLDER-BASED and JOB-BASED:      │
@@ -11489,7 +11481,7 @@ JENKINS RBAC MODEL:
   │       └── restart-service    ← dev-alice: No permission   │
   │                                                          │
   │ Problem 1: TWO SEPARATE JOBS for the same playbook       │
-  │   The staging and production restart jobs are duplicates  │
+  │   The staging and production restart jobs are duplicates │
   │   with different parameters. When the playbook changes,  │
   │   you must update BOTH jobs. Drift between them = risk.  │
   │                                                          │
@@ -11502,40 +11494,40 @@ JENKINS RBAC MODEL:
   │       which is fragile and bypassable                    │
   │                                                          │
   │ Problem 3: CREDENTIAL SCOPE IS COARSE                    │
-  │   Jenkins credentials are scoped to folders or global.    │
-  │   If dev-alice has Build permission on staging folder,    │
-  │   she can see which credentials are AVAILABLE (though     │
-  │   not their values). She could reference the production   │
-  │   SSH key ID in a pipeline script if she has write access │
+  │   Jenkins credentials are scoped to folders or global.   │
+  │   If dev-alice has Build permission on staging folder,   │
+  │   she can see which credentials are AVAILABLE (though    │
+  │   not their values). She could reference the production  │
+  │   SSH key ID in a pipeline script if she has write access│
   │   to the Jenkinsfile.                                    │
   │                                                          │
   │ Problem 4: NO SURVEY FORMS                               │
-  │   Jenkins "parameterized builds" are free-text fields.    │
-  │   No dropdown validation, no enforced choices.            │
-  │   A developer can type ANY host pattern as a parameter.   │
-  │   Jenkins won't stop them — it just passes the string     │
+  │   Jenkins "parameterized builds" are free-text fields.   │
+  │   No dropdown validation, no enforced choices.           │
+  │   A developer can type ANY host pattern as a parameter.  │
+  │   Jenkins won't stop them — it just passes the string    │
   │   to ansible-playbook --limit.                           │
   │                                                          │
   │ Problem 5: AUDIT IS UNSTRUCTURED                         │
-  │   Jenkins build log: a giant text blob.                   │
-  │   "Who restarted what on which hosts at what time?"       │
+  │   Jenkins build log: a giant text blob.                  │
+  │   "Who restarted what on which hosts at what time?"      │
   │   → Parse 500 lines of console output.                   │
   │   AWX: structured JSON record with user, inventory,      │
-  │   job template, hosts affected, changed count,            │
+  │   job template, hosts affected, changed count,           │
   │   and approval chain.                                    │
   └──────────────────────────────────────────────────────────┘
 
 AWX RBAC MODEL:
   ┌──────────────────────────────────────────────────────────┐
-  │ AWX permissions are RESOURCE-BASED:                       │
+  │ AWX permissions are RESOURCE-BASED:                      │
   │                                                          │
-  │ ONE job template: "Restart Service"                       │
-  │ Permission check at LAUNCH TIME:                          │
+  │ ONE job template: "Restart Service"                      │
+  │ Permission check at LAUNCH TIME:                         │
   │                                                          │
-  │   1. Does user have EXECUTE on this job template? → check │
-  │   2. Does user have USE on the selected inventory? → check│
-  │   3. Does user have USE on the required credential? → chk │
-  │   4. Is the inventory allowed for this template?  → check │
+  │   1. Does user have EXECUTE on this job template? → check│
+  │   2. Does user have USE on the selected inventory? → chk │
+  │   3. Does user have USE on the required credential? → chk│
+  │   4. Is the inventory allowed for this template?  → check│
   │                                                          │
   │   ALL FOUR must pass. If any fails → 403.                │
   │                                                          │
@@ -11543,21 +11535,21 @@ AWX RBAC MODEL:
   │   ✓ EXECUTE on "Restart Service"                         │
   │   ✓ USE on "NovaMart Staging" inventory                  │
   │   ✗ No permission on "NovaMart Production" inventory     │
-  │   → She literally cannot select production as a target    │
+  │   → She literally cannot select production as a target   │
   │   → It doesn't appear in her UI                          │
   │   → API returns 403                                      │
-  │   → No workaround exists without an admin granting access │
+  │   → No workaround exists without an admin granting access│
   │                                                          │
-  │ The survey form enforces VALID CHOICES:                   │
-  │   Service name: dropdown with fixed options               │
-  │   She can't type an arbitrary command                     │
-  │   She can't inject "--limit production" into a field      │
+  │ The survey form enforces VALID CHOICES:                  │
+  │   Service name: dropdown with fixed options              │
+  │   She can't type an arbitrary command                    │
+  │   She can't inject "--limit production" into a field     │
   │                                                          │
   │ Credentials are INVISIBLE:                               │
-  │   dev-alice has USE permission on staging SSH credential   │
+  │   dev-alice has USE permission on staging SSH credential │
   │   She can't SEE the key, can't COPY it, can't REFERENCE  │
-  │   it in another context. AWX injects it into the          │
-  │   playbook execution environment and removes it after.    │
+  │   it in another context. AWX injects it into the         │
+  │   playbook execution environment and removes it after.   │
   └──────────────────────────────────────────────────────────┘
 
 SUMMARY:
@@ -11585,7 +11577,7 @@ SUMMARY:
 
 ### Complete Side-by-Side Example
 
-```
+```text
 SCENARIO: dev-alice wants to restart novamart-api on 3 staging hosts
 
 ═══════════════════════════════════════════════════════════════
@@ -11641,14 +11633,14 @@ SCENARIO: dev-alice wants to restart novamart-api on 3 staging hosts
    To find who ran what: grep through logs manually
    
 ═══════════════════════════════════════════════════════════════
-                        AWX WAY
+                          AWX WAY
 ═══════════════════════════════════════════════════════════════
 
 1. Admin creates ONE job template: "Restart Service"
    - Playbook: playbooks/restart_service.yml
    - Ask inventory on launch: YES
    - Survey enabled:
-     Service Name: [novamart-api ▾] (dropdown, fixed choices)
+     Service Name:[novamart-api ▾] (dropdown, fixed choices)
 
 2. RBAC configured:
    Team "Developers":
@@ -11684,51 +11676,4 @@ SCENARIO: dev-alice wants to restart novamart-api on 3 staging hosts
      Duration: 12s
    
    Queryable via API:
-   curl -s https://awx.novamart.internal/api/v2/jobs/?created_by__username=dev-alice | jq '.results[] | {id, name, status, started}'
-```
-
-### When Jenkins SHOULD Run Ansible (Not AWX)
-
-```
-Jenkins runs Ansible when:
-  1. INITIAL PROVISIONING after Terraform
-     → Part of the CI/CD pipeline (code change → infra change → config)
-     → Trigger: git push to infrastructure repo
-     → Jenkins orchestrates: TF plan → TF apply → wait → Ansible configure
-     
-  2. APPLICATION DEPLOYMENT CONFIG
-     → Deploy new app version, update nginx vhost, rotate feature flags
-     → Trigger: git push to application repo
-     → Part of the CD pipeline, not an operational task
-
-  3. INTEGRATION TESTING
-     → Molecule tests run in Jenkins as part of role CI
-     → Trigger: PR to ansible-roles repo
-
-AWX runs Ansible when:
-  1. SCHEDULED OPERATIONS
-     → Patching (monthly), cert rotation (quarterly), compliance scans (weekly)
-     → Trigger: AWX schedule
-     
-  2. AD-HOC OPERATIONS
-     → Restart service, flush cache, add SSH key, investigate incident
-     → Trigger: human clicks button in AWX UI
-     
-  3. SELF-SERVICE OPERATIONS
-     → Developer restarts staging service
-     → NOC engineer runs diagnostic playbook
-     → Trigger: human with limited permissions
-
-  4. DRIFT REMEDIATION
-     → AWX runs ansible-playbook --check --diff on schedule
-     → If drift detected, notifies team or auto-remediates
-     → Trigger: AWX schedule
-
-The boundary:
-  CODE CHANGE triggers Jenkins → Jenkins may call Ansible
-  OPERATIONAL NEED triggers AWX → AWX runs Ansible directly
-  
-  They NEVER overlap on the same task.
-  If both Jenkins and AWX can restart a service, 
-  you have a governance problem.
-```
+   curl -s https://awx.novamart.internal/api/v2/jobs/?created_by__username=dev-alice | jq '.results
