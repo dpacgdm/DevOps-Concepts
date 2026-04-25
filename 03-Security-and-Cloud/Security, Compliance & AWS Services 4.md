@@ -1,10 +1,12 @@
+--- START OF FILE Paste April 25, 2026 - 12:42PM ---
+
 # Phase 6, Lesson 5: Compliance & Governance
 
 ---
 
 ## Why This Lesson Matters at NovaMart
 
-```
+```text
 NovaMart processes credit cards, stores personal data, and operates
 at a scale where regulatory failure isn't a fine — it's an existential threat.
 
@@ -25,25 +27,28 @@ This lesson covers:
   4. ORGANIZATIONAL GOVERNANCE — Policies, change management, access reviews
 ```
 
-```
-THE DEVOPS ENGINEER'S ROLE IN COMPLIANCE:
-
-  You are NOT a compliance officer.
-  You ARE the person who IMPLEMENTS and AUTOMATES compliance.
-
-  Compliance officer says: "We need encryption at rest for all data stores."
-  You implement: KMS encryption on RDS, S3, EBS, etcd, ElastiCache.
-  You automate: AWS Config rule that detects unencrypted resources.
-  You prove: Terraform code, Config compliance dashboard, CloudTrail logs.
-
-  Compliance officer says: "We need access reviews quarterly."
-  You implement: IAM Access Analyzer, unused credential reports.
-  You automate: Lambda that generates access review reports.
-  You prove: S3-stored reports with timestamps, Jira tickets for remediation.
-
-  The auditor doesn't care about your Terraform code.
-  The auditor cares about EVIDENCE that controls exist and WORK.
-  Your job: make evidence generation automatic and continuous.
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                  THE DEVOPS ENGINEER'S ROLE IN COMPLIANCE                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ You are NOT a compliance officer.                                           │
+│ You ARE the person who IMPLEMENTS and AUTOMATES compliance.                 │
+│                                                                             │
+│ Compliance officer says: "We need encryption at rest for all data stores."  │
+│ You implement: KMS encryption on RDS, S3, EBS, etcd, ElastiCache.           │
+│ You automate: AWS Config rule that detects unencrypted resources.           │
+│ You prove: Terraform code, Config compliance dashboard, CloudTrail logs.    │
+│                                                                             │
+│ Compliance officer says: "We need access reviews quarterly."                │
+│ You implement: IAM Access Analyzer, unused credential reports.              │
+│ You automate: Lambda that generates access review reports.                  │
+│ You prove: S3-stored reports with timestamps, Jira tickets for remediation. │
+│                                                                             │
+│ The auditor doesn't care about your Terraform code.                         │
+│ The auditor cares about EVIDENCE that controls exist and WORK.              │
+│ Your job: make evidence generation automatic and continuous.                │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -52,93 +57,93 @@ THE DEVOPS ENGINEER'S ROLE IN COMPLIANCE:
 
 ### PCI-DSS (Payment Card Industry Data Security Standard)
 
-```
+```text
 PCI-DSS applies because NovaMart processes credit card payments.
 Version: PCI-DSS v4.0 (effective March 2024, mandatory March 2025)
 
 PCI-DSS has 12 REQUIREMENTS organized in 6 GOALS:
 
-┌─────────────────────────────────────────────────────────────────────┐
-│                    PCI-DSS v4.0 REQUIREMENTS                         │
-│                                                                      │
-│  GOAL 1: BUILD AND MAINTAIN A SECURE NETWORK                        │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │ Req 1: Install and maintain network security controls        │    │
-│  │   NovaMart: Security Groups, NACLs, NetworkPolicies,         │    │
-│  │   Istio mTLS, WAF, Cloudflare                                │    │
-│  │                                                              │    │
-│  │ Req 2: Apply secure configurations to all system components  │    │
-│  │   NovaMart: CIS-hardened AMIs, Pod Security Standards,       │    │
-│  │   Gatekeeper policies, Ansible hardening playbooks           │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  GOAL 2: PROTECT ACCOUNT DATA                                       │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │ Req 3: Protect stored account data                           │    │
-│  │   NovaMart: KMS encryption (RDS, S3, EBS, etcd),            │    │
-│  │   Vault Transit for application-level encryption,            │    │
-│  │   data retention policies, tokenization for PAN storage      │    │
-│  │                                                              │    │
-│  │ Req 4: Protect cardholder data with strong cryptography      │    │
-│  │        during transmission over open, public networks        │    │
-│  │   NovaMart: TLS 1.2+ everywhere, Istio mTLS (internal),     │    │
-│  │   ACM certificates, cert-manager, HSTS headers              │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  GOAL 3: MAINTAIN A VULNERABILITY MANAGEMENT PROGRAM                │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │ Req 5: Protect all systems and networks from malicious       │    │
-│  │        software                                              │    │
-│  │   NovaMart: Trivy image scanning, Falco runtime detection,   │    │
-│  │   GuardDuty malware protection, read-only rootfs             │    │
-│  │                                                              │    │
-│  │ Req 6: Develop and maintain secure systems and software      │    │
-│  │   NovaMart: SonarQube (code quality), Snyk (dependencies),   │    │
-│  │   secure SDLC, code review requirements, change management   │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  GOAL 4: IMPLEMENT STRONG ACCESS CONTROL MEASURES                   │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │ Req 7: Restrict access to system components and cardholder   │    │
-│  │        data by business need-to-know                         │    │
-│  │   NovaMart: IAM least privilege, RBAC, IRSA, Vault policies, │    │
-│  │   namespace isolation, NetworkPolicies                       │    │
-│  │                                                              │    │
-│  │ Req 8: Identify users and authenticate access to system      │    │
-│  │        components                                            │    │
-│  │   NovaMart: SSO (OIDC), MFA everywhere, unique accounts,    │    │
-│  │   no shared credentials, service account management          │    │
-│  │                                                              │    │
-│  │ Req 9: Restrict physical access to cardholder data           │    │
-│  │   NovaMart: AWS responsibility (data center security).       │    │
-│  │   NovaMart responsibility: laptop encryption, office access  │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  GOAL 5: REGULARLY MONITOR AND TEST NETWORKS                        │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │ Req 10: Log and monitor all access to system components      │    │
-│  │         and cardholder data                                  │    │
-│  │   NovaMart: CloudTrail, VPC Flow Logs, K8s audit logs,       │    │
-│  │   Vault audit logs, application logs (Loki), Falco           │    │
-│  │                                                              │    │
-│  │ Req 11: Test security of systems and networks regularly      │    │
-│  │   NovaMart: Penetration testing (annual + after changes),    │    │
-│  │   vulnerability scanning (continuous), ASV scans (quarterly),│    │
-│  │   internal network scans, wireless scanning                  │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  GOAL 6: MAINTAIN AN INFORMATION SECURITY POLICY                    │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │ Req 12: Support information security with organizational     │    │
-│  │         policies and programs                                │    │
-│  │   NovaMart: Security policy documents, risk assessments,     │    │
-│  │   security awareness training, incident response plan,       │    │
-│  │   vendor management program                                  │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          PCI-DSS v4.0 REQUIREMENTS                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ GOAL 1: BUILD AND MAINTAIN A SECURE NETWORK                                 │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ Req 1: Install and maintain network security controls                   │ │
+│ │   NovaMart: Security Groups, NACLs, NetworkPolicies,                    │ │
+│ │   Istio mTLS, WAF, Cloudflare                                           │ │
+│ │                                                                         │ │
+│ │ Req 2: Apply secure configurations to all system components             │ │
+│ │   NovaMart: CIS-hardened AMIs, Pod Security Standards,                  │ │
+│ │   Gatekeeper policies, Ansible hardening playbooks                      │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│ GOAL 2: PROTECT ACCOUNT DATA                                                │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ Req 3: Protect stored account data                                      │ │
+│ │   NovaMart: KMS encryption (RDS, S3, EBS, etcd),                        │ │
+│ │   Vault Transit for application-level encryption,                       │ │
+│ │   data retention policies, tokenization for PAN storage                 │ │
+│ │                                                                         │ │
+│ │ Req 4: Protect cardholder data with strong cryptography                 │ │
+│ │        during transmission over open, public networks                   │ │
+│ │   NovaMart: TLS 1.2+ everywhere, Istio mTLS (internal),                 │ │
+│ │   ACM certificates, cert-manager, HSTS headers                          │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│ GOAL 3: MAINTAIN A VULNERABILITY MANAGEMENT PROGRAM                         │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ Req 5: Protect all systems and networks from malicious                  │ │
+│ │        software                                                         │ │
+│ │   NovaMart: Trivy image scanning, Falco runtime detection,              │ │
+│ │   GuardDuty malware protection, read-only rootfs                        │ │
+│ │                                                                         │ │
+│ │ Req 6: Develop and maintain secure systems and software                 │ │
+│ │   NovaMart: SonarQube (code quality), Snyk (dependencies),              │ │
+│ │   secure SDLC, code review requirements, change management              │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│ GOAL 4: IMPLEMENT STRONG ACCESS CONTROL MEASURES                            │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ Req 7: Restrict access to system components and cardholder              │ │
+│ │        data by business need-to-know                                    │ │
+│ │   NovaMart: IAM least privilege, RBAC, IRSA, Vault policies,            │ │
+│ │   namespace isolation, NetworkPolicies                                  │ │
+│ │                                                                         │ │
+│ │ Req 8: Identify users and authenticate access to system                 │ │
+│ │        components                                                       │ │
+│ │   NovaMart: SSO (OIDC), MFA everywhere, unique accounts,                │ │
+│ │   no shared credentials, service account management                     │ │
+│ │                                                                         │ │
+│ │ Req 9: Restrict physical access to cardholder data                      │ │
+│ │   NovaMart: AWS responsibility (data center security).                  │ │
+│ │   NovaMart responsibility: laptop encryption, office access             │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│ GOAL 5: REGULARLY MONITOR AND TEST NETWORKS                                 │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ Req 10: Log and monitor all access to system components                 │ │
+│ │         and cardholder data                                             │ │
+│ │   NovaMart: CloudTrail, VPC Flow Logs, K8s audit logs,                  │ │
+│ │   Vault audit logs, application logs (Loki), Falco                      │ │
+│ │                                                                         │ │
+│ │ Req 11: Test security of systems and networks regularly                 │ │
+│ │   NovaMart: Penetration testing (annual + after changes),               │ │
+│ │   vulnerability scanning (continuous), ASV scans (quarterly),           │ │
+│ │   internal network scans, wireless scanning                             │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│ GOAL 6: MAINTAIN AN INFORMATION SECURITY POLICY                             │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ Req 12: Support information security with organizational                │ │
+│ │         policies and programs                                           │ │
+│ │   NovaMart: Security policy documents, risk assessments,                │ │
+│ │   security awareness training, incident response plan,                  │ │
+│ │   vendor management program                                             │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-```
+```text
 PCI-DSS SCOPING — THE CRITICAL CONCEPT:
 
   PCI-DSS applies to the CDE (Cardholder Data Environment):
@@ -147,31 +152,33 @@ PCI-DSS SCOPING — THE CRITICAL CONCEPT:
     - Systems that could affect security of the CDE
 
   NovaMart's CDE:
-    ┌──────────────────────────────────────────────────────┐
-    │  IN SCOPE (CDE):                                      │
-    │  • payment-svc (processes card data)                  │
-    │  • fraud-svc (analyzes transactions)                  │
-    │  • RDS payment database                               │
-    │  • Stripe integration (card processing)               │
-    │  • EKS nodes running payment/fraud pods               │
-    │  • Network segments connecting these components       │
-    │  • ALB/WAF handling payment traffic                   │
-    │  • Vault (stores payment credentials)                 │
-    │                                                       │
-    │  CONNECTED TO CDE (also in scope):                    │
-    │  • order-svc (sends payment requests)                 │
-    │  • api-gateway (routes to payment-svc)                │
-    │  • Monitoring stack (accesses CDE metrics/logs)       │
-    │  • CI/CD pipeline (deploys to CDE)                    │
-    │  • EKS control plane                                  │
-    │                                                       │
-    │  OUT OF SCOPE:                                        │
-    │  • search-svc (no cardholder data)                    │
-    │  • notification-svc (no cardholder data — sends       │
-    │    confirmation emails but no card numbers)           │
-    │  • cart-svc (stores items, not card data)             │
-    │  • Static assets (S3/CloudFront)                      │
-    └──────────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────┐
+  │                        PCI-DSS SCOPE                         │
+  ├──────────────────────────────────────────────────────────────┤
+  │ IN SCOPE (CDE):                                              │
+  │ • payment-svc (processes card data)                          │
+  │ • fraud-svc (analyzes transactions)                          │
+  │ • RDS payment database                                       │
+  │ • Stripe integration (card processing)                       │
+  │ • EKS nodes running payment/fraud pods                       │
+  │ • Network segments connecting these components               │
+  │ • ALB/WAF handling payment traffic                           │
+  │ • Vault (stores payment credentials)                         │
+  │                                                              │
+  │ CONNECTED TO CDE (also in scope):                            │
+  │ • order-svc (sends payment requests)                         │
+  │ • api-gateway (routes to payment-svc)                        │
+  │ • Monitoring stack (accesses CDE metrics/logs)               │
+  │ • CI/CD pipeline (deploys to CDE)                            │
+  │ • EKS control plane                                          │
+  │                                                              │
+  │ OUT OF SCOPE:                                                │
+  │ • search-svc (no cardholder data)                            │
+  │ • notification-svc (no cardholder data — sends               │
+  │   confirmation emails but no card numbers)                   │
+  │ • cart-svc (stores items, not card data)                     │
+  │ • Static assets (S3/CloudFront)                              │
+  └──────────────────────────────────────────────────────────────┘
 
   SCOPE REDUCTION STRATEGY:
     1. TOKENIZATION: Replace real card numbers with tokens
@@ -190,49 +197,49 @@ PCI-DSS SCOPING — THE CRITICAL CONCEPT:
 
 ### SOC 2 (Service Organization Control 2)
 
-```
+```text
 SOC 2 applies because NovaMart's enterprise customers require it.
 "Show me your SOC 2 report" is the first security question from
 any enterprise B2B customer or partner.
 
 SOC 2 is based on 5 TRUST SERVICE CRITERIA (TSC):
 
-┌─────────────────────────────────────────────────────────────────────┐
-│                    SOC 2 TRUST SERVICE CRITERIA                       │
-│                                                                      │
-│  1. SECURITY (Required — always included)                           │
-│     "The system is protected against unauthorized access"            │
-│     Controls: Access control, encryption, monitoring, incident       │
-│     response, vulnerability management, change management            │
-│     NovaMart: IAM, RBAC, KMS, WAF, GuardDuty, Falco, etc.         │
-│                                                                      │
-│  2. AVAILABILITY (Included for NovaMart)                            │
-│     "The system is available for operation as committed"             │
-│     Controls: SLOs, monitoring, incident response, DR, backups,     │
-│     capacity planning, redundancy                                    │
-│     NovaMart: Multi-AZ, auto-scaling, SLOs, PagerDuty, runbooks    │
-│                                                                      │
-│  3. PROCESSING INTEGRITY (Included for NovaMart)                    │
-│     "System processing is complete, valid, accurate, timely"         │
-│     Controls: Input validation, error handling, reconciliation,      │
-│     data processing monitoring                                       │
-│     NovaMart: SLIs for correctness, order reconciliation jobs,      │
-│     payment verification, data pipeline monitoring                   │
-│                                                                      │
-│  4. CONFIDENTIALITY (Included for NovaMart)                         │
-│     "Information designated as confidential is protected"            │
-│     Controls: Encryption, access control, data classification,       │
-│     secure disposal                                                  │
-│     NovaMart: KMS, Vault, network segmentation, data retention      │
-│                                                                      │
-│  5. PRIVACY (Included — NovaMart stores PII)                        │
-│     "Personal information is collected, used, retained, disclosed    │
-│      in conformity with commitments and criteria"                    │
-│     Controls: Privacy policy, consent management, data subject       │
-│     rights, data minimization                                        │
-│     NovaMart: GDPR compliance, data subject access requests,        │
-│     anonymization pipelines, consent management                      │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         SOC 2 TRUST SERVICE CRITERIA                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 1. SECURITY (Required — always included)                                    │
+│    "The system is protected against unauthorized access"                    │
+│    Controls: Access control, encryption, monitoring, incident               │
+│    response, vulnerability management, change management                    │
+│    NovaMart: IAM, RBAC, KMS, WAF, GuardDuty, Falco, etc.                    │
+│                                                                             │
+│ 2. AVAILABILITY (Included for NovaMart)                                     │
+│    "The system is available for operation as committed"                     │
+│    Controls: SLOs, monitoring, incident response, DR, backups,              │
+│    capacity planning, redundancy                                            │
+│    NovaMart: Multi-AZ, auto-scaling, SLOs, PagerDuty, runbooks              │
+│                                                                             │
+│ 3. PROCESSING INTEGRITY (Included for NovaMart)                             │
+│    "System processing is complete, valid, accurate, timely"                 │
+│    Controls: Input validation, error handling, reconciliation,              │
+│    data processing monitoring                                               │
+│    NovaMart: SLIs for correctness, order reconciliation jobs,               │
+│    payment verification, data pipeline monitoring                           │
+│                                                                             │
+│ 4. CONFIDENTIALITY (Included for NovaMart)                                  │
+│    "Information designated as confidential is protected"                    │
+│    Controls: Encryption, access control, data classification,               │
+│    secure disposal                                                          │
+│    NovaMart: KMS, Vault, network segmentation, data retention               │
+│                                                                             │
+│ 5. PRIVACY (Included — NovaMart stores PII)                                 │
+│    "Personal information is collected, used, retained, disclosed            │
+│     in conformity with commitments and criteria"                            │
+│    Controls: Privacy policy, consent management, data subject               │
+│    rights, data minimization                                                │
+│    NovaMart: GDPR compliance, data subject access requests,                 │
+│    anonymization pipelines, consent management                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 
 SOC 2 REPORT TYPES:
   Type I:  Controls exist at a point in time (snapshot)
@@ -255,7 +262,7 @@ SOC 2 vs PCI-DSS:
 
 ### GDPR (General Data Protection Regulation)
 
-```
+```text
 GDPR applies because NovaMart has EU customers (eu-west-1 region).
 Even if NovaMart were US-only, processing EU resident data = GDPR applies.
 
@@ -308,20 +315,20 @@ KEY GDPR PRINCIPLES FOR DEVOPS:
      monitoring, etc. are architectural decisions, not afterthoughts.
 ```
 
-```
+```text
 GDPR TECHNICAL IMPLEMENTATIONS:
 
 DATA CLASSIFICATION:
-  ┌──────────────────────────────────────────────────────────────┐
-  │ Classification │ Examples                │ Controls           │
-  ├────────────────┼─────────────────────────┼────────────────────┤
-  │ PUBLIC         │ Product descriptions,   │ No special         │
-  │                │ pricing                 │ controls           │
-  │ INTERNAL       │ Internal docs, metrics  │ Auth required      │
-  │ CONFIDENTIAL   │ Business data, orders   │ Encryption, RBAC   │
-  │ RESTRICTED     │ PII, payment data,      │ KMS, Vault, audit  │
-  │                │ health data             │ logging, DLP       │
-  └────────────────┴─────────────────────────┴────────────────────┘
+┌────────────────┬─────────────────────────┬────────────────────────────────┐
+│ Classification │ Examples                │ Controls                       │
+├────────────────┼─────────────────────────┼────────────────────────────────┤
+│ PUBLIC         │ Product descriptions,   │ No special controls            │
+│                │ pricing                 │                                │
+│ INTERNAL       │ Internal docs, metrics  │ Auth required                  │
+│ CONFIDENTIAL   │ Business data, orders   │ Encryption, RBAC               │
+│ RESTRICTED     │ PII, payment data,      │ KMS, Vault, audit logging, DLP │
+│                │ health data             │                                │
+└────────────────┴─────────────────────────┴────────────────────────────────┘
 
 PII HANDLING IN LOGS:
   # Promtail pipeline to mask PII before ingestion to Loki
@@ -354,7 +361,7 @@ DATA RESIDENCY:
 
 ### CIS Benchmarks — Infrastructure Hardening
 
-```
+```text
 CIS (Center for Internet Security) publishes hardening benchmarks
 for specific technologies. These are PRESCRIPTIVE checklists.
 
@@ -389,7 +396,7 @@ spec:
       containers:
         - name: kube-bench
           image: aquasec/kube-bench:v0.7.1
-          command: ["kube-bench", "run", "--targets", "node,policies,managedservices"]
+          command:["kube-bench", "run", "--targets", "node,policies,managedservices"]
           # For EKS: use "node,policies,managedservices"
           # EKS manages the control plane — you can't check it
           volumeMounts:
@@ -421,7 +428,7 @@ kubectl -n security logs job/kube-bench
 
 # kube-bench output example:
 # [PASS] 4.1.1 Ensure that the kubelet service file permissions are set to 600
-# [FAIL] 4.1.5 Ensure that the --read-only-port argument is set to 0
+#[FAIL] 4.1.5 Ensure that the --read-only-port argument is set to 0
 # [WARN] 4.2.6 Ensure that the --protect-kernel-defaults argument is set to true
 # 
 # == Summary ==
@@ -461,7 +468,7 @@ spec:
                   FAILURES=$(cat /tmp/results.json | jq '[.Controls[].tests[].results[] | select(.status=="FAIL")] | length')
                   
                   # Send to monitoring
-                  if [ "$FAILURES" -gt "0" ]; then
+                  if[ "$FAILURES" -gt "0" ]; then
                     curl -X POST "$SLACK_WEBHOOK" \
                       -H 'Content-Type: application/json' \
                       -d "{\"text\": \"⚠️ kube-bench: $FAILURES CIS benchmark failures detected. Review results in S3.\"}"
@@ -486,106 +493,106 @@ spec:
 
 ### The Compliance-as-Code Pyramid
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│            COMPLIANCE-AS-CODE PYRAMID                                 │
-│                                                                      │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │  LAYER 1: PREVENTIVE CONTROLS (Stop bad things)             │    │
-│  │                                                              │    │
-│  │  SCPs → Account-level guardrails (can't be bypassed)        │    │
-│  │  Gatekeeper/Kyverno → K8s admission policies                │    │
-│  │  IAM Policies → Least privilege                              │    │
-│  │  AWS Config Rules → Resource compliance                      │    │
-│  │  Terraform Sentinel/OPA → IaC policy gates                  │    │
-│  │  Branch protection → Code change governance                  │    │
-│  │  NetworkPolicies → Network segmentation                      │    │
-│  │                                                              │    │
-│  │  BEST: Violations are IMPOSSIBLE. Can't create non-compliant │    │
-│  │        resources because the platform won't allow it.        │    │
-│  └──────────────────────────────┬──────────────────────────────┘    │
-│                                 │                                    │
-│  ┌──────────────────────────────▼──────────────────────────────┐    │
-│  │  LAYER 2: DETECTIVE CONTROLS (Find bad things)               │    │
-│  │                                                              │    │
-│  │  Security Hub → Compliance scoring                           │    │
-│  │  AWS Config → Continuous resource evaluation                 │    │
-│  │  GuardDuty → Threat detection                                │    │
-│  │  Falco → Runtime anomalies                                   │    │
-│  │  CloudTrail → API audit trail                                │    │
-│  │  kube-bench → CIS benchmark compliance                       │    │
-│  │  Trivy → Vulnerability detection                             │    │
-│  │  IAM Access Analyzer → Unintended access paths               │    │
-│  │                                                              │    │
-│  │  SECOND BEST: Violations are DETECTED quickly and            │    │
-│  │  automatically. Alert → investigate → remediate.             │    │
-│  └──────────────────────────────┬──────────────────────────────┘    │
-│                                 │                                    │
-│  ┌──────────────────────────────▼──────────────────────────────┐    │
-│  │  LAYER 3: CORRECTIVE CONTROLS (Fix bad things)               │    │
-│  │                                                              │    │
-│  │  Config auto-remediation → Fix non-compliant resources       │    │
-│  │  GuardDuty auto-response → Quarantine compromised instances  │    │
-│  │  Falco auto-response → Kill compromised containers           │    │
-│  │  Lambda functions → Auto-fix security groups, S3 policies    │    │
-│  │  Incident response playbooks → Human-driven remediation      │    │
-│  │                                                              │    │
-│  │  FALLBACK: When prevention and detection aren't enough,      │    │
-│  │  fix automatically or with clear procedures.                 │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  PRINCIPLE: Maximize Layer 1. Layer 2 catches what Layer 1 misses.   │
-│  Layer 3 is for when Layer 2 finds something.                        │
-│  If you're relying on Layer 3 daily, Layer 1 is insufficient.        │
-└─────────────────────────────────────────────────────────────────────┘
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          COMPLIANCE-AS-CODE PYRAMID                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ LAYER 1: PREVENTIVE CONTROLS (Stop bad things)                          │ │
+│ │                                                                         │ │
+│ │ SCPs → Account-level guardrails (can't be bypassed)                     │ │
+│ │ Gatekeeper/Kyverno → K8s admission policies                             │ │
+│ │ IAM Policies → Least privilege                                          │ │
+│ │ AWS Config Rules → Resource compliance                                  │ │
+│ │ Terraform Sentinel/OPA → IaC policy gates                               │ │
+│ │ Branch protection → Code change governance                              │ │
+│ │ NetworkPolicies → Network segmentation                                  │ │
+│ │                                                                         │ │
+│ │ BEST: Violations are IMPOSSIBLE. Can't create non-compliant             │ │
+│ │       resources because the platform won't allow it.                    │ │
+│ └─────────────────────────────┬───────────────────────────────────────────┘ │
+│                               │                                             │
+│ ┌─────────────────────────────▼───────────────────────────────────────────┐ │
+│ │ LAYER 2: DETECTIVE CONTROLS (Find bad things)                           │ │
+│ │                                                                         │ │
+│ │ Security Hub → Compliance scoring                                       │ │
+│ │ AWS Config → Continuous resource evaluation                             │ │
+│ │ GuardDuty → Threat detection                                            │ │
+│ │ Falco → Runtime anomalies                                               │ │
+│ │ CloudTrail → API audit trail                                            │ │
+│ │ kube-bench → CIS benchmark compliance                                   │ │
+│ │ Trivy → Vulnerability detection                                         │ │
+│ │ IAM Access Analyzer → Unintended access paths                           │ │
+│ │                                                                         │ │
+│ │ SECOND BEST: Violations are DETECTED quickly and                        │ │
+│ │ automatically. Alert → investigate → remediate.                         │ │
+│ └─────────────────────────────┬───────────────────────────────────────────┘ │
+│                               │                                             │
+│ ┌─────────────────────────────▼───────────────────────────────────────────┐ │
+│ │ LAYER 3: CORRECTIVE CONTROLS (Fix bad things)                           │ │
+│ │                                                                         │ │
+│ │ Config auto-remediation → Fix non-compliant resources                   │ │
+│ │ GuardDuty auto-response → Quarantine compromised instances              │ │
+│ │ Falco auto-response → Kill compromised containers                       │ │
+│ │ Lambda functions → Auto-fix security groups, S3 policies                │ │
+│ │ Incident response playbooks → Human-driven remediation                  │ │
+│ │                                                                         │ │
+│ │ FALLBACK: When prevention and detection aren't enough,                  │ │
+│ │ fix automatically or with clear procedures.                             │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│ PRINCIPLE: Maximize Layer 1. Layer 2 catches what Layer 1 misses.           │
+│ Layer 3 is for when Layer 2 finds something.                                │
+│ If you're relying on Layer 3 daily, Layer 1 is insufficient.                │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### AWS Organizations — Multi-Account Governance
 
-```
+```text
 NovaMart uses AWS Organizations for account-level isolation:
 
-┌─────────────────────────────────────────────────────────────────────┐
-│                  AWS ORGANIZATIONS STRUCTURE                          │
-│                                                                      │
-│  Root                                                                │
-│  ├── Management Account (billing, Organizations admin ONLY)          │
-│  │   └── NO workloads here. Ever.                                   │
-│  │                                                                   │
-│  ├── OU: Security                                                    │
-│  │   ├── security-audit (CloudTrail aggregation, Security Hub admin) │
-│  │   ├── security-logging (centralized log archive)                  │
-│  │   └── security-tooling (GuardDuty admin, Inspector)              │
-│  │                                                                   │
-│  ├── OU: Infrastructure                                              │
-│  │   ├── network-hub (Transit Gateway, Direct Connect, DNS)          │
-│  │   └── shared-services (ECR, Artifactory, monitoring)             │
-│  │                                                                   │
-│  ├── OU: Workloads                                                   │
-│  │   ├── OU: Production                                              │
-│  │   │   ├── novamart-prod-us-east-1                                │
-│  │   │   ├── novamart-prod-us-west-2                                │
-│  │   │   └── novamart-prod-eu-west-1                                │
-│  │   ├── OU: Staging                                                 │
-│  │   │   └── novamart-staging                                       │
-│  │   └── OU: Development                                             │
-│  │       └── novamart-dev                                           │
-│  │                                                                   │
-│  └── OU: Sandbox                                                     │
-│      └── novamart-sandbox (experimentation, limited budget)          │
-│                                                                      │
-│  WHY MULTI-ACCOUNT?                                                  │
-│  1. Blast radius: Compromise in dev can't reach production           │
-│  2. Billing: Clear cost allocation per environment                   │
-│  3. Limits: AWS service limits are per-account                       │
-│  4. Compliance: CDE (PCI) isolation in dedicated account             │
-│  5. IAM: Separate IAM boundaries per account                        │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         AWS ORGANIZATIONS STRUCTURE                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Root                                                                        │
+│ ├── Management Account (billing, Organizations admin ONLY)                  │
+│ │   └── NO workloads here. Ever.                                            │
+│ │                                                                           │
+│ ├── OU: Security                                                            │
+│ │   ├── security-audit (CloudTrail aggregation, Security Hub admin)         │
+│ │   ├── security-logging (centralized log archive)                          │
+│ │   └── security-tooling (GuardDuty admin, Inspector)                       │
+│ │                                                                           │
+│ ├── OU: Infrastructure                                                      │
+│ │   ├── network-hub (Transit Gateway, Direct Connect, DNS)                  │
+│ │   └── shared-services (ECR, Artifactory, monitoring)                      │
+│ │                                                                           │
+│ ├── OU: Workloads                                                           │
+│ │   ├── OU: Production                                                      │
+│ │   │   ├── novamart-prod-us-east-1                                         │
+│ │   │   ├── novamart-prod-us-west-2                                         │
+│ │   │   └── novamart-prod-eu-west-1                                         │
+│ │   ├── OU: Staging                                                         │
+│ │   │   └── novamart-staging                                                │
+│ │   └── OU: Development                                                     │
+│ │       └── novamart-dev                                                    │
+│ │                                                                           │
+│ └── OU: Sandbox                                                             │
+│     └── novamart-sandbox (experimentation, limited budget)                  │
+│                                                                             │
+│ WHY MULTI-ACCOUNT?                                                          │
+│ 1. Blast radius: Compromise in dev can't reach production                   │
+│ 2. Billing: Clear cost allocation per environment                           │
+│ 3. Limits: AWS service limits are per-account                               │
+│ 4. Compliance: CDE (PCI) isolation in dedicated account                     │
+│ 5. IAM: Separate IAM boundaries per account                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Service Control Policies — Organization-Level Guardrails
 
-```
+```text
 SCPs are the MOST POWERFUL preventive control in AWS.
 They set MAXIMUM permissions for an entire account or OU.
 Even the account root user cannot exceed SCP boundaries.
@@ -606,11 +613,11 @@ resource "aws_organizations_policy" "region_restriction" {
 
   content = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Sid       = "DenyNonApprovedRegions"
         Effect    = "Deny"
-        NotAction = [
+        NotAction =[
           # Global services that MUST work from any region
           "a4b:*", "budgets:*", "ce:*", "chime:*",
           "cloudfront:*", "cur:*", "globalaccelerator:*",
@@ -625,7 +632,7 @@ resource "aws_organizations_policy" "region_restriction" {
         Resource = "*"
         Condition = {
           StringNotEquals = {
-            "aws:RequestedRegion" = [
+            "aws:RequestedRegion" =[
               "us-east-1",
               "us-west-2",
               "eu-west-1"
@@ -649,11 +656,11 @@ resource "aws_organizations_policy" "protect_security" {
 
   content = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Sid    = "DenyDisableGuardDuty"
         Effect = "Deny"
-        Action = [
+        Action =[
           "guardduty:DeleteDetector",
           "guardduty:DisassociateFromMasterAccount",
           "guardduty:UpdateDetector"
@@ -663,7 +670,7 @@ resource "aws_organizations_policy" "protect_security" {
       {
         Sid    = "DenyDisableCloudTrail"
         Effect = "Deny"
-        Action = [
+        Action =[
           "cloudtrail:DeleteTrail",
           "cloudtrail:StopLogging",
           "cloudtrail:UpdateTrail"
@@ -673,7 +680,7 @@ resource "aws_organizations_policy" "protect_security" {
       {
         Sid    = "DenyDisableConfig"
         Effect = "Deny"
-        Action = [
+        Action =[
           "config:DeleteConfigurationRecorder",
           "config:StopConfigurationRecorder",
           "config:DeleteDeliveryChannel"
@@ -683,7 +690,7 @@ resource "aws_organizations_policy" "protect_security" {
       {
         Sid    = "DenyDisableSecurityHub"
         Effect = "Deny"
-        Action = [
+        Action =[
           "securityhub:DisableSecurityHub",
           "securityhub:DeleteMembers",
           "securityhub:DisassociateFromMasterAccount"
@@ -693,7 +700,7 @@ resource "aws_organizations_policy" "protect_security" {
       {
         Sid    = "DenyLeaveOrganization"
         Effect = "Deny"
-        Action = [
+        Action =[
           "organizations:LeaveOrganization"
         ]
         Resource = "*"
@@ -709,11 +716,11 @@ resource "aws_organizations_policy" "prevent_privilege_escalation" {
 
   content = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Sid    = "DenyAdminPolicyAttachment"
         Effect = "Deny"
-        Action = [
+        Action =[
           "iam:AttachRolePolicy",
           "iam:AttachUserPolicy",
           "iam:AttachGroupPolicy"
@@ -721,7 +728,7 @@ resource "aws_organizations_policy" "prevent_privilege_escalation" {
         Resource = "*"
         Condition = {
           ArnEquals = {
-            "iam:PolicyArn" = [
+            "iam:PolicyArn" =[
               "arn:aws:iam::aws:policy/AdministratorAccess",
               "arn:aws:iam::aws:policy/IAMFullAccess",
               "arn:aws:iam::aws:policy/PowerUserAccess"
@@ -732,14 +739,14 @@ resource "aws_organizations_policy" "prevent_privilege_escalation" {
       {
         Sid    = "DenyCreateAdminUser"
         Effect = "Deny"
-        Action = [
+        Action =[
           "iam:CreateUser",
           "iam:CreateAccessKey"
         ]
         Resource = "*"
         Condition = {
           StringNotLike = {
-            "aws:PrincipalArn" = [
+            "aws:PrincipalArn" =[
               "arn:aws:iam::*:role/OrganizationAdmin",
               "arn:aws:iam::*:role/SecurityAdmin"
             ]
@@ -757,11 +764,11 @@ resource "aws_organizations_policy" "require_encryption" {
 
   content = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Sid    = "DenyUnencryptedS3Upload"
         Effect = "Deny"
-        Action = ["s3:PutObject"]
+        Action =["s3:PutObject"]
         Resource = "*"
         Condition = {
           StringNotEquals = {
@@ -786,7 +793,7 @@ resource "aws_organizations_policy" "require_encryption" {
       {
         Sid    = "DenyUnencryptedRDS"
         Effect = "Deny"
-        Action = ["rds:CreateDBInstance", "rds:CreateDBCluster"]
+        Action =["rds:CreateDBInstance", "rds:CreateDBCluster"]
         Resource = "*"
         Condition = {
           Bool = {
@@ -799,7 +806,7 @@ resource "aws_organizations_policy" "require_encryption" {
 }
 ```
 
-```
+```text
 SCP TESTING — CRITICAL:
 
   SCPs can LOCK YOU OUT of your own account if misconfigured.
@@ -819,7 +826,7 @@ SCP TESTING — CRITICAL:
 
 ### IAM Access Analyzer — Continuous Access Review
 
-```
+```text
 IAM Access Analyzer continuously monitors for unintended access:
 
 TYPE 1: EXTERNAL ACCESS ANALYZER
@@ -923,7 +930,7 @@ def handler(event, context):
     }
 
     # Section 1: Unused IAM users (no activity in 90 days)
-    unused_users = []
+    unused_users =[]
     credential_report = iam.generate_credential_report()
     # Wait for report... (simplified)
     response = iam.get_credential_report()
@@ -937,7 +944,7 @@ def handler(event, context):
     report['sections']['unused_users'] = unused_users
 
     # Section 2: Unused access keys
-    unused_keys = []
+    unused_keys =[]
     paginator = iam.get_paginator('list_users')
     for page in paginator.paginate():
         for user in page['Users']:
@@ -957,7 +964,7 @@ def handler(event, context):
     report['sections']['unused_access_keys'] = unused_keys
 
     # Section 3: Over-provisioned roles (from Access Analyzer)
-    unused_access_findings = []
+    unused_access_findings =[]
     paginator = analyzer.get_paginator('list_findings_v2')
     for page in paginator.paginate(
         analyzerArn='arn:aws:access-analyzer:us-east-1:888888888888:analyzer/novamart-unused-access',
@@ -973,7 +980,7 @@ def handler(event, context):
     report['sections']['unused_access_findings'] = unused_access_findings
 
     # Section 4: External access findings
-    external_findings = []
+    external_findings =[]
     paginator = analyzer.get_paginator('list_findings_v2')
     for page in paginator.paginate(
         analyzerArn='arn:aws:access-analyzer:us-east-1:888888888888:analyzer/novamart-external-access',
@@ -1034,7 +1041,7 @@ def handler(event, context):
 
 ### The Evidence Problem
 
-```
+```text
 AUDITORS NEED EVIDENCE. Not promises. Not architecture diagrams.
 EVIDENCE that controls existed and OPERATED EFFECTIVELY over the audit period.
 
@@ -1064,70 +1071,70 @@ THE AUTOMATED EVIDENCE GOAL:
 
 ### NovaMart's Continuous Compliance Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│         NOVAMART CONTINUOUS COMPLIANCE ARCHITECTURE                    │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │  EVIDENCE SOURCES                                              │ │
-│  │                                                                │ │
-│  │  AWS Config          → Resource configuration over time         │ │
-│  │  Security Hub        → Compliance scores over time             │ │
-│  │  CloudTrail          → API audit trail                         │ │
-│  │  Gatekeeper audits   → K8s policy compliance                   │ │
-│  │  kube-bench          → CIS benchmark results                   │ │
-│  │  Trivy scans         → Vulnerability scan results              │ │
-│  │  Terraform plans     → Infrastructure change evidence          │ │
-│  │  ArgoCD sync history → Deployment change evidence              │ │
-│  │  PagerDuty           → Incident history and response times     │ │
-│  │  Postmortems         → Incident analysis documentation         │ │
-│  │  Access reviews      → Quarterly IAM review results            │ │
-│  │  Pen test reports    → Annual penetration test results         │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                          │                                           │
-│                          ▼                                           │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │  EVIDENCE STORE (S3 — immutable, encrypted, versioned)         │ │
-│  │                                                                │ │
-│  │  s3://novamart-compliance/                                     │ │
-│  │  ├── config-snapshots/          (AWS Config, 6-hourly)         │ │
-│  │  ├── security-hub/              (compliance scores, daily)     │ │
-│  │  ├── cloudtrail/                (API logs, continuous)         │ │
-│  │  ├── kube-bench/                (CIS results, weekly)          │ │
-│  │  ├── trivy-scans/               (vuln scans, per build)       │ │
-│  │  ├── access-reviews/            (IAM reviews, quarterly)      │ │
-│  │  ├── pen-tests/                 (results, annual)             │ │
-│  │  ├── incident-postmortems/      (after each incident)         │ │
-│  │  ├── change-records/            (Terraform plans + approvals) │ │
-│  │  └── training-records/          (security training completion)│ │
-│  │                                                                │ │
-│  │  S3 features:                                                  │ │
-│  │  • Object Lock (COMPLIANCE mode — immutable for audit period)  │ │
-│  │  • Versioning (track changes)                                  │ │
-│  │  • KMS encryption (data protection)                            │ │
-│  │  • Access logging (who accessed evidence)                      │ │
-│  │  • Lifecycle (archive after audit period, retain per policy)   │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                          │                                           │
-│                          ▼                                           │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │  COMPLIANCE DASHBOARD (Grafana)                                │ │
-│  │                                                                │ │
-│  │  Panel 1: Security Hub compliance scores by standard           │ │
-│  │  Panel 2: Open findings by severity and age                    │ │
-│  │  Panel 3: Config rule compliance % over time                   │ │
-│  │  Panel 4: Mean time to remediate (MTTR) for findings           │ │
-│  │  Panel 5: Gatekeeper violations trend                          │ │
-│  │  Panel 6: Access review completion status                      │ │
-│  │  Panel 7: Certificate expiry timeline                          │ │
-│  │  Panel 8: Encryption coverage (% of resources encrypted)       │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                 NOVAMART CONTINUOUS COMPLIANCE ARCHITECTURE                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ EVIDENCE SOURCES                                                        │ │
+│ │                                                                         │ │
+│ │ AWS Config          → Resource configuration over time                  │ │
+│ │ Security Hub        → Compliance scores over time                       │ │
+│ │ CloudTrail          → API audit trail                                   │ │
+│ │ Gatekeeper audits   → K8s policy compliance                             │ │
+│ │ kube-bench          → CIS benchmark results                             │ │
+│ │ Trivy scans         → Vulnerability scan results                        │ │
+│ │ Terraform plans     → Infrastructure change evidence                    │ │
+│ │ ArgoCD sync history → Deployment change evidence                        │ │
+│ │ PagerDuty           → Incident history and response times               │ │
+│ │ Postmortems         → Incident analysis documentation                   │ │
+│ │ Access reviews      → Quarterly IAM review results                      │ │
+│ │ Pen test reports    → Annual penetration test results                   │ │
+│ └────────────────────────────────────┬────────────────────────────────────┘ │
+│                                      │                                      │
+│                                      ▼                                      │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ EVIDENCE STORE (S3 — immutable, encrypted, versioned)                   │ │
+│ │                                                                         │ │
+│ │ s3://novamart-compliance/                                               │ │
+│ │ ├── config-snapshots/          (AWS Config, 6-hourly)                   │ │
+│ │ ├── security-hub/              (compliance scores, daily)               │ │
+│ │ ├── cloudtrail/                (API logs, continuous)                   │ │
+│ │ ├── kube-bench/                (CIS results, weekly)                    │ │
+│ │ ├── trivy-scans/               (vuln scans, per build)                  │ │
+│ │ ├── access-reviews/            (IAM reviews, quarterly)                 │ │
+│ │ ├── pen-tests/                 (results, annual)                        │ │
+│ │ ├── incident-postmortems/      (after each incident)                    │ │
+│ │ ├── change-records/            (Terraform plans + approvals)            │ │
+│ │ └── training-records/          (security training completion)           │ │
+│ │                                                                         │ │
+│ │ S3 features:                                                            │ │
+│ │ • Object Lock (COMPLIANCE mode — immutable for audit period)            │ │
+│ │ • Versioning (track changes)                                            │ │
+│ │ • KMS encryption (data protection)                                      │ │
+│ │ • Access logging (who accessed evidence)                                │ │
+│ │ • Lifecycle (archive after audit period, retain per policy)             │ │
+│ └────────────────────────────────────┬────────────────────────────────────┘ │
+│                                      │                                      │
+│                                      ▼                                      │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ COMPLIANCE DASHBOARD (Grafana)                                          │ │
+│ │                                                                         │ │
+│ │ Panel 1: Security Hub compliance scores by standard                     │ │
+│ │ Panel 2: Open findings by severity and age                              │ │
+│ │ Panel 3: Config rule compliance % over time                             │ │
+│ │ Panel 4: Mean time to remediate (MTTR) for findings                     │ │
+│ │ Panel 5: Gatekeeper violations trend                                    │ │
+│ │ Panel 6: Access review completion status                                │ │
+│ │ Panel 7: Certificate expiry timeline                                    │ │
+│ │ Panel 8: Encryption coverage (% of resources encrypted)                 │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Mapping Controls to Evidence — The Control Matrix
 
-```
+```text
 THE CONTROL MATRIX maps each compliance requirement to:
   1. The control that addresses it
   2. The tool that implements the control
@@ -1144,7 +1151,7 @@ THE CONTROL MATRIX maps each compliance requirement to:
 │ Protect stored     │ rest                │ EBS, etcd)         │ encrypted-volumes,   │           │
 │ data               │                     │                    │ s3-bucket-encryption │           │
 ├────────────────────┼─────────────────────┼────────────────────┼──────────────────────┼───────────┤
-│ PCI Req 4:         │ Encryption in       │ TLS 1.2+, Istio   │ ALB access logs,     │ Continuous│
+│ PCI Req 4:         │ Encryption in       │ TLS 1.2+, Istio    │ ALB access logs,     │ Continuous│
 │ Protect data in    │ transit             │ mTLS, ACM certs    │ cert-manager status, │           │
 │ transit            │                     │                    │ TLS scan results     │           │
 ├────────────────────┼─────────────────────┼────────────────────┼──────────────────────┼───────────┤
@@ -1171,12 +1178,12 @@ THE CONTROL MATRIX maps each compliance requirement to:
 │ Availability       │ incident response   │ PagerDuty,         │ incident reports,    │           │
 │                    │                     │ runbooks           │ postmortems          │           │
 ├────────────────────┼─────────────────────┼────────────────────┼──────────────────────┼───────────┤
-│ SOC 2 Change:      │ Change management   │ GitOps (ArgoCD),   │ Git history, PR      │ Per change│
-│ Change controls    │ process             │ PR reviews,        │ reviews, ArgoCD      │           │
+│ SOC 2 Change:      │ Change controls     │ GitOps (ArgoCD),   │ Git history, PR      │ Per change│
+│ Change controls    │                     │ PR reviews,        │ reviews, ArgoCD      │           │
 │                    │                     │ Terraform plans    │ sync history         │           │
 ├────────────────────┼─────────────────────┼────────────────────┼──────────────────────┼───────────┤
 │ GDPR Art 17:       │ Right to erasure    │ Deletion pipeline  │ Deletion request     │ Per       │
-│ Right to be        │                     │ (Lambda +          │ logs, completion      │ request   │
+│ Right to be        │                     │ (Lambda +          │ logs, completion     │ request   │
 │ forgotten          │                     │  cascading delete) │ confirmations        │           │
 ├────────────────────┼─────────────────────┼────────────────────┼──────────────────────┼───────────┤
 │ GDPR Art 32:       │ Appropriate         │ Encryption, access │ Config rules,        │ Continuous│
@@ -1191,7 +1198,7 @@ THE CONTROL MATRIX maps each compliance requirement to:
 
 ### Why Change Management Matters
 
-```
+```text
 MOST OUTAGES ARE CAUSED BY CHANGES.
 
   Google SRE data: ~70% of outages are caused by changes
@@ -1213,88 +1220,88 @@ MOST OUTAGES ARE CAUSED BY CHANGES.
 
 ### NovaMart Change Management Process
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│              NOVAMART CHANGE MANAGEMENT PROCESS                      │
-│                                                                      │
-│  CHANGE TYPES:                                                       │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │ Standard Change (pre-approved, low risk):                      │ │
-│  │   • Application deployment via CI/CD (passing all gates)       │ │
-│  │   • Scaling adjustments (HPA threshold changes)                │ │
-│  │   • Dependency updates (non-security, non-major version)       │ │
-│  │   Process: PR → 1 reviewer → merge → auto-deploy               │ │
-│  │   Approval: Peer review only                                   │ │
-│  │                                                                │ │
-│  │ Normal Change (moderate risk):                                 │ │
-│  │   • New service deployment                                     │ │
-│  │   • Infrastructure changes (Terraform)                         │ │
-│  │   • Database schema migrations                                 │ │
-│  │   • Gatekeeper policy changes                                  │ │
-│  │   • Security group modifications                               │ │
-│  │   Process: PR → 2 reviewers → CAB approval → merge → deploy    │ │
-│  │   Approval: Peer review + team lead                            │ │
-│  │                                                                │ │
-│  │ Emergency Change (incident response):                          │ │
-│  │   • Hotfix for active incident                                 │ │
-│  │   • Security patch for critical CVE                            │ │
-│  │   • Configuration rollback                                     │ │
-│  │   Process: PR → 1 reviewer → merge → deploy → RETROACTIVE CAB │ │
-│  │   Approval: On-call lead (retroactive review within 48 hours)  │ │
-│  │                                                                │ │
-│  │ Major Change (high risk, high impact):                         │ │
-│  │   • Kubernetes version upgrade                                 │ │
-│  │   • Database migration (engine change, major version)          │ │
-│  │   • Network architecture changes (VPC, Transit Gateway)        │ │
-│  │   • New compliance-affecting service                           │ │
-│  │   Process: RFC → Architecture review → CAB → scheduled window  │ │
-│  │   Approval: Architecture board + VP Engineering                │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                      │
-│  CHANGE ADVISORY BOARD (CAB):                                        │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │ Meets: Weekly (Tuesday 10 AM) + on-demand for emergencies     │ │
-│  │ Members: Platform lead, Security lead, SRE lead, QA lead      │ │
-│  │ Reviews: All Normal and Major changes for the week             │ │
-│  │ Outputs: Approved, Deferred, Rejected (with reasons)           │ │
-│  │ Records: Meeting notes in Confluence, Jira ticket updates      │ │
-│  │                                                                │ │
-│  │ CAB does NOT slow down standard deployments.                   │ │
-│  │ CI/CD pipeline handles standard changes automatically.         │ │
-│  │ CAB reviews infrastructure, policy, and high-risk changes.     │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                     │
-│  CHANGE RECORD (Jira ticket template):                              │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │ • Description: What is being changed and why                   │ │
-│  │ • Risk assessment: Impact if change fails                      │ │
-│  │ • Rollback plan: Exact steps to undo the change                │ │
-│  │ • Testing evidence: What was tested and results                │ │
-│  │ • Dependencies: Other changes or teams affected                │ │
-│  │ • Schedule: When will the change be applied                    │ │
-│  │ • Verification: How to confirm the change succeeded            │ │
-│  │ • Approvals: PR link, reviewer names, CAB decision             │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                     │
-│  EVIDENCE TRAIL (automatic via GitOps):                             │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │ Git commit → WHO made the change (author + committer)          │ │
-│  │ PR review  → WHO approved (reviewer signatures)                │ │
-│  │ CI logs    → WHAT was tested (scan results, test results)      │ │
-│  │ ArgoCD     → WHEN it was deployed (sync timestamp)             │ │
-│  │ CloudTrail → HOW infrastructure changed (API calls)            │ │
-│  │ Prometheus → WHETHER it worked (SLI before/after)              │ │
-│  │                                                                │ │
-│  │ An auditor can trace ANY production change from:               │ │
-│  │   Jira ticket → PR → CI build → ArgoCD sync → running pod      │ │
-│  │ Every link is timestamped, immutable, and attributable.        │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      NOVAMART CHANGE MANAGEMENT PROCESS                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ CHANGE TYPES:                                                               │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ Standard Change (pre-approved, low risk):                               │ │
+│ │   • Application deployment via CI/CD (passing all gates)                │ │
+│ │   • Scaling adjustments (HPA threshold changes)                         │ │
+│ │   • Dependency updates (non-security, non-major version)                │ │
+│ │   Process: PR → 1 reviewer → merge → auto-deploy                        │ │
+│ │   Approval: Peer review only                                            │ │
+│ │                                                                         │ │
+│ │ Normal Change (moderate risk):                                          │ │
+│ │   • New service deployment                                              │ │
+│ │   • Infrastructure changes (Terraform)                                  │ │
+│ │   • Database schema migrations                                          │ │
+│ │   • Gatekeeper policy changes                                           │ │
+│ │   • Security group modifications                                        │ │
+│ │   Process: PR → 2 reviewers → CAB approval → merge → deploy             │ │
+│ │   Approval: Peer review + team lead                                     │ │
+│ │                                                                         │ │
+│ │ Emergency Change (incident response):                                   │ │
+│ │   • Hotfix for active incident                                          │ │
+│ │   • Security patch for critical CVE                                     │ │
+│ │   • Configuration rollback                                              │ │
+│ │   Process: PR → 1 reviewer → merge → deploy → RETROACTIVE CAB           │ │
+│ │   Approval: On-call lead (retroactive review within 48 hours)           │ │
+│ │                                                                         │ │
+│ │ Major Change (high risk, high impact):                                  │ │
+│ │   • Kubernetes version upgrade                                          │ │
+│ │   • Database migration (engine change, major version)                   │ │
+│ │   • Network architecture changes (VPC, Transit Gateway)                 │ │
+│ │   • New compliance-affecting service                                    │ │
+│ │   Process: RFC → Architecture review → CAB → scheduled window           │ │
+│ │   Approval: Architecture board + VP Engineering                         │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│ CHANGE ADVISORY BOARD (CAB):                                                │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ Meets: Weekly (Tuesday 10 AM) + on-demand for emergencies               │ │
+│ │ Members: Platform lead, Security lead, SRE lead, QA lead                │ │
+│ │ Reviews: All Normal and Major changes for the week                      │ │
+│ │ Outputs: Approved, Deferred, Rejected (with reasons)                    │ │
+│ │ Records: Meeting notes in Confluence, Jira ticket updates               │ │
+│ │                                                                         │ │
+│ │ CAB does NOT slow down standard deployments.                            │ │
+│ │ CI/CD pipeline handles standard changes automatically.                  │ │
+│ │ CAB reviews infrastructure, policy, and high-risk changes.              │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│ CHANGE RECORD (Jira ticket template):                                       │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ • Description: What is being changed and why                            │ │
+│ │ • Risk assessment: Impact if change fails                               │ │
+│ │ • Rollback plan: Exact steps to undo the change                         │ │
+│ │ • Testing evidence: What was tested and results                         │ │
+│ │ • Dependencies: Other changes or teams affected                         │ │
+│ │ • Schedule: When will the change be applied                             │ │
+│ │ • Verification: How to confirm the change succeeded                     │ │
+│ │ • Approvals: PR link, reviewer names, CAB decision                      │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│ EVIDENCE TRAIL (automatic via GitOps):                                      │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │ Git commit → WHO made the change (author + committer)                   │ │
+│ │ PR review  → WHO approved (reviewer signatures)                         │ │
+│ │ CI logs    → WHAT was tested (scan results, test results)               │ │
+│ │ ArgoCD     → WHEN it was deployed (sync timestamp)                      │ │
+│ │ CloudTrail → HOW infrastructure changed (API calls)                     │ │
+│ │ Prometheus → WHETHER it worked (SLI before/after)                       │ │
+│ │                                                                         │ │
+│ │ An auditor can trace ANY production change from:                        │ │
+│ │   Jira ticket → PR → CI build → ArgoCD sync → running pod               │ │
+│ │ Every link is timestamped, immutable, and attributable.                 │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Separation of Duties — The Compliance Requirement
 
-```
+```text
 SEPARATION OF DUTIES means no single person can:
   - Write code AND deploy it to production (without review)
   - Create an IAM policy AND attach it (without approval)
@@ -1383,7 +1390,7 @@ workflows:
 
 ### Change Freeze / Deployment Windows
 
-```
+```text
 CHANGE FREEZE: Periods when non-emergency changes are blocked.
 
 NovaMart's change freezes:
@@ -1442,7 +1449,7 @@ spec:
 
 ### Postmortems as Compliance Evidence
 
-```
+```text
 SOC 2 and PCI-DSS both require:
   - Documented incident response process
   - Evidence of incident handling
@@ -1455,21 +1462,20 @@ POSTMORTEM TEMPLATE (NovaMart standard):
 ```
 
 ```markdown
-# Incident Postmortem: [INCIDENT-ID] [Title]
+# Incident Postmortem:[INCIDENT-ID] [Title]
 
 ## Metadata
 - **Date:** YYYY-MM-DD
 - **Severity:** SEV1 / SEV2 / SEV3 / SEV4
 - **Duration:** X hours Y minutes
 - **Impact:** [User-facing impact description]
-- **Detection:** [How was it detected — monitoring, customer report, etc.]
+- **Detection:**[How was it detected — monitoring, customer report, etc.]
 - **Incident Commander:** [Name]
 - **Author:** [Name]
-- **Review Date:** [Date postmortem was reviewed by team]
+- **Review Date:**[Date postmortem was reviewed by team]
 - **Status:** Draft / Reviewed / Action Items Complete
 
-## Executive Summary
-[2-3 sentences: what happened, impact, resolution]
+## Executive Summary[2-3 sentences: what happened, impact, resolution]
 
 ## Timeline (UTC)
 | Time | Event |
@@ -1538,7 +1544,7 @@ initial service creation and was never revisited as traffic grew. This is
 a systemic gap in our capacity planning process, not an individual failure.
 ```
 
-```
+```text
 POSTMORTEM COMPLIANCE REQUIREMENTS:
 
   PCI-DSS Req 12.10: Incident response plan must be tested annually
@@ -1649,7 +1655,7 @@ groups:
 
 ### Audit Preparation Checklist
 
-```
+```text
 WHEN THE AUDITOR ARRIVES (SOC 2 Type II or PCI-DSS Assessment):
 
 PRE-AUDIT (2 weeks before):
@@ -1718,7 +1724,7 @@ COMMON AUDITOR QUESTIONS YOU MUST ANSWER:
 
 ## Compliance Failure Modes
 
-```
+```text
 FAILURE 1: Compliance drift — score degrades slowly
   CAUSE: New resources created without compliance checks,
          Config rules disabled during troubleshooting and not re-enabled,
@@ -1798,7 +1804,7 @@ FAILURE 6: Third-party vendor introduces compliance risk
 
 ## Quick Reference Card
 
-```
+```text
 PCI-DSS
 ───────
 12 requirements, 6 goals. Applies to CDE (cardholder data environment).
@@ -1920,53 +1926,53 @@ The complication: NovaMart is in the Black Friday change freeze (started Wednesd
 
 Before this change, NovaMart's PCI-DSS scoping looked like this:
 
-```
+```text
 BEFORE:
-┌─────────────────────────────────────────────────────────────┐
-│                    PCI-DSS SCOPE                             │
-├─────────────────────────────────────────────────────────────┤
+┌──────────────────────────────────────────────────────────────┐
+│                        PCI-DSS SCOPE                         │
+├──────────────────────────────────────────────────────────────┤
 │                                                              │
-│  CDE (Cardholder Data Environment):                          │
-│    └── Stripe (handles all card data — NovaMart never        │
-│        touches PAN, CVV, or expiry)                          │
+│ CDE (Cardholder Data Environment):                           │
+│   └── Stripe (handles all card data — NovaMart never         │
+│       touches PAN, CVV, or expiry)                           │
 │                                                              │
-│  Connected-to-CDE:                                           │
-│    └── order-svc (sends payment intents to Stripe API,       │
-│        receives payment confirmation tokens — never          │
-│        handles raw cardholder data)                          │
+│ Connected-to-CDE:                                            │
+│   └── order-svc (sends payment intents to Stripe API,        │
+│       receives payment confirmation tokens — never           │
+│       handles raw cardholder data)                           │
 │                                                              │
-│  Out of Scope:                                               │
-│    └── search-svc, inventory-svc, notification-svc, etc.    │
+│ Out of Scope:                                                │
+│   └── search-svc, inventory-svc, notification-svc, etc.      │
 │                                                              │
-│  PCI Compliance Method: SAQ-A or SAQ A-EP                    │
-│  (Stripe handles all cardholder data processing)             │
-└─────────────────────────────────────────────────────────────┘
+│ PCI Compliance Method: SAQ-A or SAQ A-EP                     │
+│ (Stripe handles all cardholder data processing)              │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 **AFTER this code change:**
 
 The `order-svc` now receives the PAN (Primary Account Number) from Stripe's API — even in masked form — processes it in memory, and renders it in an HTTP response. This means:
 
-```
+```text
 AFTER:
-┌─────────────────────────────────────────────────────────────┐
-│                    PCI-DSS SCOPE (EXPANDED)                   │
-├─────────────────────────────────────────────────────────────┤
+┌──────────────────────────────────────────────────────────────┐
+│                  PCI-DSS SCOPE (EXPANDED)                    │
+├──────────────────────────────────────────────────────────────┤
 │                                                              │
-│  CDE (Cardholder Data Environment):                          │
-│    ├── Stripe                                                │
-│    └── order-svc  ← MOVED INTO CDE                          │
+│ CDE (Cardholder Data Environment):                           │
+│   ├── Stripe                                                 │
+│   └── order-svc  ← MOVED INTO CDE                            │
 │                                                              │
-│  Connected-to-CDE (expanded blast radius):                   │
-│    ├── ALB / Ingress controller (carries response with PAN) │
-│    ├── Any service mesh proxy (Envoy sidecar)               │
-│    ├── Monitoring stack (if it logs HTTP response bodies)    │
-│    ├── The EKS node running order-svc pods                  │
-│    └── The network segment order-svc runs on                │
+│ Connected-to-CDE (expanded blast radius):                    │
+│   ├── ALB / Ingress controller (carries response with PAN)   │
+│   ├── Any service mesh proxy (Envoy sidecar)                 │
+│   ├── Monitoring stack (if it logs HTTP response bodies)     │
+│   ├── The EKS node running order-svc pods                    │
+│   └── The network segment order-svc runs on                  │
 │                                                              │
-│  PCI Compliance Method: REQUIRES SAQ D or full ROC           │
-│  (NovaMart now processes cardholder data)                    │
-└─────────────────────────────────────────────────────────────┘
+│ PCI Compliance Method: REQUIRES SAQ D or full ROC            │
+│ (NovaMart now processes cardholder data)                     │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 **Specific PCI-DSS requirements that NOW apply to `order-svc` that didn't before:**
@@ -2007,7 +2013,7 @@ PCI-DSS scoping is determined by whether a system **stores, processes, or transm
 
 This is the more dangerous misunderstanding. The PCI concept that applies is **the Shared Responsibility Model for PCI**:
 
-```
+```text
 Stripe's Responsibility:
   ✓ Securely storing the full PAN
   ✓ Returning the masked PAN via their API
@@ -2044,36 +2050,36 @@ Furthermore, even "briefly in memory" creates concrete risks:
 
 **Solution: Client-Side Tokenized Rendering (Stripe Elements / Stripe.js)**
 
-```
+```text
 CORRECT ARCHITECTURE:
                                                               
   Browser                  NovaMart Backend           Stripe
-  ──────                  ────────────────           ──────
-     │                          │                       │
-     │  1. Load order page      │                       │
-     │ ──────────────────────►  │                       │
-     │                          │                       │
-     │  2. HTML + Stripe.js     │                       │
-     │     (includes payment    │                       │
-     │      intent client       │                       │
-     │      secret)             │                       │
-     │ ◄──────────────────────  │                       │
-     │                          │                       │
-     │  3. Stripe.js calls      │                       │
-     │     Stripe API DIRECTLY  │                       │
-     │     from browser         │                       │
-     │ ─────────────────────────────────────────────►   │
-     │                          │                       │
-     │  4. Stripe returns       │                       │
-     │     card.last4 directly  │                       │
-     │     to browser           │                       │
-     │ ◄─────────────────────────────────────────────   │
-     │                          │                       │
-     │  5. Browser renders      │                       │
-     │     "Card ending 4242"   │                       │
-     │                          │                       │
-     │  NovaMart backend        │                       │
-     │  NEVER SEES THE PAN      │                       │
+  ───────                  ────────────────           ──────
+     │                            │                      │
+     │  1. Load order page        │                      │
+     │ ────────────────────────►  │                      │
+     │                            │                      │
+     │  2. HTML + Stripe.js       │                      │
+     │     (includes payment      │                      │
+     │      intent client         │                      │
+     │      secret)               │                      │
+     │ ◄────────────────────────  │                      │
+     │                            │                      │
+     │  3. Stripe.js calls        │                      │
+     │     Stripe API DIRECTLY    │                      │
+     │     from browser           │                      │
+     │ ───────────────────────────────────────────────►  │
+     │                            │                      │
+     │  4. Stripe returns         │                      │
+     │     card.last4 directly    │                      │
+     │     to browser             │                      │
+     │ ◄───────────────────────────────────────────────  │
+     │                            │                      │
+     │  5. Browser renders        │                      │
+     │     "Card ending 4242"     │                      │
+     │                            │                      │
+     │  NovaMart backend          │                      │
+     │  NEVER SEES THE PAN        │                      │
 ```
 
 **Implementation:**
@@ -2145,7 +2151,7 @@ def stripe_webhook(event):
 
 **Layer 1: Code Review — PCI-Aware Review Checklist**
 
-```yaml
+```markdown
 # .github/PULL_REQUEST_TEMPLATE/pci-review.md (or Bitbucket equivalent)
 # Auto-triggered when changes touch payment-related services
 
@@ -2225,7 +2231,7 @@ services/checkout-svc/**              @novamart/security-team
           fi
         done
         
-        if [ "$FOUND" = true ]; then
+        if[ "$FOUND" = true ]; then
           echo ""
           echo "⛔ PCI SCOPE ALERT: This PR introduces patterns associated with cardholder data handling."
           echo "This PR REQUIRES security team review before merge."
@@ -2248,7 +2254,7 @@ services/checkout-svc/**              @novamart/security-team
         
         for call in "${STRIPE_RISKY_CALLS[@]}"; do
           MATCHES=$(git diff origin/main...HEAD | grep -iP "^\+.*$call" || true)
-          if [ -n "$MATCHES" ]; then
+          if[ -n "$MATCHES" ]; then
             echo "⛔ STRIPE API CALL RETURNS CARD DATA: $call"
             echo "$MATCHES"
             echo "If this data passes through NovaMart's backend, PCI scope expands."
@@ -2399,7 +2405,7 @@ spec:
 
 **Layer 5: Quarterly Architecture Review**
 
-```
+```text
 PCI SCOPE REVIEW — QUARTERLY PROCESS
 ═══════════════════════════════════════
 1. Data Flow Diagram audit: re-trace all flows involving payment data
@@ -2580,7 +2586,7 @@ Present to auditor: "All infrastructure changes are managed through Terraform wi
 # Security Hub findings for the gap period
 aws securityhub get-findings \
   --filters '{
-    "CreatedAt": [
+    "CreatedAt":[
       {
         "Start": "2024-03-05T00:00:00Z",
         "End": "2024-03-17T23:59:59Z"
@@ -2637,7 +2643,7 @@ resource "aws_cloudwatch_metric_alarm" "config_recorder_stopped" {
   statistic           = "Minimum"
   threshold           = 1
   alarm_description   = "AWS Config recorder has stopped. SOC2 CC7.1 control gap."
-  alarm_actions       = [
+  alarm_actions       =[
     aws_sns_topic.security_critical.arn,
     aws_sns_topic.pagerduty_security.arn
   ]
@@ -2717,7 +2723,7 @@ resource "aws_cloudwatch_metric_alarm" "access_review_lambda_failed" {
     FunctionName = "quarterly-access-review"
   }
   alarm_description   = "Access review Lambda failed. SOC2 CC6.2 evidence at risk."
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
+  alarm_actions       =[aws_sns_topic.security_alerts.arn]
 }
 
 # ALSO: Alarm on missing invocation — catches "Lambda never ran"
@@ -2731,7 +2737,7 @@ resource "aws_cloudwatch_metric_alarm" "access_review_not_run" {
   statistic           = "Sum"
   threshold           = 1
   alarm_description   = "Access review Lambda has not run this quarter."
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
+  alarm_actions       =[aws_sns_topic.security_alerts.arn]
   treat_missing_data  = "breaching"
 }
 ```
@@ -2902,9 +2908,9 @@ The auditor's comment is an assessment of organizational maturity, not just tech
 >
 > 1. **Compliance Heartbeat System** [Exhibit E]: Every compliance control now reports a 'heartbeat' to a central DynamoDB table. A daily Lambda checks all heartbeats and alerts if any control hasn't reported within its expected frequency. This catches the Config and access review gaps proactively.
 >
-> 2. **Automated Postmortem Enforcement** [Exhibit F]: SEV1 incidents now auto-generate a postmortem ticket with a 5-business-day deadline. If not completed, it escalates to the Engineering Director. The system has been active since September — 4 of 4 postmortems completed on time since implementation.
+> 2. **Automated Postmortem Enforcement**[Exhibit F]: SEV1 incidents now auto-generate a postmortem ticket with a 5-business-day deadline. If not completed, it escalates to the Engineering Director. The system has been active since September — 4 of 4 postmortems completed on time since implementation.
 >
-> 3. **Compliance Dashboard** [Exhibit G]: Real-time Grafana dashboard showing the status of every SOC 2 control. Reviewed weekly by the Security team and monthly by the VP of Engineering. I can show you the meeting notes and attendance records.
+> 3. **Compliance Dashboard**[Exhibit G]: Real-time Grafana dashboard showing the status of every SOC 2 control. Reviewed weekly by the Security team and monthly by the VP of Engineering. I can show you the meeting notes and attendance records.
 >
 > 4. **SCP Guardrails** [Exhibit H]: Preventive controls added — unencrypted EBS volumes can no longer be created in production accounts. The developer who created the unencrypted volume would now be blocked at the API level.
 >
@@ -2914,7 +2920,7 @@ The auditor's comment is an assessment of organizational maturity, not just tech
 >
 > 6. Every engineer's onboarding includes a 2-hour compliance training module covering SOC 2 obligations [Exhibit J: training records].
 >
-> 7. The quarterly access review now has a backup — if the Lambda fails, a calendar reminder triggers a manual review within 5 business days [Exhibit K: calendar entries and manual review records for Q3 and Q4].
+> 7. The quarterly access review now has a backup — if the Lambda fails, a calendar reminder triggers a manual review within 5 business days[Exhibit K: calendar entries and manual review records for Q3 and Q4].
 >
 > **My honest assessment:** The March Config gap was a genuine process failure that we should have caught faster. The access review gap was an automation failure compounded by insufficient monitoring. The postmortem gap was a culture gap that we've since addressed. The Security Hub dip was actually our controls working correctly — we detected the issue and fixed it.
 >
@@ -2930,62 +2936,63 @@ The auditor's comment is an assessment of organizational maturity, not just tech
 
 **The key insight:** GDPR's right to erasure applies to **personal data** (data that identifies a natural person). Financial retention requirements apply to **transaction records**. The solution is to separate the two:
 
-```
-DATA CLASSIFICATION:
-═══════════════════════════════════════════════════════════════
-
-PERSONAL DATA (GDPR-deletable):
-  - Customer name
-  - Email address
-  - Phone number
-  - Shipping address
-  - IP address
-  - Device fingerprint
-  - Browsing/search history
-  - Customer account profile
-
-TRANSACTION RECORDS (Retention-required):
-  - Order ID
-  - Order date
-  - Product SKUs and quantities
-  - Transaction amount
-  - Payment reference (Stripe token — NOT card data)
-  - Tax calculations
-  - Invoice number
-
-DUAL-CATEGORY (requires special handling):
-  - Shipping address ON an order (personal data + transaction record)
-  - Customer name ON an invoice (personal data + financial record)
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              DATA CLASSIFICATION                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ PERSONAL DATA (GDPR-deletable):                                             │
+│   - Customer name                                                           │
+│   - Email address                                                           │
+│   - Phone number                                                            │
+│   - Shipping address                                                        │
+│   - IP address                                                              │
+│   - Device fingerprint                                                      │
+│   - Browsing/search history                                                 │
+│   - Customer account profile                                                │
+│                                                                             │
+│ TRANSACTION RECORDS (Retention-required):                                   │
+│   - Order ID                                                                │
+│   - Order date                                                              │
+│   - Product SKUs and quantities                                             │
+│   - Transaction amount                                                      │
+│   - Payment reference (Stripe token — NOT card data)                        │
+│   - Tax calculations                                                        │
+│   - Invoice number                                                          │
+│                                                                             │
+│ DUAL-CATEGORY (requires special handling):                                  │
+│   - Shipping address ON an order (personal data + transaction record)       │
+│   - Customer name ON an invoice (personal data + financial record)          │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Technical Architecture:**
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                  DATA ARCHITECTURE                            │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌──────────────┐         ┌──────────────────┐              │
-│  │  CUSTOMER DB  │         │  TRANSACTION DB   │              │
-│  │  (Deletable)  │────────►│  (7-year retain)  │              │
-│  │               │  FK:    │                    │              │
-│  │  customer_id  │customer │  order_id          │              │
-│  │  name         │   _id   │  customer_ref*     │              │
-│  │  email        │         │  amount            │              │
-│  │  phone        │         │  product_skus      │              │
-│  │  address      │         │  tax               │              │
-│  │  preferences  │         │  stripe_pi_id      │              │
-│  │               │         │  anonymized_addr** │              │
-│  │  TTL: Delete  │         │  invoice_number    │              │
-│  │  on request   │         │                    │              │
-│  └──────────────┘         │  TTL: 7 years      │              │
-│                            └──────────────────┘              │
-│                                                              │
-│  * customer_ref = pseudonymized ID (not reversible           │
-│    after deletion)                                           │
-│  ** anonymized_addr = country + postal code prefix only      │
-│     (sufficient for tax/audit, not personally identifiable)  │
-└─────────────────────────────────────────────────────────────┘
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              DATA ARCHITECTURE                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ ┌───────────────┐           ┌───────────────────┐                           │
+│ │ CUSTOMER DB   │           │ TRANSACTION DB    │                           │
+│ │ (Deletable)   │──────────►│ (7-year retain)   │                           │
+│ │               │           │                   │                           │
+│ │ customer_id   │  FK:      │ order_id          │                           │
+│ │ name          │  customer │ customer_ref*     │                           │
+│ │ email         │  _id      │ amount            │                           │
+│ │ phone         │           │ product_skus      │                           │
+│ │ address       │           │ tax               │                           │
+│ │ preferences   │           │ stripe_pi_id      │                           │
+│ │               │           │ anonymized_addr** │                           │
+│ │ TTL: Delete   │           │ invoice_number    │                           │
+│ │ on request    │           │                   │                           │
+│ │               │           │ TTL: 7 years      │                           │
+│ └───────────────┘           └───────────────────┘                           │
+│                                                                             │
+│ * customer_ref = pseudonymized ID (not reversible                           │
+│   after deletion)                                                           │
+│ ** anonymized_addr = country + postal code prefix only                      │
+│    (sufficient for tax/audit, not personally identifiable)                  │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **GDPR Deletion Process:**
@@ -3030,7 +3037,7 @@ def handle_gdpr_deletion_request(customer_id):
     # Step 6: Delete from S3 (profile images, documents)
     s3.delete_objects(
         Bucket='customer-data',
-        Delete={'Objects': [
+        Delete={'Objects':[
             {'Key': f'customers/{customer_id}/'}  # Delete entire prefix
         ]}
     )
@@ -3044,7 +3051,7 @@ def handle_gdpr_deletion_request(customer_id):
         'action': 'GDPR_DELETION',
         'customer_pseudo_ref': pseudo_ref,  # NOT the original customer_id
         'timestamp': datetime.utcnow(),
-        'data_deleted': ['customer_db', 'cache', 'search', 's3', 'stripe', 'sendgrid'],
+        'data_deleted':['customer_db', 'cache', 'search', 's3', 'stripe', 'sendgrid'],
         'transaction_records_anonymized': len(transactions),
         'completed_within_days': 1  # Must be <30
     })
@@ -3136,7 +3143,7 @@ resource "aws_s3_bucket" "eu_observability" {
 # Vector configuration (runs as DaemonSet in EU cluster)
 [transforms.strip_pii]
   type = "remap"
-  inputs = ["kubernetes_logs"]
+  inputs =["kubernetes_logs"]
   source = '''
     # Redact email addresses
     .message = replace(.message, r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', "[EMAIL_REDACTED]")
@@ -3160,8 +3167,7 @@ resource "aws_s3_bucket" "eu_observability" {
   '''
 
 # If logs MUST be shipped to us-east-1 for unified monitoring,
-# they must be scrubbed BEFORE leaving eu-west-1
-[sinks.us_east_loki]
+# they must be scrubbed BEFORE leaving eu-west-1[sinks.us_east_loki]
   type = "loki"
   inputs = ["strip_pii"]  # Only scrubbed logs go to US
   endpoint = "https://loki.us-east-1.novamart.internal"
@@ -3201,37 +3207,33 @@ Raw logs with customer identifiers MUST stay in eu-west-1 and be accessed by EU-
 
 **Architecture: Per-Customer KMS Key with Envelope Encryption**
 
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              BYOK ARCHITECTURE                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ Customer's AWS Account                NovaMart's AWS Account                │
+│ ──────────────────────                ──────────────────────                │
+│                                                                             │
+│ ┌────────────────────┐                ┌──────────────────────────┐          │
+│ │ Customer's KMS     │                │ NovaMart's KMS           │          │
+│ │ Key (CMK)          │◄──────────────►│ (for all OTHER customers)│          │
+│ │                    │ Cross-account  │                          │          │
+│ │ Customer controls  │ grant          │                          │          │
+│ │ key policy         │                │                          │          │
+│ └─────────┬──────────┘                └─────────────┬────────────┘          │
+│           │ Encrypts this                           │ Encrypts this         │
+│           │ customer's data                         │ customer's data       │
+│           ▼                                         ▼                       │
+│ ┌─────────────────────────────────────────────────────────────────────────┐ │
+│ │                       RDS / S3 / ElastiCache                            │ │
+│ │                                                                         │ │
+│ │ Tenant A data: encrypted with Customer A's key                          │ │
+│ │ Tenant B data: encrypted with NovaMart's key                            │ │
+│ │ Tenant C data: encrypted with NovaMart's key                            │ │
+│ └─────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    BYOK ARCHITECTURE                          │
-├──────────────────────────────────────────────────────────────┤
-│                                                               │
-│  Customer's AWS Account          NovaMart's AWS Account       │
-│  ─────────────────────          ──────────────────────        │
-│                                                               │
-│  ┌──────────────────┐          ┌────────────────────┐        │
-│  │ Customer's KMS   │          │ NovaMart's KMS     │        │
-│  │ Key (CMK)        │◄────────►│ (for all OTHER     │        │
-│  │                  │ Cross-   │  customers)         │        │
-│  │ Customer controls│ account  │                     │        │
-│  │ key policy       │ grant    │                     │        │
-│  └──────────────────┘          └────────────────────┘        │
-│          │                              │                     │
-│          │ Encrypts this                │ Encrypts this       │
-│          │ customer's data              │ customer's data     │
-│          ▼                              ▼                     │
-│  ┌──────────────────────────────────────────────────┐        │
-│  │                  RDS / S3 / ElastiCache           │        │
-│  │                                                    │        │
-│  │  Tenant A data: encrypted with Customer A's key   │        │
-│  │  Tenant B data: encrypted with NovaMart's key     │        │
-│  │  Tenant C data: encrypted with NovaMart's key     │        │
-│  └──────────────────────────────────────────────────┘        │
-│                                                               │
-└──────────────────────────────────────────────────────────────┘
-```
-
-
 
 **Implementation for RDS:**
 
@@ -3362,7 +3364,7 @@ def create_order(customer_id, order_data):
 ```json
 {
     "Version": "2012-10-17",
-    "Statement": [
+    "Statement":[
         {
             "Sid": "AllowCustomerAdminAccess",
             "Effect": "Allow",
@@ -3378,7 +3380,7 @@ def create_order(customer_id, order_data):
             "Principal": {
                 "AWS": "arn:aws:iam::888888888888:role/novamart-order-svc-irsa"
             },
-            "Action": [
+            "Action":[
                 "kms:Encrypt",
                 "kms:Decrypt",
                 "kms:GenerateDataKey",
@@ -3391,7 +3393,7 @@ def create_order(customer_id, order_data):
                     "kms:EncryptionContext:customer_id": "CUSTOMER_ID"
                 },
                 "StringLike": {
-                    "kms:ViaService": [
+                    "kms:ViaService":[
                         "rds.eu-west-1.amazonaws.com",
                         "s3.eu-west-1.amazonaws.com"
                     ]
@@ -3404,7 +3406,7 @@ def create_order(customer_id, order_data):
             "Principal": {
                 "AWS": "arn:aws:iam::888888888888:root"
             },
-            "Action": [
+            "Action":[
                 "kms:CreateGrant",
                 "kms:PutKeyPolicy",
                 "kms:RetireGrant"
@@ -3442,7 +3444,7 @@ resource "aws_s3_bucket_policy" "enforce_customer_key" {
   bucket = aws_s3_bucket.customer_documents.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Sid       = "EnforceCustomerBYOK"
         Effect    = "Deny"
@@ -3476,13 +3478,13 @@ resource "aws_iam_role_policy" "byok_cross_account_kms" {
     Statement = [
       {
         Effect = "Allow"
-        Action = [
+        Action =[
           "kms:Encrypt",
           "kms:Decrypt",
           "kms:GenerateDataKey",
           "kms:DescribeKey"
         ]
-        Resource = [
+        Resource =[
           "arn:aws:kms:eu-west-1:CUSTOMER_ACCOUNT:key/*"
         ]
         Condition = {
@@ -3508,7 +3510,7 @@ resource "aws_organizations_policy" "eu_data_residency" {
   
   content = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Sid    = "DenyNonEURegions"
         Effect = "Deny"
@@ -3516,7 +3518,7 @@ resource "aws_organizations_policy" "eu_data_residency" {
         Resource = "*"
         Condition = {
           StringNotEquals = {
-            "aws:RequestedRegion" = [
+            "aws:RequestedRegion" =[
               "eu-west-1",
               "eu-west-2"    # DR region within EU
             ]
@@ -3524,7 +3526,7 @@ resource "aws_organizations_policy" "eu_data_residency" {
           # Exceptions for global services that don't have regional endpoints
           # These services operate globally but data stays in configured region
           ArnNotLike = {
-            "aws:PrincipalARN" = [
+            "aws:PrincipalARN" =[
               "arn:aws:iam::*:role/OrganizationAdminRole"
             ]
           }
@@ -3533,7 +3535,7 @@ resource "aws_organizations_policy" "eu_data_residency" {
       {
         Sid    = "AllowGlobalServices"
         Effect = "Allow"
-        Action = [
+        Action =[
           # IAM is global — must be allowed from any region
           "iam:*",
           # STS is global
@@ -3571,7 +3573,7 @@ resource "aws_organizations_policy" "eu_data_residency" {
         Condition = {
           StringNotLike = {
             # Only allow replication to other EU regions
-            "s3:ReplicationDestination" = [
+            "s3:ReplicationDestination" =[
               "arn:aws:s3:::*-eu-*",
               "arn:aws:s3:::novamart-eu-*"
             ]
@@ -3581,7 +3583,7 @@ resource "aws_organizations_policy" "eu_data_residency" {
       {
         Sid    = "DenyRDSSnapshotCopyOutsideEU"
         Effect = "Deny"
-        Action = [
+        Action =[
           "rds:CopyDBSnapshot",
           "rds:CopyDBClusterSnapshot"
         ]
@@ -3599,13 +3601,13 @@ resource "aws_organizations_policy" "eu_data_residency" {
       {
         Sid    = "DenyEBSSnapshotCopyOutsideEU"
         Effect = "Deny"
-        Action = [
+        Action =[
           "ec2:CopySnapshot"
         ]
         Resource = "*"
         Condition = {
           StringNotEquals = {
-            "ec2:Region" = [
+            "ec2:Region" =[
               "eu-west-1",
               "eu-west-2"
             ]
@@ -3615,14 +3617,14 @@ resource "aws_organizations_policy" "eu_data_residency" {
       {
         Sid    = "DenyKinesisOutsideEU"
         Effect = "Deny"
-        Action = [
+        Action =[
           "kinesis:*",
           "firehose:*"
         ]
         Resource = "*"
         Condition = {
           StringNotEquals = {
-            "aws:RequestedRegion" = [
+            "aws:RequestedRegion" =[
               "eu-west-1",
               "eu-west-2"
             ]
@@ -3640,7 +3642,7 @@ resource "aws_organizations_policy" "eu_data_residency" {
         Condition = {
           StringNotLike = {
             # Only allow log exports to EU S3 buckets
-            "logs:DestinationArn" = [
+            "logs:DestinationArn" =[
               "arn:aws:s3:::novamart-eu-*"
             ]
           }
@@ -3659,22 +3661,24 @@ resource "aws_organizations_policy_attachment" "eu_prod" {
 
 **Services that MUST be restricted and their specific concerns:**
 
-```
-SERVICE                  RESIDENCY RISK                    SCP COVERAGE
-──────────────────────────────────────────────────────────────────────
-EC2/EKS                 Instances in wrong region          ✅ Blocked by DenyNonEURegions
-RDS                     Database in wrong region           ✅ Blocked by DenyNonEURegions
-RDS Snapshots           Snapshot copy to US region         ✅ Blocked by region restriction
-S3                      Bucket in wrong region             ✅ Blocked by DenyNonEURegions
-S3 Replication          CRR to US region                   ✅ Blocked by DenyS3CrossRegionReplication
-EBS Snapshots           Copy to US region                  ✅ Blocked by DenyEBSSnapshotCopyOutsideEU
-CloudWatch Logs         Export to US bucket                ✅ Blocked by DenyCloudWatchCrossRegionExport
-Kinesis/Firehose        Stream in wrong region             ✅ Blocked by DenyKinesisOutsideEU
-Lambda                  Function in wrong region           ✅ Blocked by DenyNonEURegions
-SQS/SNS                 Queue/Topic in wrong region        ✅ Blocked by DenyNonEURegions
-DynamoDB                Table in wrong region              ✅ Blocked by DenyNonEURegions
-ElastiCache             Cluster in wrong region            ✅ Blocked by DenyNonEURegions
-Secrets Manager         Secret in wrong region             ✅ Blocked by DenyNonEURegions
+```text
+┌──────────────────────┬─────────────────────────────┬────────────────────────────────────────────────┐
+│ SERVICE              │ RESIDENCY RISK              │ SCP COVERAGE                                   │
+├──────────────────────┼─────────────────────────────┼────────────────────────────────────────────────┤
+│ EC2/EKS              │ Instances in wrong region   │ ✅ Blocked by DenyNonEURegions                 │
+│ RDS                  │ Database in wrong region    │ ✅ Blocked by DenyNonEURegions                 │
+│ RDS Snapshots        │ Snapshot copy to US region  │ ✅ Blocked by region restriction               │
+│ S3                   │ Bucket in wrong region      │ ✅ Blocked by DenyNonEURegions                 │
+│ S3 Replication       │ CRR to US region            │ ✅ Blocked by DenyS3CrossRegionReplication     │
+│ EBS Snapshots        │ Copy to US region           │ ✅ Blocked by DenyEBSSnapshotCopyOutsideEU     │
+│ CloudWatch Logs      │ Export to US bucket         │ ✅ Blocked by DenyCloudWatchCrossRegionExport  │
+│ Kinesis/Firehose     │ Stream in wrong region      │ ✅ Blocked by DenyKinesisOutsideEU             │
+│ Lambda               │ Function in wrong region    │ ✅ Blocked by DenyNonEURegions                 │
+│ SQS/SNS              │ Queue/Topic in wrong region │ ✅ Blocked by DenyNonEURegions                 │
+│ DynamoDB             │ Table in wrong region       │ ✅ Blocked by DenyNonEURegions                 │
+│ ElastiCache          │ Cluster in wrong region     │ ✅ Blocked by DenyNonEURegions                 │
+│ Secrets Manager      │ Secret in wrong region      │ ✅ Blocked by DenyNonEURegions                 │
+└──────────────────────┴─────────────────────────────┴────────────────────────────────────────────────┘
 
 EXCEPTIONS (Global services — data doesn't reside in a region):
 ──────────────────────────────────────────────────────────────────────
@@ -3704,7 +3708,7 @@ resource "aws_config_config_rule" "eu_region_only" {
   }
   
   scope {
-    compliance_resource_types = [
+    compliance_resource_types =[
       "AWS::EC2::Instance",
       "AWS::RDS::DBInstance",
       "AWS::S3::Bucket",
@@ -3727,7 +3731,7 @@ resource "aws_config_config_rule" "eu_region_only" {
 
 **Timeline:**
 
-```
+```text
 Thursday 4:00 PM — CVE Published (CVSS 9.8, Istio Envoy RCE)
          4:05 PM — Security team assesses impact
          4:15 PM — Emergency change request initiated
@@ -3771,7 +3775,7 @@ istioctl version
 - **Affected Component:** Envoy proxy (Istio sidecar) in all meshed pods
 - **Attack Vector:** Remote, unauthenticated, via crafted HTTP/2 request
 - **Impact:** Remote Code Execution in the Envoy sidecar container
-- **Exploit Availability:** [Check: is there a public PoC? Check NVD, ExploitDB, GitHub]
+- **Exploit Availability:**[Check: is there a public PoC? Check NVD, ExploitDB, GitHub]
 
 ### NovaMart Exposure
 - **Affected pods:** ~400 pods across 3 clusters (all meshed services)
@@ -3811,12 +3815,12 @@ during the change freeze.
 ### Approvals Required
 - [ ] VP Engineering (emergency change freeze override)
 - [ ] Security Lead (risk acceptance)
-- [ ] On-call SRE (execution approval)
+-[ ] On-call SRE (execution approval)
 ```
 
 **4:15 PM — Contact VP Engineering**
 
-```
+```text
 Channel: Direct call (not Slack — this is urgent and needs verbal approval)
 
 Script:
@@ -3836,7 +3840,7 @@ CAB retroactively on Monday."
 
 **4:30 PM — VP Approves (get written confirmation)**
 
-```
+```text
 Slack DM from VP (screenshot and save):
 "Approved. Proceed with Istio emergency upgrade per the risk assessment.
 Keep me updated every hour during rollout. —[VP Name]"
@@ -4063,7 +4067,7 @@ istioctl proxy-config log order-svc-xxx.orders --context us-east-1-cluster | \
 
 Here is the specific decision framework:
 
-```
+```text
 DECISION CRITERIA:
 ═══════════════════════════════════════════════════════════════
 
@@ -4118,7 +4122,7 @@ curl -s "http://prometheus:9090/api/v1/query?query=pilot_proxy_convergence_time{
 # Fix and retry for Cluster 1 before touching Cluster 2
 ```
 
-```
+```text
 Communication update:
 "🟡 Istio upgrade paused. 3 pods in Cluster 1 showing init container 
 timeouts connecting to istiod. Investigating. Clusters 2 and 3 remain 
@@ -4133,7 +4137,7 @@ Next update in 30 minutes."
 
 **Executive Summary: No. Patching Thursday was the correct decision.**
 
-```
+```text
 RISK ANALYSIS: PATCH NOW vs WAIT UNTIL MONDAY
 ══════════════════════════════════════════════════════════════════
 
@@ -4200,7 +4204,7 @@ COMPLIANCE              (requires retroactive
 
 **The Math:**
 
-```
+```text
 Expected cost of patching now:
   P(customer impact) × Impact = 0.05 × $10,000 = $500
   + P(rollout failure) × Recovery cost = 0.10 × $5,000 = $500
@@ -4261,7 +4265,7 @@ This is the most dangerous class of vulnerability. It's one step below a CVSS 10
 - **When:** Thursday 5:00 PM — Friday 12:00 AM
 - **Why:** CVSS 9.8 RCE vulnerability (CVE-2024-XXXX) in Envoy proxy
 - **Who Approved:** [VP Engineering Name], [Security Lead Name]
-- **Who Executed:** [Your Name], [On-call SRE Name]
+- **Who Executed:** [Your Name],[On-call SRE Name]
 
 ### Change Freeze Override Justification
 Per NovaMart Change Management Policy §4.3:
@@ -4352,7 +4356,7 @@ This change qualifies under the security vulnerability clause.
 ### CAB Decision Requested
 - [ ] **Ratify:** Approve the emergency change retroactively
 - [ ] **Ratify with conditions:** Approve with required follow-up actions
-- [ ] **Reject:** (Note: change is already complete — rejection triggers 
+-[ ] **Reject:** (Note: change is already complete — rejection triggers 
       a process review, not a rollback)
 
 ### Recommended Follow-Up Actions
@@ -4422,44 +4426,44 @@ Every emergency change during a change freeze triggers a review to assess:
 
 **Standing Authorization Matrix for Change Freezes:**
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│              CHANGE FREEZE — AUTHORIZATION MATRIX                     │
-├──────────────────────┬──────────────┬──────────────┬────────────────┤
-│ CHANGE TYPE          │ AUTHORIZATION│ REQUIRED     │ CAB REVIEW     │
-│                      │ LEVEL        │ BEFORE START │                │
-├──────────────────────┼──────────────┼──────────────┼────────────────┤
-│ Security patch       │ Pre-approved │ Risk doc +   │ Retroactive    │
-│ (CVSS ≥ 9.0)        │ (notify VP)  │ notification │ within 3 days  │
-├──────────────────────┼──────────────┼──────────────┼────────────────┤
-│ Security patch       │ VP approval  │ Risk doc +   │ Retroactive    │
-│ (CVSS 7.0-8.9)      │ required     │ VP sign-off  │ within 3 days  │
-├──────────────────────┼──────────────┼──────────────┼────────────────┤
-│ Security patch       │ DENIED       │ Wait for     │ N/A            │
-│ (CVSS < 7.0)        │              │ freeze end   │                │
-├──────────────────────┼──────────────┼──────────────┼────────────────┤
-│ Active incident      │ Pre-approved │ Incident     │ Part of        │
-│ mitigation (SEV1/2)  │ (IC decides) │ record       │ postmortem     │
-├──────────────────────┼──────────────┼──────────────┼────────────────┤
-│ Scaling changes      │ Pre-approved │ Notification │ Not required   │
-│ (HPA, node count)    │ (SRE on-call)│ only         │                │
-├──────────────────────┼──────────────┼──────────────┼────────────────┤
-│ WAF/firewall rules   │ Pre-approved │ Risk doc +   │ Retroactive    │
-│ (active attack)      │ (SecOps)     │ notification │ within 3 days  │
-├──────────────────────┼──────────────┼──────────────┼────────────────┤
-│ Certificate renewal  │ Pre-approved │ Notification │ Not required   │
-│ (< 24hr to expiry)   │              │ only         │                │
-├──────────────────────┼──────────────┼──────────────┼────────────────┤
-│ Feature deployments  │ DENIED       │ Wait for     │ N/A            │
-│                      │              │ freeze end   │                │
-├──────────────────────┼──────────────┼──────────────┼────────────────┤
-│ Infrastructure       │ DENIED       │ Wait for     │ N/A            │
-│ changes (non-        │ (unless VP   │ freeze end   │                │
-│ security)            │ override)    │              │                │
-├──────────────────────┼──────────────┼──────────────┼────────────────┤
-│ Database schema      │ DENIED       │ Wait for     │ N/A            │
-│ changes              │              │ freeze end   │                │
-└──────────────────────┴──────────────┴──────────────┴────────────────┘
+```text
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│                              CHANGE FREEZE — AUTHORIZATION MATRIX                            │
+├────────────────────────┬──────────────────┬──────────────────────────┬───────────────────────┤
+│ CHANGE TYPE            │ AUTHORIZATION    │ REQUIRED                 │ CAB REVIEW            │
+│                        │ LEVEL            │ BEFORE START             │                       │
+├────────────────────────┼──────────────────┼──────────────────────────┼───────────────────────┤
+│ Security patch         │ Pre-approved     │ Risk doc +               │ Retroactive           │
+│ (CVSS ≥ 9.0)           │ (notify VP)      │ notification             │ within 3 days         │
+├────────────────────────┼──────────────────┼──────────────────────────┼───────────────────────┤
+│ Security patch         │ VP approval      │ Risk doc +               │ Retroactive           │
+│ (CVSS 7.0-8.9)         │ required         │ VP sign-off              │ within 3 days         │
+├────────────────────────┼──────────────────┼──────────────────────────┼───────────────────────┤
+│ Security patch         │ DENIED           │ Wait for                 │ N/A                   │
+│ (CVSS < 7.0)           │                  │ freeze end               │                       │
+├────────────────────────┼──────────────────┼──────────────────────────┼───────────────────────┤
+│ Active incident        │ Pre-approved     │ Incident                 │ Part of               │
+│ mitigation (SEV1/2)    │ (IC decides)     │ record                   │ postmortem            │
+├────────────────────────┼──────────────────┼──────────────────────────┼───────────────────────┤
+│ Scaling changes        │ Pre-approved     │ Notification             │ Not required          │
+│ (HPA, node count)      │ (SRE on-call)    │ only                     │                       │
+├────────────────────────┼──────────────────┼──────────────────────────┼───────────────────────┤
+│ WAF/firewall rules     │ Pre-approved     │ Risk doc +               │ Retroactive           │
+│ (active attack)        │ (SecOps)         │ notification             │ within 3 days         │
+├────────────────────────┼──────────────────┼──────────────────────────┼───────────────────────┤
+│ Certificate renewal    │ Pre-approved     │ Notification             │ Not required          │
+│ (< 24hr to expiry)     │                  │ only                     │                       │
+├────────────────────────┼──────────────────┼──────────────────────────┼───────────────────────┤
+│ Feature deployments    │ DENIED           │ Wait for                 │ N/A                   │
+│                        │                  │ freeze end               │                       │
+├────────────────────────┼──────────────────┼──────────────────────────┼───────────────────────┤
+│ Infrastructure         │ DENIED           │ Wait for                 │ N/A                   │
+│ changes (non-          │ (unless VP       │ freeze end               │                       │
+│ security)              │ override)        │                          │                       │
+├────────────────────────┼──────────────────┼──────────────────────────┼───────────────────────┤
+│ Database schema        │ DENIED           │ Wait for                 │ N/A                   │
+│ changes                │                  │ freeze end               │                       │
+└────────────────────────┴──────────────────┴──────────────────────────┴───────────────────────┘
 ```
 
 ---
@@ -4469,10 +4473,10 @@ Every emergency change during a change freeze triggers a review to assess:
 ```markdown
 ## Template 1: Initial Notification (post to #engineering-all)
 
-🔒 EMERGENCY SECURITY PATCH — [SERVICE/COMPONENT]
+🔒 EMERGENCY SECURITY PATCH —[SERVICE/COMPONENT]
 
 **What:** [Brief description of the change]
-**Why:** [CVE ID, CVSS score, 1-sentence impact]
+**Why:**[CVE ID, CVSS score, 1-sentence impact]
 **When:** Starting now, estimated completion [time]
 **Customer impact:** [Expected impact or "None expected"]
 **Your action needed:** None — this is informational
@@ -4516,39 +4520,41 @@ Thank you to [names] for executing this safely under time pressure.
 
 This entire emergency change process directly satisfies SOC 2 Trust Service Criteria:
 
-```
-SOC 2 CRITERIA          HOW THIS CHANGE SATISFIES IT
-────────────────────    ──────────────────────────────────────────────
-CC6.8 (Change Mgmt)    - Documented change request with risk assessment
-                        - Approval trail (VP sign-off, timestamped)
-                        - Pre-change and post-change documentation
-                        - Retroactive CAB review
-
-CC7.1 (Monitoring)     - Continuous monitoring during rollout
-                        - Canary verification with specific metrics
-                        - Post-change verification report
-
-CC7.2 (Vulnerability)  - Vulnerability identified same day as disclosure
-                        - Risk assessed within 15 minutes
-                        - Remediated within 8 hours
-                        - Faster than the 72-hour PoC publication
-
-CC7.4 (Incident Mgmt)  - Structured response process followed
-                        - Communication plan executed
-                        - Escalation path documented
-                        - Issue during rollout (istiod) handled per process
-
-CC8.1 (Change Control) - Even under emergency conditions:
-                          - Phased rollout (canary → full)
-                          - PDB compliance verified
-                          - Rollback plan documented
-                          - Stop criteria defined AND triggered
-                          - Quality standards not compromised for speed
-
-CC9.1 (Risk Mgmt)      - Formal risk assessment comparing patch vs wait
-                        - Quantified expected costs for both options
-                        - Decision documented with reasoning
-                        - Lessons learned captured for future improvement
+```text
+┌───────────────────────┬──────────────────────────────────────────────────────┐
+│ SOC 2 CRITERIA        │ HOW THIS CHANGE SATISFIES IT                         │
+├───────────────────────┼──────────────────────────────────────────────────────┤
+│ CC6.8 (Change Mgmt)   │ - Documented change request with risk assessment     │
+│                       │ - Approval trail (VP sign-off, timestamped)          │
+│                       │ - Pre-change and post-change documentation           │
+│                       │ - Retroactive CAB review                             │
+├───────────────────────┼──────────────────────────────────────────────────────┤
+│ CC7.1 (Monitoring)    │ - Continuous monitoring during rollout               │
+│                       │ - Canary verification with specific metrics          │
+│                       │ - Post-change verification report                    │
+├───────────────────────┼──────────────────────────────────────────────────────┤
+│ CC7.2 (Vulnerability) │ - Vulnerability identified same day as disclosure    │
+│                       │ - Risk assessed within 15 minutes                    │
+│                       │ - Remediated within 8 hours                          │
+│                       │ - Faster than the 72-hour PoC publication            │
+├───────────────────────┼──────────────────────────────────────────────────────┤
+│ CC7.4 (Incident Mgmt) │ - Structured response process followed               │
+│                       │ - Communication plan executed                        │
+│                       │ - Escalation path documented                         │
+│                       │ - Issue during rollout (istiod) handled per process  │
+├───────────────────────┼──────────────────────────────────────────────────────┤
+│ CC8.1 (Change Control)│ - Even under emergency conditions:                   │
+│                       │   - Phased rollout (canary → full)                   │
+│                       │   - PDB compliance verified                          │
+│                       │   - Rollback plan documented                         │
+│                       │   - Stop criteria defined AND triggered              │
+│                       │   - Quality standards not compromised for speed      │
+├───────────────────────┼──────────────────────────────────────────────────────┤
+│ CC9.1 (Risk Mgmt)     │ - Formal risk assessment comparing patch vs wait     │
+│                       │ - Quantified expected costs for both options         │
+│                       │ - Decision documented with reasoning                 │
+│                       │ - Lessons learned captured for future improvement    │
+└───────────────────────┴──────────────────────────────────────────────────────┘
 ```
 
 **The key audit message:** NovaMart's emergency change process demonstrates that even during the highest-pressure scenario imaginable — a CVSS 9.8 vulnerability during a Black Friday change freeze — the team followed a structured, documented, risk-assessed process. They didn't panic-deploy. They didn't skip steps. They didn't compromise quality for speed. They made a justified decision, documented it thoroughly, executed it carefully, caught and resolved an issue during rollout, and completed within 8 hours with zero customer impact.
