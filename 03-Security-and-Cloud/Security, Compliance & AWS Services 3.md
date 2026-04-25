@@ -1,4 +1,4 @@
-
+--- START OF FILE Paste April 25, 2026 - 12:21PM ---
 
 # Phase 6, Lesson 4: Network Security & AWS Security Services
 
@@ -6,7 +6,7 @@
 
 ## Why This Lesson Matters at NovaMart
 
-```
+```text
 NovaMart processes $2B/year across 50M monthly active users.
 That makes it a target for:
 
@@ -25,50 +25,50 @@ Three domains:
   3. DETECTION & RESPONSE — GuardDuty, Security Hub, Detective, CloudTrail analysis
 ```
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────────┐
-│              NOVAMART NETWORK SECURITY LAYERS                         │
-│                                                                       │
-│  INTERNET                                                            │
-│     │                                                                │
-│     ▼                                                                │
-│  ┌─────────────────────────────────────────────────────┐             │
-│  │  LAYER 1: EDGE / PERIMETER                           │             │
-│  │  Cloudflare (CDN + DDoS + WAF L7)                    │             │
-│  │  Route53 (DNS, health checks, failover)               │             │
-│  └────────────────────┬────────────────────────────────┘             │
-│                       │                                              │
-│  ┌────────────────────▼────────────────────────────────┐             │
-│  │  LAYER 2: AWS EDGE                                    │             │
-│  │  AWS Shield Advanced (DDoS L3/L4)                     │             │
-│  │  AWS WAF (L7 rules on ALB)                            │             │
-│  │  ALB/NLB (TLS termination, access logs)               │             │
-│  └────────────────────┬────────────────────────────────┘             │
-│                       │                                              │
-│  ┌────────────────────▼────────────────────────────────┐             │
-│  │  LAYER 3: VPC NETWORK                                 │             │
-│  │  VPC (isolated network)                               │             │
-│  │  Subnets (public/private/data tier)                   │             │
-│  │  NACLs (stateless subnet-level)                       │             │
-│  │  Security Groups (stateful instance-level)            │             │
-│  │  VPC Flow Logs (network telemetry)                    │             │
-│  └────────────────────┬────────────────────────────────┘             │
-│                       │                                              │
-│  ┌────────────────────▼────────────────────────────────┐             │
-│  │  LAYER 4: CLUSTER NETWORK                             │             │
-│  │  Kubernetes NetworkPolicies (pod-level L3/L4)         │             │
-│  │  Istio AuthorizationPolicy (L7, mTLS)                 │             │
-│  │  Calico/Cilium policies (advanced, eBPF)              │             │
-│  └────────────────────┬────────────────────────────────┘             │
-│                       │                                              │
-│  ┌────────────────────▼────────────────────────────────┐             │
-│  │  LAYER 5: DETECTION & RESPONSE                        │             │
-│  │  GuardDuty (threat detection)                         │             │
-│  │  Security Hub (centralized findings)                  │             │
-│  │  CloudTrail (API audit)                               │             │
-│  │  VPC Flow Logs → Athena (network forensics)           │             │
-│  │  Detective (investigation)                            │             │
-│  └─────────────────────────────────────────────────────┘             │
+│                   NOVAMART NETWORK SECURITY LAYERS                   │
+│                                                                      │
+│ INTERNET                                                             │
+│    │                                                                 │
+│    ▼                                                                 │
+│ ┌──────────────────────────────────────────────────────────────────┐ │
+│ │ LAYER 1: EDGE / PERIMETER                                        │ │
+│ │ Cloudflare (CDN + DDoS + WAF L7)                                 │ │
+│ │ Route53 (DNS, health checks, failover)                           │ │
+│ └────────────────────────┬─────────────────────────────────────────┘ │
+│                          │                                           │
+│ ┌────────────────────────▼─────────────────────────────────────────┐ │
+│ │ LAYER 2: AWS EDGE                                                │ │
+│ │ AWS Shield Advanced (DDoS L3/L4)                                 │ │
+│ │ AWS WAF (L7 rules on ALB)                                        │ │
+│ │ ALB/NLB (TLS termination, access logs)                           │ │
+│ └────────────────────────┬─────────────────────────────────────────┘ │
+│                          │                                           │
+│ ┌────────────────────────▼─────────────────────────────────────────┐ │
+│ │ LAYER 3: VPC NETWORK                                             │ │
+│ │ VPC (isolated network)                                           │ │
+│ │ Subnets (public/private/data tier)                               │ │
+│ │ NACLs (stateless subnet-level)                                   │ │
+│ │ Security Groups (stateful instance-level)                        │ │
+│ │ VPC Flow Logs (network telemetry)                                │ │
+│ └────────────────────────┬─────────────────────────────────────────┘ │
+│                          │                                           │
+│ ┌────────────────────────▼─────────────────────────────────────────┐ │
+│ │ LAYER 4: CLUSTER NETWORK                                         │ │
+│ │ Kubernetes NetworkPolicies (pod-level L3/L4)                     │ │
+│ │ Istio AuthorizationPolicy (L7, mTLS)                             │ │
+│ │ Calico/Cilium policies (advanced, eBPF)                          │ │
+│ └────────────────────────┬─────────────────────────────────────────┘ │
+│                          │                                           │
+│ ┌────────────────────────▼─────────────────────────────────────────┐ │
+│ │ LAYER 5: DETECTION & RESPONSE                                    │ │
+│ │ GuardDuty (threat detection)                                     │ │
+│ │ Security Hub (centralized findings)                              │ │
+│ │ CloudTrail (API audit)                                           │ │
+│ │ VPC Flow Logs → Athena (network forensics)                       │ │
+│ │ Detective (investigation)                                        │ │
+│ └──────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -78,59 +78,59 @@ Three domains:
 
 ### DDoS Attack Types and Defenses
 
-```
+```text
 DDoS attacks target different layers of the stack:
 
 LAYER 3/4 (VOLUMETRIC / PROTOCOL):
-  ┌─────────────────────────────────────────────────────────────┐
-  │ Attack Type      │ How It Works         │ Defense            │
-  ├──────────────────┼──────────────────────┼────────────────────┤
-  │ UDP Flood        │ Massive UDP packets  │ Shield, Cloudflare │
-  │                  │ overwhelm bandwidth  │ (absorb volume)    │
-  │ SYN Flood        │ Half-open TCP conns  │ SYN cookies,       │
-  │                  │ exhaust conn tables  │ Shield, NLB        │
-  │ DNS Amplification│ Spoofed DNS queries  │ Shield, upstream   │
-  │                  │ reflect to target    │ filtering          │
-  │ NTP Amplification│ Spoofed NTP monlist  │ Shield, upstream   │
-  │                  │ reflect to target    │ filtering          │
-  │ ICMP Flood       │ Ping flood           │ Rate limit, drop   │
-  └──────────────────┴──────────────────────┴────────────────────┘
+┌────────────────────┬──────────────────────┬──────────────────────────┐
+│ Attack Type        │ How It Works         │ Defense                  │
+├────────────────────┼──────────────────────┼──────────────────────────┤
+│ UDP Flood          │ Massive UDP packets  │ Shield, Cloudflare       │
+│                    │ overwhelm bandwidth  │ (absorb volume)          │
+│ SYN Flood          │ Half-open TCP conns  │ SYN cookies,             │
+│                    │ exhaust conn tables  │ Shield, NLB              │
+│ DNS Amplification  │ Spoofed DNS queries  │ Shield, upstream         │
+│                    │ reflect to target    │ filtering                │
+│ NTP Amplification  │ Spoofed NTP monlist  │ Shield, upstream         │
+│                    │ reflect to target    │ filtering                │
+│ ICMP Flood         │ Ping flood           │ Rate limit, drop         │
+└────────────────────┴──────────────────────┴──────────────────────────┘
 
-  Defense strategy:
-    1. Absorb the volume (Cloudflare's 280+ Tbps network, AWS Shield)
-    2. Filter at the edge (before traffic reaches your infrastructure)
-    3. You CANNOT defend L3/L4 DDoS at the application level
-       The pipe is full before your server sees a single packet
+Defense strategy:
+  1. Absorb the volume (Cloudflare's 280+ Tbps network, AWS Shield)
+  2. Filter at the edge (before traffic reaches your infrastructure)
+  3. You CANNOT defend L3/L4 DDoS at the application level
+     The pipe is full before your server sees a single packet
 
 LAYER 7 (APPLICATION):
-  ┌─────────────────────────────────────────────────────────────┐
-  │ Attack Type        │ How It Works           │ Defense        │
-  ├────────────────────┼────────────────────────┼────────────────┤
-  │ HTTP Flood         │ Legitimate-looking     │ WAF rate       │
-  │                    │ requests at high rate  │ limiting       │
-  │ Slowloris          │ Keep connections open  │ Timeouts,      │
-  │                    │ with partial headers   │ ALB handles    │
-  │ API Abuse          │ Expensive API calls    │ WAF rules,     │
-  │                    │ (search, checkout)     │ rate limits    │
-  │ Credential         │ Automated login        │ WAF + bot      │
-  │ Stuffing           │ attempts with leaked   │ detection,     │
-  │                    │ credential databases   │ CAPTCHA        │
-  │ Web Scraping       │ Automated content      │ Bot mgmt,      │
-  │                    │ extraction at scale    │ fingerprinting │
-  └────────────────────┴────────────────────────┴────────────────┘
+┌────────────────────┬──────────────────────┬──────────────────────────┐
+│ Attack Type        │ How It Works         │ Defense                  │
+├────────────────────┼──────────────────────┼──────────────────────────┤
+│ HTTP Flood         │ Legitimate-looking   │ WAF rate                 │
+│                    │ requests at high rate│ limiting                 │
+│ Slowloris          │ Keep connections open│ Timeouts,                │
+│                    │ with partial headers │ ALB handles              │
+│ API Abuse          │ Expensive API calls  │ WAF rules,               │
+│                    │ (search, checkout)   │ rate limits              │
+│ Credential         │ Automated login      │ WAF + bot                │
+│ Stuffing           │ attempts with leaked │ detection,               │
+│                    │ credential databases │ CAPTCHA                  │
+│ Web Scraping       │ Automated content    │ Bot mgmt,                │
+│                    │ extraction at scale  │ fingerprinting           │
+└────────────────────┴──────────────────────┴──────────────────────────┘
 
-  Defense strategy:
-    1. Identify malicious traffic patterns (WAF rules)
-    2. Rate limit per IP, per session, per API key
-    3. Challenge suspicious clients (CAPTCHA, JavaScript challenge)
-    4. L7 attacks look like legitimate traffic — harder to filter
+Defense strategy:
+  1. Identify malicious traffic patterns (WAF rules)
+  2. Rate limit per IP, per session, per API key
+  3. Challenge suspicious clients (CAPTCHA, JavaScript challenge)
+  4. L7 attacks look like legitimate traffic — harder to filter
 
-  KEY INSIGHT: L3/L4 defense = bandwidth. L7 defense = intelligence.
+KEY INSIGHT: L3/L4 defense = bandwidth. L7 defense = intelligence.
 ```
 
 ### AWS Shield
 
-```
+```text
 AWS SHIELD STANDARD (Free, automatic):
   ✅ Protects ALL AWS resources automatically
   ✅ L3/L4 DDoS protection (SYN floods, UDP floods, reflection)
@@ -208,7 +208,7 @@ resource "aws_shield_application_layer_automatic_response" "alb" {
 
 ### AWS WAF — Web Application Firewall
 
-```
+```text
 AWS WAF operates at Layer 7 (HTTP/HTTPS).
 Attached to: ALB, CloudFront, API Gateway, AppSync, Cognito
 
@@ -220,25 +220,25 @@ EVALUATION ORDER:
   → First matching rule's action is taken (ALLOW, BLOCK, COUNT, CAPTCHA)
   → If no rule matches → Default action (ALLOW or BLOCK)
 
-┌──────────────────────────────────────────────────────────────────┐
-│                     WAF WEB ACL STRUCTURE                          │
-│                                                                   │
-│  Web ACL: novamart-production-waf                                 │
-│  Default Action: ALLOW (block known-bad, allow everything else)   │
-│                                                                   │
-│  Priority 0: AWS Managed — AWSManagedRulesAmazonIpReputationList  │
-│  Priority 1: AWS Managed — AWSManagedRulesCommonRuleSet (CRS)     │
-│  Priority 2: AWS Managed — AWSManagedRulesSQLiRuleSet             │
-│  Priority 3: AWS Managed — AWSManagedRulesKnownBadInputsRuleSet   │
-│  Priority 4: AWS Managed — AWSManagedRulesBotControlRuleSet       │
-│  Priority 5: Custom — Rate limiting (2000 req/5min per IP)        │
-│  Priority 6: Custom — Geo-blocking (block specific countries)      │
-│  Priority 7: Custom — URI path protection                         │
-│  Priority 8: Custom — Request size constraints                    │
-│                                                                   │
-│  WCU (Web ACL Capacity Units): 1500 max per Web ACL              │
-│  Each rule costs WCUs. Managed rule groups cost 200-700 WCU each  │
-└──────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                       WAF WEB ACL STRUCTURE                        │
+│                                                                    │
+│ Web ACL: novamart-production-waf                                   │
+│ Default Action: ALLOW (block known-bad, allow everything else)     │
+│                                                                    │
+│ Priority 0: AWS Managed — AWSManagedRulesAmazonIpReputationList    │
+│ Priority 1: AWS Managed — AWSManagedRulesCommonRuleSet (CRS)       │
+│ Priority 2: AWS Managed — AWSManagedRulesSQLiRuleSet               │
+│ Priority 3: AWS Managed — AWSManagedRulesKnownBadInputsRuleSet     │
+│ Priority 4: AWS Managed — AWSManagedRulesBotControlRuleSet         │
+│ Priority 5: Custom — Rate limiting (2000 req/5min per IP)          │
+│ Priority 6: Custom — Geo-blocking (block specific countries)       │
+│ Priority 7: Custom — URI path protection                           │
+│ Priority 8: Custom — Request size constraints                      │
+│                                                                    │
+│ WCU (Web ACL Capacity Units): 1500 max per Web ACL                 │
+│ Each rule costs WCUs. Managed rule groups cost 200-700 WCU each    │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 ```hcl
@@ -586,7 +586,7 @@ resource "aws_wafv2_web_acl_association" "alb" {
 
 # WAF logging to S3 (via Kinesis Firehose)
 resource "aws_wafv2_web_acl_logging_configuration" "main" {
-  log_destination_configs = [aws_kinesis_firehose_delivery_stream.waf_logs.arn]
+  log_destination_configs =[aws_kinesis_firehose_delivery_stream.waf_logs.arn]
   resource_arn            = aws_wafv2_web_acl.main.arn
 
   # Only log blocked requests and sampled allowed requests
@@ -624,7 +624,7 @@ resource "aws_wafv2_web_acl_logging_configuration" "main" {
 
 ### WAF Deployment Strategy — The COUNT-First Pattern
 
-```
+```text
 NEVER deploy WAF rules in BLOCK mode immediately.
 This is the WAF equivalent of Gatekeeper's dryrun → warn → deny.
 
@@ -665,46 +665,46 @@ WAF is a tool that must be TUNED, not just deployed.
 
 ### Cloudflare + AWS WAF — Dual-Layer Architecture
 
-```
+```text
 NovaMart uses BOTH Cloudflare and AWS WAF. This is common at scale.
 
 WHY TWO WAFs?
 
-  ┌──────────────────────────────────────────────────────────────┐
-  │  INTERNET                                                     │
-  │     │                                                         │
-  │     ▼                                                         │
-  │  ┌──────────────────────────────────────────────────┐        │
-  │  │  CLOUDFLARE                                       │        │
-  │  │  • CDN (static assets cached at 300+ PoPs)        │        │
-  │  │  • L3/L4 DDoS absorption (280+ Tbps capacity)     │        │
-  │  │  • L7 WAF (OWASP rules, custom rules)             │        │
-  │  │  • Bot Management (ML-based, JS challenge)         │        │
-  │  │  • Rate Limiting (edge, before traffic hits AWS)   │        │
-  │  │  • Geo-blocking                                    │        │
-  │  │                                                    │        │
-  │  │  PURPOSE: Absorb volume, block obvious attacks     │        │
-  │  │  at the EDGE before traffic reaches AWS            │        │
-  │  └────────────────────┬─────────────────────────────┘        │
-  │                       │ Only "clean" traffic passes           │
-  │                       ▼                                       │
-  │  ┌──────────────────────────────────────────────────┐        │
-  │  │  AWS WAF (on ALB)                                 │        │
-  │  │  • Application-specific rules                     │        │
-  │  │  • Rate limiting per endpoint (/auth, /checkout)  │        │
-  │  │  • Request inspection (SQL injection, XSS)        │        │
-  │  │  • Integration with Shield Advanced               │        │
-  │  │  • Logging to S3/Firehose for analysis            │        │
-  │  │                                                    │        │
-  │  │  PURPOSE: Application-aware filtering,             │        │
-  │  │  defense-in-depth if Cloudflare is bypassed        │        │
-  │  └────────────────────┬─────────────────────────────┘        │
-  │                       │                                       │
-  │                       ▼                                       │
-  │  ┌──────────────────────────────────────────────────┐        │
-  │  │  EKS (Application)                                │        │
-  │  └──────────────────────────────────────────────────┘        │
-  └──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│ INTERNET                                                             │
+│    │                                                                 │
+│    ▼                                                                 │
+│ ┌──────────────────────────────────────────────────────────────────┐ │
+│ │ CLOUDFLARE                                                       │ │
+│ │ • CDN (static assets cached at 300+ PoPs)                        │ │
+│ │ • L3/L4 DDoS absorption (280+ Tbps capacity)                     │ │
+│ │ • L7 WAF (OWASP rules, custom rules)                             │ │
+│ │ • Bot Management (ML-based, JS challenge)                        │ │
+│ │ • Rate Limiting (edge, before traffic hits AWS)                  │ │
+│ │ • Geo-blocking                                                   │ │
+│ │                                                                  │ │
+│ │ PURPOSE: Absorb volume, block obvious attacks                    │ │
+│ │ at the EDGE before traffic reaches AWS                           │ │
+│ └────────────────────────┬─────────────────────────────────────────┘ │
+│                          │ Only "clean" traffic passes               │
+│                          ▼                                           │
+│ ┌──────────────────────────────────────────────────────────────────┐ │
+│ │ AWS WAF (on ALB)                                                 │ │
+│ │ • Application-specific rules                                     │ │
+│ │ • Rate limiting per endpoint (/auth, /checkout)                  │ │
+│ │ • Request inspection (SQL injection, XSS)                        │ │
+│ │ • Integration with Shield Advanced                               │ │
+│ │ • Logging to S3/Firehose for analysis                            │ │
+│ │                                                                  │ │
+│ │ PURPOSE: Application-aware filtering,                            │ │
+│ │ defense-in-depth if Cloudflare is bypassed                       │ │
+│ └────────────────────────┬─────────────────────────────────────────┘ │
+│                          │                                           │
+│                          ▼                                           │
+│ ┌──────────────────────────────────────────────────────────────────┐ │
+│ │ EKS (Application)                                                │ │
+│ └──────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────┘
 
 CRITICAL CONFIGURATION: Restrict ALB to Cloudflare IPs only
   If attackers discover your ALB's direct IP, they bypass Cloudflare.
@@ -720,7 +720,7 @@ CRITICAL CONFIGURATION: Restrict ALB to Cloudflare IPs only
 
 ### WAF Failure Modes
 
-```
+```text
 FAILURE 1: WAF false positive blocks legitimate traffic
   CAUSE: Rule too broad (e.g., SQLi rule triggers on product search
          "O'Reilly books" — the apostrophe looks like SQL injection)
@@ -810,65 +810,65 @@ FAILURE 5: Shield Advanced DRT can't help during attack
 
 ### NovaMart VPC Architecture — Production Design
 
-```
+```text
 NovaMart's VPC design follows the standard three-tier model
 with specific security considerations:
 
 ┌─────────────────────────────────────────────────────────────────────┐
-│  VPC: 10.0.0.0/16 (65,536 IPs)  — us-east-1                        │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │  PUBLIC SUBNETS (10.0.0.0/20, 10.0.16.0/20, 10.0.32.0/20)    │  │
-│  │  3 AZs × /20 = 4,096 IPs each                                │  │
-│  │                                                                │  │
-│  │  Contains:                                                     │  │
-│  │    • ALB/NLB (internet-facing)                                 │  │
-│  │    • NAT Gateways (one per AZ)                                 │  │
-│  │    • Bastion host (if needed — prefer SSM Session Manager)     │  │
-│  │                                                                │  │
-│  │  Route table: 0.0.0.0/0 → Internet Gateway                    │  │
-│  │  NACL: Allow 443 inbound from 0.0.0.0/0, deny everything else │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │  PRIVATE SUBNETS (10.0.48.0/18, 10.0.112.0/18, 10.0.176.0/18)│  │
-│  │  3 AZs × /18 = 16,384 IPs each (for EKS pod IPs — need many) │  │
-│  │                                                                │  │
-│  │  Contains:                                                     │  │
-│  │    • EKS worker nodes                                          │  │
-│  │    • All application pods (VPC CNI = real VPC IPs per pod)     │  │
-│  │    • Internal ALB (service-to-service if needed)               │  │
-│  │                                                                │  │
-│  │  Route table: 0.0.0.0/0 → NAT Gateway (for outbound only)    │  │
-│  │  NO Internet Gateway route — no inbound from internet          │  │
-│  │  NACL: Allow from VPC CIDR, allow responses on ephemeral ports │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐  │
-│  │  DATA SUBNETS (10.0.240.0/22, 10.0.244.0/22, 10.0.248.0/22)  │  │
-│  │  3 AZs × /22 = 1,024 IPs each (databases don't need many)    │  │
-│  │                                                                │  │
-│  │  Contains:                                                     │  │
-│  │    • RDS PostgreSQL (Multi-AZ)                                 │  │
-│  │    • ElastiCache Redis                                         │  │
-│  │    • MongoDB Atlas (via PrivateLink)                           │  │
-│  │                                                                │  │
-│  │  Route table: NO default route (no internet, no NAT)           │  │
-│  │  Only VPC CIDR routes + VPC endpoint routes                    │  │
-│  │  NACL: Allow 5432, 6379, 27017 ONLY from private subnets      │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-│                                                                      │
-│  VPC ENDPOINTS (no internet traversal for AWS services):             │
-│    • Gateway: S3, DynamoDB (free)                                    │
-│    • Interface: ECR (api + dkr), STS, KMS, Secrets Manager,         │
-│                 CloudWatch Logs, SSM, EC2                            │
-│    • Each interface endpoint: ~$7.50/AZ/month + data transfer       │
-│    • ECR endpoints are CRITICAL — without them, image pulls go      │
-│      through NAT Gateway ($0.045/GB — extremely expensive at scale) │
+│ VPC: 10.0.0.0/16 (65,536 IPs) — us-east-1                           │
+│                                                                     │
+│ ┌─────────────────────────────────────────────────────────────────┐ │
+│ │ PUBLIC SUBNETS (10.0.0.0/20, 10.0.16.0/20, 10.0.32.0/20)        │ │
+│ │ 3 AZs × /20 = 4,096 IPs each                                    │ │
+│ │                                                                 │ │
+│ │ Contains:                                                       │ │
+│ │   • ALB/NLB (internet-facing)                                   │ │
+│ │   • NAT Gateways (one per AZ)                                   │ │
+│ │   • Bastion host (if needed — prefer SSM Session Manager)       │ │
+│ │                                                                 │ │
+│ │ Route table: 0.0.0.0/0 → Internet Gateway                       │ │
+│ │ NACL: Allow 443 inbound from 0.0.0.0/0, deny everything else    │ │
+│ └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│ ┌─────────────────────────────────────────────────────────────────┐ │
+│ │ PRIVATE SUBNETS (10.0.48.0/18, 10.0.112.0/18, 10.0.176.0/18)    │ │
+│ │ 3 AZs × /18 = 16,384 IPs each (for EKS pod IPs — need many)     │ │
+│ │                                                                 │ │
+│ │ Contains:                                                       │ │
+│ │   • EKS worker nodes                                            │ │
+│ │   • All application pods (VPC CNI = real VPC IPs per pod)       │ │
+│ │   • Internal ALB (service-to-service if needed)                 │ │
+│ │                                                                 │ │
+│ │ Route table: 0.0.0.0/0 → NAT Gateway (for outbound only)        │ │
+│ │ NO Internet Gateway route — no inbound from internet            │ │
+│ │ NACL: Allow from VPC CIDR, allow responses on ephemeral ports   │ │
+│ └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│ ┌─────────────────────────────────────────────────────────────────┐ │
+│ │ DATA SUBNETS (10.0.240.0/22, 10.0.244.0/22, 10.0.248.0/22)      │ │
+│ │ 3 AZs × /22 = 1,024 IPs each (databases don't need many)        │ │
+│ │                                                                 │ │
+│ │ Contains:                                                       │ │
+│ │   • RDS PostgreSQL (Multi-AZ)                                   │ │
+│ │   • ElastiCache Redis                                           │ │
+│ │   • MongoDB Atlas (via PrivateLink)                             │ │
+│ │                                                                 │ │
+│ │ Route table: NO default route (no internet, no NAT)             │ │
+│ │ Only VPC CIDR routes + VPC endpoint routes                      │ │
+│ │ NACL: Allow 5432, 6379, 27017 ONLY from private subnets         │ │
+│ └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│ VPC ENDPOINTS (no internet traversal for AWS services):             │
+│   • Gateway: S3, DynamoDB (free)                                    │
+│   • Interface: ECR (api + dkr), STS, KMS, Secrets Manager,          │
+│                CloudWatch Logs, SSM, EC2                            │
+│   • Each interface endpoint: ~$7.50/AZ/month + data transfer        │
+│   • ECR endpoints are CRITICAL — without them, image pulls go       │
+│     through NAT Gateway ($0.045/GB — extremely expensive at scale)  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-```
+```text
 WHY /18 FOR PRIVATE SUBNETS?
 
   EKS with VPC CNI assigns REAL VPC IPs to every pod.
@@ -893,7 +893,7 @@ WHY /18 FOR PRIVATE SUBNETS?
 
 ### Security Groups — NovaMart's Design
 
-```
+```text
 SECURITY GROUP PRINCIPLES:
   1. Stateful (return traffic auto-allowed)
   2. Allow-only (no deny rules — use NACLs for deny)
@@ -905,7 +905,7 @@ NovaMart Security Group Architecture:
   SG-to-SG references create an implicit trust chain:
   
   ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-  │  sg-alb      │────→│  sg-eks-node │────→│  sg-rds      │
+  │ sg-alb       │────→│ sg-eks-node  │────→│ sg-rds       │
   │              │     │              │     │              │
   │ Inbound:     │     │ Inbound:     │     │ Inbound:     │
   │  443 from    │     │  Any from    │     │  5432 from   │
@@ -996,7 +996,7 @@ resource "aws_security_group" "eks_node" {
     from_port       = 443
     to_port         = 443
     protocol        = "tcp"
-    security_groups = [aws_security_group.eks_control_plane.id]
+    security_groups =[aws_security_group.eks_control_plane.id]
     description     = "EKS control plane to kubelet"
   }
 
@@ -1004,7 +1004,7 @@ resource "aws_security_group" "eks_node" {
     from_port       = 1025
     to_port         = 65535
     protocol        = "tcp"
-    security_groups = [aws_security_group.eks_control_plane.id]
+    security_groups =[aws_security_group.eks_control_plane.id]
     description     = "EKS control plane to pods (webhooks)"
   }
 
@@ -1012,7 +1012,7 @@ resource "aws_security_group" "eks_node" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]  # Outbound to NAT GW for external deps
+    cidr_blocks =["0.0.0.0/0"]  # Outbound to NAT GW for external deps
     description = "Outbound (via NAT Gateway)"
   }
 
@@ -1030,7 +1030,7 @@ resource "aws_security_group" "rds" {
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.eks_node.id]
+    security_groups =[aws_security_group.eks_node.id]
     description     = "PostgreSQL from EKS pods"
   }
 
@@ -1076,7 +1076,7 @@ resource "aws_security_group" "vpc_endpoints" {
     from_port       = 443
     to_port         = 443
     protocol        = "tcp"
-    security_groups = [aws_security_group.eks_node.id]
+    security_groups =[aws_security_group.eks_node.id]
     description     = "HTTPS from EKS nodes to VPC endpoints"
   }
 
@@ -1086,7 +1086,7 @@ resource "aws_security_group" "vpc_endpoints" {
 
 ### Kubernetes NetworkPolicies — Pod-Level Segmentation
 
-```
+```text
 Security Groups protect at the VPC/ENI level.
 NetworkPolicies protect at the POD level WITHIN the cluster.
 
@@ -1251,7 +1251,7 @@ spec:
           port: 15090  # Istio metrics port
 ```
 
-```
+```text
 NETWORKPOLICY GOTCHAS:
 
 1. CNI MUST SUPPORT NetworkPolicy
@@ -1329,7 +1329,7 @@ spec:
       to:
         - operation:
             methods: ["POST"]
-            paths: ["/api/v1/payments/*"]
+            paths:["/api/v1/payments/*"]
     # Order service can check payment status
     - from:
         - source:
@@ -1341,7 +1341,7 @@ spec:
     # Prometheus can scrape metrics
     - from:
         - source:
-            principals: ["cluster.local/ns/monitoring/sa/prometheus"]
+            principals:["cluster.local/ns/monitoring/sa/prometheus"]
       to:
         - operation:
             methods: ["GET"]
@@ -1361,31 +1361,31 @@ spec:
   # Combined with specific ALLOW policies above = allowlist model
 ```
 
-```
+```text
 NETWORKPOLICY vs ISTIO AUTHORIZATIONPOLICY:
 
-  ┌────────────────────┬──────────────────┬──────────────────────┐
-  │ Feature            │ NetworkPolicy    │ Istio AuthzPolicy    │
-  ├────────────────────┼──────────────────┼──────────────────────┤
-  │ Layer              │ L3/L4 (IP/port)  │ L7 (HTTP/gRPC)       │
-  │ Identity           │ Pod labels, CIDR │ Service identity     │
-  │                    │                  │ (SPIFFE, mTLS cert)  │
-  │ Granularity        │ IP + port        │ Method + path +      │
-  │                    │                  │ headers + JWT claims │
-  │ Encryption         │ No               │ Yes (mTLS)           │
-  │ Non-mesh services  │ ✅ Works         │ ❌ Need sidecar      │
-  │ Performance        │ Kernel (fast)    │ Userspace (Envoy)    │
-  │ Enforcement point  │ Linux kernel/eBPF│ Envoy proxy          │
-  │ Failure mode       │ Packets dropped  │ HTTP 403 returned    │
-  └────────────────────┴──────────────────┴──────────────────────┘
+┌───────────────────┬──────────────────┬──────────────────────┐
+│ Feature           │ NetworkPolicy    │ Istio AuthzPolicy    │
+├───────────────────┼──────────────────┼──────────────────────┤
+│ Layer             │ L3/L4 (IP/port)  │ L7 (HTTP/gRPC)       │
+│ Identity          │ Pod labels, CIDR │ Service identity     │
+│                   │                  │ (SPIFFE, mTLS cert)  │
+│ Granularity       │ IP + port        │ Method + path +      │
+│                   │                  │ headers + JWT claims │
+│ Encryption        │ No               │ Yes (mTLS)           │
+│ Non-mesh services │ ✅ Works         │ ❌ Need sidecar      │
+│ Performance       │ Kernel (fast)    │ Userspace (Envoy)    │
+│ Enforcement point │ Linux kernel/eBPF│ Envoy proxy          │
+│ Failure mode      │ Packets dropped  │ HTTP 403 returned    │
+└───────────────────┴──────────────────┴──────────────────────┘
 
-  USE BOTH:
-    NetworkPolicy = coarse network segmentation (namespaces, CIDRs)
-    Istio = fine-grained application access control (methods, paths)
-    
-    An attacker who compromises a sidecar can bypass Istio policies
-    but still hits NetworkPolicy. An attacker who spoofs pod labels
-    might bypass NetworkPolicy but can't forge mTLS certificates.
+USE BOTH:
+  NetworkPolicy = coarse network segmentation (namespaces, CIDRs)
+  Istio = fine-grained application access control (methods, paths)
+  
+  An attacker who compromises a sidecar can bypass Istio policies
+  but still hits NetworkPolicy. An attacker who spoofs pod labels
+  might bypass NetworkPolicy but can't forge mTLS certificates.
 ```
 
 ---
@@ -1394,38 +1394,38 @@ NETWORKPOLICY vs ISTIO AUTHORIZATIONPOLICY:
 
 ### GuardDuty — Threat Detection
 
-```
+```text
 GuardDuty is AWS's managed threat detection service.
 It analyzes multiple data sources and produces FINDINGS
 (security alerts) without requiring any infrastructure from you.
 
 DATA SOURCES GuardDuty analyzes:
-  ┌──────────────────────────────────────────────────────────────┐
-  │ Source              │ What It Detects                         │
-  ├─────────────────────┼────────────────────────────────────────┤
-  │ CloudTrail Events   │ Unusual API calls, credential abuse,   │
-  │                     │ unauthorized regions, privilege esc.    │
-  │ CloudTrail Mgmt     │ Console logins, IAM changes,           │
-  │                     │ resource policy modifications           │
-  │ VPC Flow Logs       │ Port scanning, C2 communication,       │
-  │                     │ cryptocurrency mining traffic,          │
-  │                     │ data exfiltration patterns              │
-  │ DNS Logs            │ DNS queries to malicious domains,       │
-  │                     │ DGA (domain generation algorithm),      │
-  │                     │ DNS tunneling                           │
-  │ EKS Audit Logs      │ Suspicious K8s API calls, anonymous    │
-  │                     │ auth, privileged containers, exec into  │
-  │                     │ pods, unusual RBAC changes              │
-  │ S3 Data Events      │ Unusual S3 access patterns, public     │
-  │                     │ bucket access, data exfiltration        │
-  │ RDS Login Activity  │ Brute force login attempts, unusual     │
-  │                     │ login locations, successful login from  │
-  │                     │ known-bad IPs                           │
-  │ Lambda Network      │ Lambda functions contacting malicious   │
-  │                     │ IPs, unusual network behavior           │
-  │ EBS Malware         │ Scans EBS volumes for malware when      │
-  │ Protection          │ GuardDuty detects suspicious behavior   │
-  └─────────────────────┴────────────────────────────────────────┘
+┌──────────────────────┬─────────────────────────────────────────┐
+│ Source               │ What It Detects                         │
+├──────────────────────┼─────────────────────────────────────────┤
+│ CloudTrail Events    │ Unusual API calls, credential abuse,    │
+│                      │ unauthorized regions, privilege esc.    │
+│ CloudTrail Mgmt      │ Console logins, IAM changes,            │
+│                      │ resource policy modifications           │
+│ VPC Flow Logs        │ Port scanning, C2 communication,        │
+│                      │ cryptocurrency mining traffic,          │
+│                      │ data exfiltration patterns              │
+│ DNS Logs             │ DNS queries to malicious domains,       │
+│                      │ DGA (domain generation algorithm),      │
+│                      │ DNS tunneling                           │
+│ EKS Audit Logs       │ Suspicious K8s API calls, anonymous     │
+│                      │ auth, privileged containers, exec into  │
+│                      │ pods, unusual RBAC changes              │
+│ S3 Data Events       │ Unusual S3 access patterns, public      │
+│                      │ bucket access, data exfiltration        │
+│ RDS Login Activity   │ Brute force login attempts, unusual     │
+│                      │ login locations, successful login from  │
+│                      │ known-bad IPs                           │
+│ Lambda Network       │ Lambda functions contacting malicious   │
+│                      │ IPs, unusual network behavior           │
+│ EBS Malware          │ Scans EBS volumes for malware when      │
+│ Protection           │ GuardDuty detects suspicious behavior   │
+└──────────────────────┴─────────────────────────────────────────┘
 
 GUARDDUTY DOES NOT:
   ❌ Prevent attacks (detection only, not prevention)
@@ -1509,24 +1509,24 @@ resource "aws_guardduty_detector_feature" "lambda" {
 
 ### GuardDuty → Automated Response
 
-```
+```text
 GuardDuty DETECTS. You need to BUILD the response pipeline.
 
-  ┌──────────────┐     ┌──────────────┐     ┌─────────────────┐
-  │  GuardDuty   │────→│  EventBridge │────→│  Step Functions  │
-  │  Finding     │     │  Rule        │     │  Workflow        │
-  └──────────────┘     └──────────────┘     └────────┬────────┘
-                                                      │
-                                            ┌─────────┼─────────┐
-                                            │         │         │
-                                            ▼         ▼         ▼
-                                       ┌────────┐ ┌──────┐ ┌──────────┐
-                                       │ Lambda │ │Slack │ │PagerDuty │
-                                       │(isolate│ │alert │ │page      │
-                                       │ EC2,   │ │      │ │on-call   │
-                                       │ revoke │ │      │ │          │
-                                       │ creds) │ │      │ │          │
-                                       └────────┘ └──────┘ └──────────┘
+┌──────────────┐     ┌──────────────┐     ┌────────────────┐
+│ GuardDuty    │────→│ EventBridge  │────→│ Step Functions │
+│ Finding      │     │ Rule         │     │ Workflow       │
+└──────────────┘     └──────────────┘     └────────┬───────┘
+                                                   │
+                                         ┌─────────┼─────────┐
+                                         │         │         │
+                                         ▼         ▼         ▼
+                                    ┌────────┐ ┌──────┐ ┌──────────┐
+                                    │ Lambda │ │Slack │ │PagerDuty │
+                                    │(isolate│ │alert │ │page      │
+                                    │ EC2,   │ │      │ │on-call   │
+                                    │ revoke │ │      │ │          │
+                                    │ creds) │ │      │ │          │
+                                    └────────┘ └──────┘ └──────────┘
 ```
 
 ```hcl
@@ -1540,7 +1540,7 @@ resource "aws_cloudwatch_event_rule" "guardduty_high" {
     detail-type = ["GuardDuty Finding"]
     detail = {
       severity = [
-        { numeric = [">=", 7] }
+        { numeric =[">=", 7] }
         # GuardDuty severity: 0-3.9 LOW, 4-6.9 MEDIUM, 7-8.9 HIGH, 9-10 CRITICAL
       ]
     }
@@ -1565,10 +1565,10 @@ resource "aws_cloudwatch_event_rule" "guardduty_crypto" {
   description = "Cryptocurrency mining detected"
 
   event_pattern = jsonencode({
-    source      = ["aws.guardduty"]
+    source      =["aws.guardduty"]
     detail-type = ["GuardDuty Finding"]
     detail = {
-      type = [
+      type =[
         "CryptoCurrency:EC2/BitcoinTool.B!DNS",
         "CryptoCurrency:EC2/BitcoinTool.B",
         "CryptoCurrency:Runtime/BitcoinTool.B",
@@ -1654,7 +1654,7 @@ def handler(event, context):
             Description=f"Forensic snapshot - {finding_type} - {instance_id}",
             TagSpecifications=[{
                 'ResourceType': 'snapshot',
-                'Tags': [
+                'Tags':[
                     {'Key': 'SecurityIncident', 'Value': 'true'},
                     {'Key': 'SourceInstance', 'Value': instance_id}
                 ]
@@ -1672,7 +1672,7 @@ def handler(event, context):
             'action_taken': 'Instance isolated with quarantine SG',
             'original_security_groups': current_sgs,
             'forensic_snapshots': 'Created for all attached volumes',
-            'next_steps': [
+            'next_steps':[
                 'Review GuardDuty finding details',
                 'Analyze forensic snapshots',
                 'Check CloudTrail for lateral movement',
@@ -1706,7 +1706,7 @@ resource "aws_security_group" "quarantine" {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = [aws_vpc.main.cidr_block]
+    cidr_blocks =[aws_vpc.main.cidr_block]
     description = "SSM endpoint for forensic access"
   }
 
@@ -1719,7 +1719,7 @@ resource "aws_security_group" "quarantine" {
 
 ### GuardDuty Failure Modes
 
-```
+```text
 FAILURE 1: GuardDuty disabled or not enabled in all regions
   CAUSE: Terraform only enables GuardDuty in primary region,
          attacker operates in unused region (ap-southeast-1)
@@ -1746,7 +1746,7 @@ FAILURE 2: GuardDuty finding suppression too broad
         }
         criterion {
           field  = "service.action.networkConnectionAction.remoteIpDetails.ipAddressV4"
-          equals = ["10.0.50.100"]  # Only suppress from the scanner IP
+          equals =["10.0.50.100"]  # Only suppress from the scanner IP
         }
       }
     }
@@ -1796,46 +1796,46 @@ FAILURE 5: GuardDuty findings not reaching the team
 
 ### Security Hub — Centralized Security Posture
 
-```
+```text
 Security Hub AGGREGATES findings from multiple sources into
 a single pane of glass:
 
-  ┌─────────────────────────────────────────────────────────────────┐
-  │                    AWS SECURITY HUB                               │
-  │                                                                   │
-  │  FINDING SOURCES:                                                │
-  │  ┌─────────────┐ ┌──────────┐ ┌──────────┐ ┌────────────────┐  │
-  │  │ GuardDuty   │ │Inspector │ │ Firewall │ │ IAM Access     │  │
-  │  │ (threats)   │ │(vulns)   │ │ Manager  │ │ Analyzer       │  │
-  │  └──────┬──────┘ └────┬─────┘ └────┬─────┘ └──────┬─────────┘  │
-  │         │             │            │               │            │
-  │         └──────┬──────┴─────┬──────┘───────────────┘            │
-  │                │            │                                    │
-  │  ┌─────────────▼────────────▼──────────────────────────────┐    │
-  │  │              SECURITY HUB                                │    │
-  │  │                                                          │    │
-  │  │  ASFF (AWS Security Finding Format)                      │    │
-  │  │  Normalizes all findings into a common format            │    │
-  │  │                                                          │    │
-  │  │  COMPLIANCE STANDARDS:                                   │    │
-  │  │  ├── AWS Foundational Security Best Practices            │    │
-  │  │  ├── CIS AWS Foundations Benchmark                       │    │
-  │  │  ├── PCI DSS v3.2.1                                     │    │
-  │  │  ├── NIST 800-53                                        │    │
-  │  │  └── SOC 2                                               │    │
-  │  │                                                          │    │
-  │  │  Each standard = set of automated checks (controls)      │    │
-  │  │  Security Hub runs these checks continuously             │    │
-  │  │  Results: PASSED, FAILED, NOT_AVAILABLE                  │    │
-  │  │  Overall compliance score per standard                   │    │
-  │  └──────────────────────────────────────────────────────────┘    │
-  │                                                                   │
-  │  OUTPUTS:                                                        │
-  │  ├── Dashboard (compliance scores, finding trends)               │
-  │  ├── EventBridge (automated response)                            │
-  │  ├── Custom actions (manual workflows)                           │
-  │  └── Cross-account aggregation (org-wide view)                   │
-  └─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                        AWS SECURITY HUB                         │
+│                                                                 │
+│ FINDING SOURCES:                                                │
+│ ┌─────────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────────┐ │
+│ │ GuardDuty   │ │Inspector │ │ Firewall │ │ IAM Access        │ │
+│ │ (threats)   │ │(vulns)   │ │ Manager  │ │ Analyzer          │ │
+│ └──────┬──────┘ └────┬─────┘ └────┬─────┘ └─────────┬─────────┘ │
+│        │             │            │                 │           │
+│        └──────┬──────┴─────┬──────┘─────────────────┘           │
+│               │            │                                    │
+│ ┌─────────────▼────────────▼──────────────────────────────────┐ │
+│ │                      SECURITY HUB                           │ │
+│ │                                                             │ │
+│ │ ASFF (AWS Security Finding Format)                          │ │
+│ │ Normalizes all findings into a common format                │ │
+│ │                                                             │ │
+│ │ COMPLIANCE STANDARDS:                                       │ │
+│ │ ├── AWS Foundational Security Best Practices                │ │
+│ │ ├── CIS AWS Foundations Benchmark                           │ │
+│ │ ├── PCI DSS v3.2.1                                          │ │
+│ │ ├── NIST 800-53                                             │ │
+│ │ └── SOC 2                                                   │ │
+│ │                                                             │ │
+│ │ Each standard = set of automated checks (controls)          │ │
+│ │ Security Hub runs these checks continuously                 │ │
+│ │ Results: PASSED, FAILED, NOT_AVAILABLE                      │ │
+│ │ Overall compliance score per standard                       │ │
+│ └─────────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│ OUTPUTS:                                                        │
+│ ├── Dashboard (compliance scores, finding trends)               │
+│ ├── EventBridge (automated response)                            │
+│ ├── Custom actions (manual workflows)                           │
+│ └── Cross-account aggregation (org-wide view)                   │
+└─────────────────────────────────────────────────────────────────┘
 
 SECURITY HUB IS NOT:
   ❌ A SIEM (no log aggregation, no correlation, no custom queries)
@@ -1873,13 +1873,13 @@ resource "aws_securityhub_standards_subscription" "pci" {
 # Aggregate findings from all regions and member accounts
 resource "aws_securityhub_finding_aggregator" "main" {
   linking_mode = "ALL_REGIONS"
-  depends_on   = [aws_securityhub_account.main]
+  depends_on   =[aws_securityhub_account.main]
 }
 
 # Enable product integrations
 resource "aws_securityhub_product_subscription" "guardduty" {
   product_arn = "arn:aws:securityhub:us-east-1::product/aws/guardduty"
-  depends_on  = [aws_securityhub_account.main]
+  depends_on  =[aws_securityhub_account.main]
 }
 
 resource "aws_securityhub_product_subscription" "inspector" {
@@ -1897,7 +1897,7 @@ resource "aws_cloudwatch_event_rule" "securityhub_s3_public" {
     detail = {
       findings = {
         Compliance = { Status = ["FAILED"] }
-        GeneratorId = ["aws-foundational-security-best-practices/v/1.0.0/S3.2"]
+        GeneratorId =["aws-foundational-security-best-practices/v/1.0.0/S3.2"]
         # S3.2: S3 buckets should prohibit public read access
       }
     }
@@ -1913,40 +1913,40 @@ resource "aws_cloudwatch_event_target" "fix_s3_public" {
 
 ### CloudTrail — API Audit Trail
 
-```
+```text
 CloudTrail records EVERY API call made in your AWS account.
 Every. Single. One. This is your forensic goldmine.
 
 WHO did WHAT to WHICH resource, WHEN, and from WHERE.
 
-  ┌───────────────────────────────────────────────────────────┐
-  │ CloudTrail Event:                                          │
-  │                                                            │
-  │ eventTime:      2024-01-15T14:23:45Z                       │
-  │ eventSource:    iam.amazonaws.com                           │
-  │ eventName:      CreateAccessKey                             │
-  │ userIdentity:                                               │
-  │   type:         AssumedRole                                 │
-  │   arn:          arn:aws:sts::888:assumed-role/dev-role/user │
-  │   principalId:  AROA...:user@novamart.com                  │
-  │ sourceIPAddress: 203.0.113.42                              │
-  │ userAgent:      aws-cli/2.15.0                             │
-  │ requestParameters:                                          │
-  │   userName:     payment-svc-deployer                        │
-  │ responseElements:                                           │
-  │   accessKey:                                                │
-  │     accessKeyId: AKIA...                                    │
-  │     status:     Active                                      │
-  └───────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│ CloudTrail Event:                                         │
+│                                                           │
+│ eventTime:      2024-01-15T14:23:45Z                      │
+│ eventSource:    iam.amazonaws.com                         │
+│ eventName:      CreateAccessKey                           │
+│ userIdentity:                                             │
+│   type:         AssumedRole                               │
+│   arn:          arn:aws:sts::888:assumed-role/dev/user    │
+│   principalId:  AROA...:user@novamart.com                 │
+│ sourceIPAddress: 203.0.113.42                             │
+│ userAgent:      aws-cli/2.15.0                            │
+│ requestParameters:                                        │
+│   userName:     payment-svc-deployer                      │
+│ responseElements:                                         │
+│   accessKey:                                              │
+│     accessKeyId: AKIA...                                  │
+│     status:     Active                                    │
+└───────────────────────────────────────────────────────────┘
 
-  This tells you:
-  - A developer assumed the dev-role
-  - From IP 203.0.113.42 using AWS CLI
-  - Created an access key for payment-svc-deployer
-  - The new key ID is AKIA...
-  - This happened at 14:23:45 UTC on Jan 15
+This tells you:
+- A developer assumed the dev role
+- From IP 203.0.113.42 using AWS CLI
+- Created an access key for payment-svc-deployer
+- The new key ID is AKIA...
+- This happened at 14:23:45 UTC on Jan 15
 
-  If this was unauthorized → you know exactly who, what, when, where
+If this was unauthorized → you know exactly who, what, when, where
 ```
 
 ```hcl
@@ -1972,7 +1972,7 @@ resource "aws_cloudtrail" "main" {
     # S3 data events (object-level operations)
     data_resource {
       type   = "AWS::S3::Object"
-      values = [
+      values =[
         "${aws_s3_bucket.payment_data.arn}/",
         "${aws_s3_bucket.customer_data.arn}/",
         # Only log data events for sensitive buckets
@@ -2171,7 +2171,7 @@ ORDER BY eventTime ASC;  -- Chronological to trace the attack path
 
 ### VPC Flow Logs — Network Forensics
 
-```
+```text
 VPC Flow Logs capture network traffic metadata (NOT payload):
   Source IP, Destination IP, Source Port, Destination Port,
   Protocol, Packets, Bytes, Start/End time, Action (ACCEPT/REJECT)
@@ -2276,7 +2276,7 @@ LIMIT 50;
 
 ### AWS Detective — Investigation Graphs
 
-```
+```text
 Detective builds RELATIONSHIP GRAPHS from:
   - CloudTrail events
   - VPC Flow Logs
@@ -2286,33 +2286,33 @@ Detective builds RELATIONSHIP GRAPHS from:
 When GuardDuty fires a finding, Detective helps you answer:
   "What else did this entity do?"
 
-  ┌──────────────────────────────────────────────────────────┐
-  │  GuardDuty Finding: UnauthorizedAccess from IP 1.2.3.4   │
-  │                                                           │
-  │  Detective investigation graph:                           │
-  │                                                           │
-  │  IP: 1.2.3.4                                              │
-  │    ├── Assumed Role: dev-role (14:23 UTC)                  │
-  │    │   ├── Created AccessKey for deploy-user               │
-  │    │   ├── Listed S3 buckets                               │
-  │    │   ├── Downloaded s3://customer-data/export.csv        │
-  │    │   └── Modified Security Group sg-abc123                │
-  │    │                                                       │
-  │    ├── Also seen from same IP:                             │
-  │    │   ├── Failed ConsoleLogin (3 attempts)                │
-  │    │   └── Successful ConsoleLogin (after brute force)     │
-  │    │                                                       │
-  │    └── Network activity:                                   │
-  │        ├── Connected to EC2 instance i-xyz (SSH port 22)   │
-  │        └── Exfiltrated 2.3GB to external IP 5.6.7.8       │
-  └──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ GuardDuty Finding: UnauthorizedAccess from IP 1.2.3.4    │
+│                                                          │
+│ Detective investigation graph:                           │
+│                                                          │
+│ IP: 1.2.3.4                                              │
+│   ├── Assumed Role: dev-role (14:23 UTC)                 │
+│   │   ├── Created AccessKey for deploy-user              │
+│   │   ├── Listed S3 buckets                              │
+│   │   ├── Downloaded s3://customer-data/export.csv       │
+│   │   └── Modified Security Group sg-abc123              │
+│   │                                                      │
+│   ├── Also seen from same IP:                            │
+│   │   ├── Failed ConsoleLogin (3 attempts)               │
+│   │   └── Successful ConsoleLogin (after brute force)    │
+│   │                                                      │
+│   └── Network activity:                                  │
+│       ├── Connected to EC2 instance i-xyz (SSH port 22)  │
+│       └── Exfiltrated 2.3GB to external IP 5.6.7.8       │
+└──────────────────────────────────────────────────────────┘
 
-  Detective aggregates 12+ months of data to build these graphs.
-  You don't query it — you NAVIGATE the graph from a finding.
+Detective aggregates 12+ months of data to build these graphs.
+You don't query it — you NAVIGATE the graph from a finding.
 
-  Cost: Based on data volume ingested. Can be significant at scale.
-  NovaMart: Enabled for production accounts. Security team uses it
-  during incident investigations.
+Cost: Based on data volume ingested. Can be significant at scale.
+NovaMart: Enabled for production accounts. Security team uses it
+during incident investigations.
 ```
 
 ```hcl
@@ -2331,59 +2331,59 @@ resource "aws_detective_organization_admin_account" "main" {
 
 ### NovaMart Complete Detection & Response Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│         NOVAMART DETECTION & RESPONSE — COMPLETE PIPELINE            │
-│                                                                      │
-│  DATA SOURCES:                                                       │
-│  ┌─────────────┐ ┌───────────┐ ┌──────────┐ ┌───────────────────┐  │
-│  │ CloudTrail  │ │VPC Flow   │ │ DNS Logs │ │ EKS Audit Logs    │  │
-│  │ (API calls) │ │ Logs      │ │          │ │ (K8s API calls)   │  │
-│  └──────┬──────┘ └─────┬─────┘ └────┬─────┘ └────────┬──────────┘  │
-│         │              │            │                 │             │
-│         └──────────────┼────────────┼─────────────────┘             │
-│                        │            │                               │
-│                        ▼            ▼                               │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │  DETECTION:                                                  │    │
-│  │                                                              │    │
-│  │  GuardDuty (threats) ──┐                                     │    │
-│  │  Inspector (vulns) ────┤                                     │    │
-│  │  IAM Access Analyzer ──┼──→ Security Hub (aggregate)         │    │
-│  │  Config Rules (config)─┤    ├── Compliance scoring           │    │
-│  │  Firewall Manager ─────┘    ├── Finding prioritization       │    │
-│  │                              └── Cross-account/region view    │    │
-│  └────────────────────────────────────┬────────────────────────┘    │
-│                                       │                             │
-│  ┌────────────────────────────────────▼────────────────────────┐    │
-│  │  RESPONSE:                                                   │    │
-│  │                                                              │    │
-│  │  EventBridge ──→ Step Functions ──→ Lambda (auto-remediate)  │    │
-│  │              ──→ SNS ──→ PagerDuty (page on-call)           │    │
-│  │              ──→ SNS ──→ Slack #security-alerts             │    │
-│  │              ──→ Lambda ──→ Jira (create incident ticket)   │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  INVESTIGATION:                                                      │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │  Detective (relationship graphs — who did what else)          │    │
-│  │  Athena + CloudTrail (forensic API queries)                   │    │
-│  │  Athena + VPC Flow Logs (network forensics)                   │    │
-│  │  Loki (application + Falco logs)                              │    │
-│  │  Jaeger/Tempo (distributed trace analysis)                    │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  AUTO-REMEDIATION RULES:                                             │
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │  Finding                          │  Action                   │    │
-│  │  ─────────────────────────────────┼──────────────────────────│    │
-│  │  Crypto mining (EC2)              │  Quarantine SG + page     │    │
-│  │  S3 bucket public                 │  Block public access      │    │
-│  │  IAM access key exposed           │  Disable key + notify     │    │
-│  │  SG allows 0.0.0.0/0 SSH         │  Remove rule + notify     │    │
-│  │  Unauthorized region activity     │  Disable credentials      │    │
-│  │  RDS publicly accessible          │  Disable public access    │    │
-│  └──────────────────────────────────┴───────────────────────────┘    │
+│          NOVAMART DETECTION & RESPONSE — COMPLETE PIPELINE          │
+│                                                                     │
+│ DATA SOURCES:                                                       │
+│ ┌─────────────┐ ┌───────────┐ ┌──────────┐ ┌───────────────────┐    │
+│ │ CloudTrail  │ │ VPC Flow  │ │ DNS Logs │ │ EKS Audit Logs    │    │
+│ │ (API calls) │ │ Logs      │ │          │ │ (K8s API calls)   │    │
+│ └──────┬──────┘ └─────┬─────┘ └────┬─────┘ └────────┬──────────┘    │
+│        │              │            │                │               │
+│        └──────────────┼────────────┼────────────────┘               │
+│                       │            │                                │
+│                       ▼            ▼                                │
+│ ┌─────────────────────────────────────────────────────────────────┐ │
+│ │ DETECTION:                                                      │ │
+│ │                                                                 │ │
+│ │ GuardDuty (threats) ──┐                                         │ │
+│ │ Inspector (vulns) ────┤                                         │ │
+│ │ IAM Access Analyzer ──┼──→ Security Hub (aggregate)             │ │
+│ │ Config Rules (config)─┤    ├── Compliance scoring               │ │
+│ │ Firewall Manager ─────┘    ├── Finding prioritization           │ │
+│ │                            └── Cross-account/region view        │ │
+│ └───────────────────────────────────┬─────────────────────────────┘ │
+│                                     │                               │
+│ ┌───────────────────────────────────▼─────────────────────────────┐ │
+│ │ RESPONSE:                                                       │ │
+│ │                                                                 │ │
+│ │ EventBridge ──→ Step Functions ──→ Lambda (auto-remediate)      │ │
+│ │             ──→ SNS ──→ PagerDuty (page on-call)                │ │
+│ │             ──→ SNS ──→ Slack #security-alerts                  │ │
+│ │             ──→ Lambda ──→ Jira (create incident ticket)        │ │
+│ └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│ INVESTIGATION:                                                      │
+│ ┌─────────────────────────────────────────────────────────────────┐ │
+│ │ Detective (relationship graphs — who did what else)             │ │
+│ │ Athena + CloudTrail (forensic API queries)                      │ │
+│ │ Athena + VPC Flow Logs (network forensics)                      │ │
+│ │ Loki (application + Falco logs)                                 │ │
+│ │ Jaeger/Tempo (distributed trace analysis)                       │ │
+│ └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│ AUTO-REMEDIATION RULES:                                             │
+│ ┌─────────────────────────────────────────────────────────────────┐ │
+│ │ Finding                          │ Action                       │ │
+│ │ ─────────────────────────────────┼──────────────────────────────│ │
+│ │ Crypto mining (EC2)              │ Quarantine SG + page         │ │
+│ │ S3 bucket public                 │ Block public access          │ │
+│ │ IAM access key exposed           │ Disable key + notify         │ │
+│ │ SG allows 0.0.0.0/0 SSH          │ Remove rule + notify         │ │
+│ │ Unauthorized region activity     │ Disable credentials          │ │
+│ │ RDS publicly accessible          │ Disable public access        │ │
+│ └──────────────────────────────────┴──────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -2391,7 +2391,7 @@ resource "aws_detective_organization_admin_account" "main" {
 
 ## Part 4: AWS Config — Continuous Compliance Monitoring
 
-```
+```text
 AWS Config continuously monitors your AWS resources for
 configuration compliance. Unlike Security Hub (which checks
 periodically), Config tracks EVERY configuration change in real time.
@@ -2399,22 +2399,22 @@ periodically), Config tracks EVERY configuration change in real time.
 Config answers: "What is the current configuration of every
 resource, and does it comply with our rules?"
 
-  ┌───────────────────────────────────────────────────────────┐
-  │  AWS Config                                                │
-  │                                                            │
-  │  RECORDS:                                                  │
-  │  - Configuration items (every resource, every change)      │
-  │  - Configuration history (how resources changed over time) │
-  │  - Relationships (SG → EC2, Subnet → VPC, etc.)           │
-  │                                                            │
-  │  EVALUATES:                                                │
-  │  - Managed rules (150+ pre-built by AWS)                   │
-  │  - Custom rules (Lambda-based or Guard policy language)    │
-  │                                                            │
-  │  REMEDIATES:                                               │
-  │  - SSM Automation documents (auto-fix non-compliant)       │
-  │  - Manual remediation (notify, create ticket)              │
-  └───────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│ AWS Config                                                │
+│                                                           │
+│ RECORDS:                                                  │
+│ - Configuration items (every resource, every change)      │
+│ - Configuration history (how resources changed over time) │
+│ - Relationships (SG → EC2, Subnet → VPC, etc.)            │
+│                                                           │
+│ EVALUATES:                                                │
+│ - Managed rules (150+ pre-built by AWS)                   │
+│ - Custom rules (Lambda-based or Guard policy language)    │
+│                                                           │
+│ REMEDIATES:                                               │
+│ - SSM Automation documents (auto-fix non-compliant)       │
+│ - Manual remediation (notify, create ticket)              │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ```hcl
@@ -2447,7 +2447,7 @@ resource "aws_config_delivery_channel" "main" {
 resource "aws_config_configuration_recorder_status" "main" {
   name       = aws_config_configuration_recorder.main.name
   is_enabled = true
-  depends_on = [aws_config_delivery_channel.main]
+  depends_on =[aws_config_delivery_channel.main]
 }
 
 # ─── CONFIG RULES ───
@@ -2461,7 +2461,7 @@ resource "aws_config_config_rule" "ebs_encrypted" {
     source_identifier = "ENCRYPTED_VOLUMES"
   }
 
-  depends_on = [aws_config_configuration_recorder.main]
+  depends_on =[aws_config_configuration_recorder.main]
 }
 
 # Rule: S3 buckets must have versioning
@@ -2582,7 +2582,7 @@ resource "aws_config_remediation_configuration" "remove_ssh_open" {
 
 ## Quick Reference Card
 
-```
+```text
 PERIMETER DEFENSE
 ─────────────────
 Shield Standard: Free, L3/L4, automatic
@@ -2633,9 +2633,9 @@ RESPONSE PRIORITY ORDER
 
 ## Progress Tracker
 
-```
+```text
 PART 1: FOUNDATIONS (Phases 0-6)
-  Phase 0: Linux Deep Dive                    ████████████████████ 100% ✅
+  Phase 0: Linux Deep Dive                     ████████████████████ 100% ✅
   Phase 1: Networking                          ████████████████████ 100% ✅
   Phase 2: Git, Docker, K8s                    ████████████████████ 100% ✅
   Phase 3: CI/CD Pipelines                     ████████████████████ 100% ✅
@@ -2703,7 +2703,7 @@ metadata:
   namespace: search
 spec:
   podSelector: {}
-  policyTypes: ["Egress"]
+  policyTypes:["Egress"]
   egress:
     - to:
         - namespaceSelector:
@@ -2774,7 +2774,7 @@ spec:
 
 **Metric 1: Request Distribution by URI Path**
 
-```bash
+```sql
 # Query ALB access logs in Athena
 SELECT 
   target_group_arn,
@@ -2794,7 +2794,7 @@ LIMIT 50;
 
 **Metric 2: Session Behavior Analysis**
 
-```bash
+```sql
 # Check if "users" have realistic session patterns
 SELECT 
   client_ip,
@@ -2815,7 +2815,7 @@ ORDER BY total_requests DESC;
 
 **Metric 3: HTTP Headers & Fingerprinting**
 
-```bash
+```sql
 # In WAF Sampled Requests or ALB logs — check User-Agent distribution
 SELECT 
   "user_agent",
@@ -2833,7 +2833,7 @@ LIMIT 20;
 
 **Metric 4: Geographic Distribution**
 
-```bash
+```sql
 # Cloudflare analytics or ALB + GeoIP
 SELECT 
   geo_country,
@@ -2859,7 +2859,7 @@ ORDER BY requests DESC;
 
 **Metric 6: Request Timing Patterns**
 
-```bash
+```sql
 # Check inter-arrival times
 # Legitimate humans: variable intervals (thinking time between clicks)
 # Bots: metronomic regularity or perfectly randomized (paradoxically detectable)
@@ -2936,7 +2936,7 @@ aws wafv2 update-web-acl \
       "Action": {
         "Allow": {
           "CustomRequestHandling": {
-            "InsertHeaders": [
+            "InsertHeaders":[
               {
                 "Name": "x-waf-bypass",
                 "Value": "verified-customer-emergency"
@@ -2958,7 +2958,7 @@ aws wafv2 update-web-acl \
 
 **Alternatively, if modifying the Web ACL JSON is too risky under pressure, use a scoped-down override on the IP reputation rule itself:**
 
-```bash
+```json
 # Create a rule that combines: 
 # IF (IP reputation match) AND (NOT in verified customer list) → BLOCK
 # This effectively whitelists verified customers from the IP reputation rule
@@ -2969,7 +2969,7 @@ aws wafv2 update-web-acl \
   "Priority": 5,
   "Statement": {
     "AndStatement": {
-      "Statements": [
+      "Statements":[
         {
           "ManagedRuleGroupStatement": {
             "VendorName": "AWS",
@@ -2999,7 +2999,7 @@ aws wafv2 update-web-acl \
 
 > ⚠️ **Note:** AWS Managed Rule Groups can't be directly nested in AND statements. The actual implementation requires setting the managed rule group to COUNT mode and then evaluating the label:
 
-```bash
+```json
 # The CORRECT approach for AWS Managed Rules:
 # 1. Set IP Reputation rule group to COUNT (not BLOCK)
 # 2. Add a custom rule that checks the label AND excludes verified IPs
@@ -3025,7 +3025,7 @@ aws wafv2 update-web-acl \
   "Priority": 6,
   "Statement": {
     "AndStatement": {
-      "Statements": [
+      "Statements":[
         {
           "LabelMatchStatement": {
             "Scope": "LABEL",
@@ -3327,7 +3327,7 @@ curl -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/rulesets" \
     "name": "Search DDoS Mitigation",
     "kind": "zone",
     "phase": "http_ratelimit",
-    "rules": [
+    "rules":[
       {
         "action": "block",
         "expression": "http.request.uri.path contains \"/api/v1/search\" and rate.requests > 10",
@@ -3554,7 +3554,7 @@ aws iam put-role-policy \
   --policy-name "RevokeOldSessions-Emergency" \
   --policy-document '{
     "Version": "2012-10-17",
-    "Statement": [
+    "Statement":[
       {
         "Effect": "Deny",
         "Action": "*",
@@ -3741,62 +3741,62 @@ aws logs start-query \
 
 ### 3. Full Attack Chain and Failed Controls
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        FULL ATTACK CHAIN                                 │
+│                            FULL ATTACK CHAIN                            │
 ├────┬────────────────────────────────┬───────────────────────────────────┤
 │ #  │ ATTACKER ACTION                │ CONTROL THAT FAILED               │
 ├────┼────────────────────────────────┼───────────────────────────────────┤
-│ 1  │ Compromised a pod on the EKS   │ Application vulnerability (RCE,  │
-│    │ worker node i-0abc123def456    │ SSRF, or supply chain) — no WAF  │
+│ 1  │ Compromised a pod on the EKS   │ Application vulnerability (RCE,   │
+│    │ worker node i-0abc123def456    │ SSRF, or supply chain) — no WAF   │
 │    │                                │ rule caught the initial exploit   │
 ├────┼────────────────────────────────┼───────────────────────────────────┤
-│ 2  │ Queried IMDS from pod:         │ IMDSv2 NOT ENFORCED on the node  │
-│    │ curl http://169.254.169.254/   │ group. If IMDSv2 with hop limit  │
-│    │ latest/meta-data/iam/...       │ =1 was set, pod containers       │
-│    │                                │ (2+ hops via veth) couldn't      │
-│    │                                │ reach IMDS.                      │
+│ 2  │ Queried IMDS from pod:         │ IMDSv2 NOT ENFORCED on the node   │
+│    │ curl http://169.254.169.254/   │ group. If IMDSv2 with hop limit   │
+│    │ latest/meta-data/iam/...       │ =1 was set, pod containers        │
+│    │                                │ (2+ hops via veth) couldn't       │
+│    │                                │ reach IMDS.                       │
 │    │                                │                                   │
 │    │                                │ No NetworkPolicy blocking         │
-│    │                                │ 169.254.169.254 from pods.       │
+│    │                                │ 169.254.169.254 from pods.        │
 │    │                                │                                   │
-│    │                                │ IRSA not used — pods were using  │
-│    │                                │ node role instead of pod-level   │
-│    │                                │ IAM roles.                       │
+│    │                                │ IRSA not used — pods were using   │
+│    │                                │ node role instead of pod-level    │
+│    │                                │ IAM roles.                        │
 ├────┼────────────────────────────────┼───────────────────────────────────┤
-│ 3  │ Exfiltrated temporary creds    │ No egress NetworkPolicy — pod    │
-│    │ to attacker-controlled infra   │ could connect to any external    │
-│    │                                │ IP. No DLP monitoring on         │
-│    │                                │ outbound traffic.                │
+│ 3  │ Exfiltrated temporary creds    │ No egress NetworkPolicy — pod     │
+│    │ to attacker-controlled infra   │ could connect to any external     │
+│    │                                │ IP. No DLP monitoring on          │
+│    │                                │ outbound traffic.                 │
 ├────┼────────────────────────────────┼───────────────────────────────────┤
-│ 4  │ Used creds from i-0xyz789      │ Node IAM role was OVERLY         │
-│    │ to call sts:AssumeRole for     │ PERMISSIVE — a worker node       │
-│    │ production account role        │ should NEVER have                │
-│    │                                │ sts:AssumeRole for prod.         │
+│ 4  │ Used creds from i-0xyz789      │ Node IAM role was OVERLY          │
+│    │ to call sts:AssumeRole for     │ PERMISSIVE — a worker node        │
+│    │ production account role        │ should NEVER have                 │
+│    │                                │ sts:AssumeRole for prod.          │
 │    │                                │                                   │
-│    │                                │ The cross-account role's trust   │
-│    │                                │ policy was too broad — it        │
-│    │                                │ allowed the node role without    │
-│    │                                │ condition keys restricting to    │
-│    │                                │ specific source IPs or VPC.     │
+│    │                                │ The cross-account role's trust    │
+│    │                                │ policy was too broad — it         │
+│    │                                │ allowed the node role without     │
+│    │                                │ condition keys restricting to     │
+│    │                                │ specific source IPs or VPC.       │
 ├────┼────────────────────────────────┼───────────────────────────────────┤
-│ 5  │ Called secretsmanager:          │ Secrets Manager resource policy  │
-│    │ GetSecretValue for database    │ did not restrict access to       │
-│    │ credentials                    │ specific roles/VPCs. The         │
-│    │                                │ assumed prod role had overly     │
-│    │                                │ broad secretsmanager:Get*        │
-│    │                                │ permissions.                     │
+│ 5  │ Called secretsmanager:         │ Secrets Manager resource policy   │
+│    │ GetSecretValue for database    │ did not restrict access to        │
+│    │ credentials                    │ specific roles/VPCs. The          │
+│    │                                │ assumed prod role had overly      │
+│    │                                │ broad secretsmanager:Get*         │
+│    │                                │ permissions.                      │
 ├────┼────────────────────────────────┼───────────────────────────────────┤
-│ 6  │ Outbound data exfil from       │ No VPC endpoint policies.        │
-│    │ i-0xyz789 to external IP       │ No VPC-level egress filtering.  │
-│    │ on port 443                    │ Security groups allowed 443      │
-│    │                                │ outbound to 0.0.0.0/0.          │
+│ 6  │ Outbound data exfil from       │ No VPC endpoint policies.         │
+│    │ i-0xyz789 to external IP       │ No VPC-level egress filtering.    │
+│    │ on port 443                    │ Security groups allowed 443       │
+│    │                                │ outbound to 0.0.0.0/0.            │
 ├────┼────────────────────────────────┼───────────────────────────────────┤
-│ 7  │ Attack continued for           │ GuardDuty DID detect it, but    │
-│    │ duration until GuardDuty       │ no automated response was        │
-│    │ alert was investigated         │ configured. No Lambda trigger    │
-│    │                                │ to auto-revoke credentials       │
-│    │                                │ on HIGH severity findings.       │
+│ 7  │ Attack continued for           │ GuardDuty DID detect it, but      │
+│    │ duration until GuardDuty       │ no automated response was         │
+│    │ alert was investigated         │ configured. No Lambda trigger     │
+│    │                                │ to auto-revoke credentials        │
+│    │                                │ on HIGH severity findings.        │
 └────┴────────────────────────────────┴───────────────────────────────────┘
 ```
 
@@ -3871,8 +3871,8 @@ resource "aws_iam_policy" "order_svc_secrets" {
     Statement = [
       {
         Effect = "Allow"
-        Action = ["secretsmanager:GetSecretValue"]
-        Resource = [
+        Action =["secretsmanager:GetSecretValue"]
+        Resource =[
           "arn:aws:secretsmanager:us-east-1:*:secret:orders/db-creds-*"
         ]
         Condition = {
@@ -3894,7 +3894,7 @@ resource "aws_iam_role_policy" "node_role_minimal" {
     Statement = [
       {
         Effect = "Allow"
-        Action = [
+        Action =[
           "ec2:DescribeInstances",
           "ec2:DescribeNetworkInterfaces",
           "ecr:GetAuthorizationToken",
@@ -3938,7 +3938,7 @@ resource "aws_iam_role" "prod_role" {
   name = "prod-data-access"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Effect = "Allow"
         Principal = {
@@ -3966,16 +3966,16 @@ resource "aws_vpc_endpoint" "sts" {
   vpc_endpoint_type   = "Interface"
   private_dns_enabled = true
   subnet_ids          = module.eks_vpc.private_subnets
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  security_group_ids  =[aws_security_group.vpc_endpoints.id]
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Effect    = "Allow"
         Principal = "*"
         Action    = "sts:AssumeRole"
-        Resource  = ["arn:aws:iam::PROD_ACCOUNT:role/order-svc-*"]
+        Resource  =["arn:aws:iam::PROD_ACCOUNT:role/order-svc-*"]
         # Only allow specific role assumptions through this endpoint
       }
     ]
@@ -3989,7 +3989,7 @@ resource "aws_vpc_endpoint" "secretsmanager" {
   vpc_endpoint_type   = "Interface"
   private_dns_enabled = true
   subnet_ids          = module.eks_vpc.private_subnets
-  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  security_group_ids  =[aws_security_group.vpc_endpoints.id]
 }
 ```
 
@@ -4003,9 +4003,9 @@ resource "aws_cloudwatch_event_rule" "guardduty_cred_exfil" {
 
   event_pattern = jsonencode({
     source      = ["aws.guardduty"]
-    detail-type = ["GuardDuty Finding"]
+    detail-type =["GuardDuty Finding"]
     detail = {
-      type = [
+      type =[
         "UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.InsideAWS",
         "UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS"
       ]
@@ -4042,7 +4042,7 @@ def handler(event, context):
         PolicyName=f'RevokeOldSessions-{instance_id}',
         PolicyDocument=json.dumps({
             "Version": "2012-10-17",
-            "Statement": [{
+            "Statement":[{
                 "Effect": "Deny",
                 "Action": "*",
                 "Resource": "*",
@@ -4083,13 +4083,13 @@ def handler(event, context):
         TopicArn=SECURITY_SNS_TOPIC,
         Subject=f'🔴 AUTO-RESPONSE: Credential exfiltration from {instance_id}',
         Message=json.dumps({
-            'action_taken': [
+            'action_taken':[
                 f'Revoked all sessions for role {role_name}',
                 f'Isolated instance {instance_id} with quarantine SG',
                 f'Created forensic snapshots of all volumes'
             ],
             'finding': finding,
-            'manual_steps_required': [
+            'manual_steps_required':[
                 'Investigate CloudTrail for all actions taken with stolen creds',
                 'Determine initial compromise vector on the pod/node',
                 'Verify no persistence mechanisms were created',
@@ -4103,7 +4103,7 @@ def handler(event, context):
 
 **Complete Defense Architecture:**
 
-```
+```text
                          BEFORE (Vulnerable)
                          ═══════════════════
 Pod → IMDS (v1, no hop limit) → Node IAM Role (overpermissioned)
@@ -4178,7 +4178,7 @@ And here's the key: `allow-dns` has:
 ```yaml
 spec:
   podSelector: {}     # Matches ALL pods
-  policyTypes: ["Egress"]
+  policyTypes:["Egress"]
   egress:
     - to:
         - namespaceSelector:
@@ -4565,7 +4565,7 @@ checks:
   include:
     - "no-read-only-root-fs"
     - "run-as-non-root"
-  exclude: []
+  exclude:[]
 
 customChecks:
   - name: "networkpolicy-label-specificity"
@@ -4601,7 +4601,7 @@ This is the most powerful tool — it analyzes NetworkPolicies and produces a co
                     --output_format txt
                   
                   # If diff detected, fail the build
-                  if [ $? -ne 0 ]; then
+                  if[ $? -ne 0 ]; then
                     echo "⛔ NetworkPolicy connectivity differs from expected!"
                     echo "Review the changes and update expected-connectivity.yaml if intentional."
                     exit 1
@@ -4713,8 +4713,7 @@ spec:
           label_value != deployment_name
           
           msg := sprintf(
-            "Deployment '%s' has label '%s: %s' which doesn't match its name. This can cause NetworkPolicy cross-contamination. Set '%s: %s'.",
-            [deployment_name, label_key, label_value, label_key, deployment_name]
+            "Deployment '%s' has label '%s: %s' which doesn't match its name. This can cause NetworkPolicy cross-contamination. Set '%s: %s'.",[deployment_name, label_key, label_value, label_key, deployment_name]
           )
         }
 ---
@@ -4774,23 +4773,23 @@ spec:
 
 **Complete Validation Pipeline Summary:**
 
-```
+```text
 ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│   PR Filed   │──►│   Static     │──►│  Connectivity │──►│   Staging    │──►│  Continuous  │
-│              │   │   Lint       │   │  Matrix Diff  │   │  Live Test   │   │  Audit       │
+│   PR Filed   │──►│   Static     │──►│ Connectivity │──►│   Staging    │──►│  Continuous  │
+│              │   │   Lint       │   │ Matrix Diff  │   │  Live Test   │   │  Audit       │
 ├──────────────┤   ├──────────────┤   ├──────────────┤   ├──────────────┤   ├──────────────┤
-│ Developer    │   │ kubeval      │   │ nca-analyzer  │   │ nc/curl      │   │ CronJob      │
-│ pushes code  │   │ kube-linter  │   │ vs golden     │   │ probes in    │   │ every 6hr    │
-│              │   │ OPA conftest │   │ matrix        │   │ staging      │   │ full matrix  │
-│              │   │              │   │               │   │ cluster      │   │ probe        │
+│ Developer    │   │ kubeval      │   │ nca-analyzer │   │ nc/curl      │   │ CronJob      │
+│ pushes code  │   │ kube-linter  │   │ vs golden    │   │ probes in    │   │ every 6hr    │
+│              │   │ OPA conftest │   │ matrix       │   │ staging      │   │ full matrix  │
+│              │   │              │   │              │   │ cluster      │   │ probe        │
 ├──────────────┤   ├──────────────┤   ├──────────────┤   ├──────────────┤   ├──────────────┤
-│              │   │ Catches:     │   │ Catches:      │   │ Catches:     │   │ Catches:     │
-│              │   │ - YAML errs  │   │ - Unintended  │   │ - CNI not    │   │ - Drift      │
-│              │   │ - Missing    │   │   access       │   │   enforcing  │   │ - Runtime    │
-│              │   │   deny-all   │   │ - Label       │   │ - Real-world │   │   misconfig  │
-│              │   │ - Schema     │   │   collision   │   │   behavior   │   │ - New svcs   │
-│              │   │   violations │   │ - Overly broad│   │   mismatch   │   │   without    │
-│              │   │              │   │   rules       │   │              │   │   policies   │
+│              │   │ Catches:     │   │ Catches:     │   │ Catches:     │   │ Catches:     │
+│              │   │ - YAML errs  │   │ - Unintended │   │ - CNI not    │   │ - Drift      │
+│              │   │ - Missing    │   │   access     │   │   enforcing  │   │ - Runtime    │
+│              │   │   deny-all   │   │ - Label      │   │ - Real-world │   │   misconfig  │
+│              │   │ - Schema     │   │   collision  │   │   behavior   │   │ - New svcs   │
+│              │   │   violations │   │ - Overly     │   │   mismatch   │   │   without    │
+│              │   │              │   │   broad rules│   │              │   │   policies   │
 └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
 ```
 
@@ -4836,7 +4835,7 @@ aws iam put-user-policy \
   --policy-name "EmergencyRevokeAllAccess" \
   --policy-document '{
     "Version": "2012-10-17",
-    "Statement": [
+    "Statement":[
       {
         "Effect": "Deny",
         "Action": "*",
@@ -4864,7 +4863,7 @@ for role_arn in $ASSUMED_ROLES; do
     --policy-name "EmergencyRevokeFromCompromise" \
     --policy-document '{
       "Version": "2012-10-17",
-      "Statement": [{
+      "Statement":[{
         "Effect": "Deny",
         "Action": "*",
         "Resource": "*",
@@ -5099,7 +5098,7 @@ aws ec2 describe-instances \
 
 # New Lambda functions or modifications
 aws lambda list-functions \
-  --query "Functions[?LastModified>=\`$(date -d '2 hours ago' -u +"%Y-%m-%dT")\`]"
+  --query "Functions[?LastModified>=\`$(date -d '2 hours ago' -u +"%Y-%m-%dT")\`].{Name:FunctionName,Modified:LastModified}"
 
 # Check for Lambda function URL or API Gateway endpoints (backdoor API)
 for func in $(aws lambda list-functions --query 'Functions[*].FunctionName' --output text); do
@@ -5162,8 +5161,7 @@ cat /tmp/ci-deployer-full-audit.json | jq '
    select(.EventName | test("SecurityGroup|Authorize|Revoke"))]'
 
 # VPC changes (new VPC peering, new endpoints, route table changes)
-cat /tmp/ci-deployer-full-audit.json | jq '
-  [.Events[] | 
+cat /tmp/ci-deployer-full-audit.json | jq '[.Events[] | 
    select(.EventName | test("VPC|Peering|Route|Endpoint|Gateway"))]'
 
 # Check for transit gateway attachments or VPN connections
@@ -5180,8 +5178,7 @@ cat /tmp/ci-deployer-full-audit.json | jq '
    select(.EventName | test("StopLogging|DeleteTrail|PutEventSelectors|UpdateTrail"))]'
 
 # Did they disable GuardDuty?
-cat /tmp/ci-deployer-full-audit.json | jq '
-  [.Events[] | 
+cat /tmp/ci-deployer-full-audit.json | jq '[.Events[] | 
    select(.EventSource == "guardduty.amazonaws.com")]'
 
 # Did they modify CloudWatch alarms?
@@ -5197,18 +5194,18 @@ cat /tmp/ci-deployer-full-audit.json | jq '
 
 **Comprehensive Blast Radius Report:**
 
-```
+```text
 ╔═══════════════════════════════════════════════════════════════╗
 ║                    BLAST RADIUS ASSESSMENT                    ║
 ╠═══════════╦═══════════════════════════════════╦═══════════════╣
 ║ CATEGORY  ║ FINDINGS                          ║ SEVERITY      ║
 ╠═══════════╬═══════════════════════════════════╬═══════════════╣
-║ Secrets   ║ 8 secrets read (3 DB, 3 API,     ║ CRITICAL      ║
-║           ║ 2 TBD) — MUST ROTATE ALL         ║               ║
+║ Secrets   ║ 8 secrets read (3 DB, 3 API,      ║ CRITICAL      ║
+║           ║ 2 TBD) — MUST ROTATE ALL          ║               ║
 ╠═══════════╬═══════════════════════════════════╬═══════════════╣
-║ IAM       ║ [list any backdoor users/roles]   ║ CRITICAL      ║
+║ IAM       ║[list any backdoor users/roles]   ║ CRITICAL      ║
 ╠═══════════╬═══════════════════════════════════╬═══════════════╣
-║ Data      ║ [list any S3/RDS access]          ║ HIGH          ║
+║ Data      ║[list any S3/RDS access]          ║ HIGH          ║
 ╠═══════════╬═══════════════════════════════════╬═══════════════╣
 ║ Compute   ║ [list any new instances/functions]║ HIGH          ║
 ╠═══════════╬═══════════════════════════════════╬═══════════════╣
@@ -5224,22 +5221,22 @@ cat /tmp/ci-deployer-full-audit.json | jq '
 
 **Priority order matters — rotate based on blast radius and exposure risk:**
 
-```
+```text
 TIMELINE FOR SECRET ROTATION
 ═══════════════════════════════════════════════════════════════
-                                                              
-IMMEDIATE (Parallel — Hour 0-1):                              
-  ├── [TRACK 1] Stripe API Key                                
-  ├── [TRACK 2] SendGrid API Key                              
-  └── [TRACK 3] Twilio API Key                                
-                                                              
-HOUR 1-2 (Sequential — dependencies):                         
-  ├── [TRACK 4] Payments DB master creds                      
-  ├── [TRACK 5] Orders DB master creds                        
-  └── [TRACK 6] Users DB master creds                         
-                                                              
-HOUR 2-3 (Verification):                                      
-  └── Verify all services healthy with new credentials        
+                                                               
+IMMEDIATE (Parallel — Hour 0-1):                               
+  ├── [TRACK 1] Stripe API Key                                 
+  ├── [TRACK 2] SendGrid API Key                               
+  └──[TRACK 3] Twilio API Key                                 
+                                                               
+HOUR 1-2 (Sequential — dependencies):                          
+  ├── [TRACK 4] Payments DB master creds                       
+  ├── [TRACK 5] Orders DB master creds                         
+  └── [TRACK 6] Users DB master creds                          
+                                                               
+HOUR 2-3 (Verification):                                       
+  └── Verify all services healthy with new credentials         
 ═══════════════════════════════════════════════════════════════
 ```
 
@@ -5396,20 +5393,20 @@ kubectl rollout restart deployment/user-svc -n users
 
 **Coordination and Communication Plan:**
 
-```
+```text
 ROTATION COMMUNICATION
-═══════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════
 WHO                     WHEN                 WHAT
-─────────────────────────────────────────────────────
-#security-incidents     T+0 min              "Secret rotation starting"
-Payment team lead       T+0 min              "Stripe key rotating NOW"
-NOC / On-call           T+0 min              "Expect brief service disruptions"
-Database team           T+30 min             "DB cred rotation starting"
-#engineering-all        T+45 min             "DB connections may blip"
-Stripe support          T+60 min             "Report unauthorized activity"
-CISO                    T+120 min            "All 8 secrets rotated"
-Legal                   T+120 min            "PII DB was accessed — assess notification requirements"
-═══════════════════════════════════════════════════════
+────────────────────────┬────────────────────┬─────────────────────────────────────────────────────
+#security-incidents     │ T+0 min            │ "Secret rotation starting"
+Payment team lead       │ T+0 min            │ "Stripe key rotating NOW"
+NOC / On-call           │ T+0 min            │ "Expect brief service disruptions"
+Database team           │ T+30 min           │ "DB cred rotation starting"
+#engineering-all        │ T+45 min           │ "DB connections may blip"
+Stripe support          │ T+60 min           │ "Report unauthorized activity"
+CISO                    │ T+120 min          │ "All 8 secrets rotated"
+Legal                   │ T+120 min          │ "PII DB was accessed — assess notification reqs"
+════════════════════════╧════════════════════╧═════════════════════════════════════════════════════
 ```
 
 ---
@@ -5448,11 +5445,11 @@ resource "aws_organizations_policy" "deny_public_s3" {
   type    = "SERVICE_CONTROL_POLICY"
   content = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Sid       = "DenyPublicS3"
         Effect    = "Deny"
-        Action    = [
+        Action    =[
           "s3:PutBucketPolicy",
           "s3:PutBucketAcl",
           "s3:PutObjectAcl"
@@ -5507,7 +5504,7 @@ resource "aws_config_remediation_configuration" "s3_public" {
 resource "aws_iam_openid_connect_provider" "bitbucket" {
   url = "https://api.bitbucket.org/2.0/workspaces/novamart/pipelines-config/identity/oidc"
   
-  client_id_list = [
+  client_id_list =[
     "ari:cloud:bitbucket::workspace/novamart-workspace-uuid"
   ]
   
@@ -5519,7 +5516,7 @@ resource "aws_iam_role" "ci_deployer_oidc" {
   
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Effect = "Allow"
         Principal = {
@@ -5554,11 +5551,11 @@ resource "aws_iam_policy" "ci_deployer_minimal" {
   name = "ci-deployer-minimal"
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Sid    = "ECRPushPull"
         Effect = "Allow"
-        Action = [
+        Action =[
           "ecr:GetAuthorizationToken",
           "ecr:BatchCheckLayerAvailability",
           "ecr:PutImage",
@@ -5573,7 +5570,7 @@ resource "aws_iam_policy" "ci_deployer_minimal" {
       {
         Sid    = "EKSDeploy"
         Effect = "Allow"
-        Action = [
+        Action =[
           "eks:DescribeCluster"
         ]
         Resource = "arn:aws:eks:us-east-1:*:cluster/novamart-*"
@@ -5581,10 +5578,10 @@ resource "aws_iam_policy" "ci_deployer_minimal" {
       {
         Sid    = "ReadSecrets"
         Effect = "Allow"
-        Action = [
+        Action =[
           "secretsmanager:GetSecretValue"
         ]
-        Resource = [
+        Resource =[
           "arn:aws:secretsmanager:us-east-1:*:secret:ci/*"
         ]
         # ONLY ci-specific secrets, NOT prod database creds
@@ -5602,10 +5599,10 @@ resource "aws_iam_policy" "ci_deployer_boundary" {
   name = "ci-deployer-permissions-boundary"
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Effect = "Allow"
-        Action = [
+        Action =[
           "ecr:*",
           "eks:DescribeCluster",
           "secretsmanager:GetSecretValue",
@@ -5615,7 +5612,7 @@ resource "aws_iam_policy" "ci_deployer_boundary" {
       },
       {
         Effect   = "Deny"
-        Action   = [
+        Action   =[
           "iam:*",
           "organizations:*",
           "cloudtrail:*",
@@ -5644,11 +5641,11 @@ resource "aws_organizations_policy" "deny_privilege_escalation" {
   type    = "SERVICE_CONTROL_POLICY"
   content = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement =[
       {
         Sid    = "DenyIAMPrivilegeEscalation"
         Effect = "Deny"
-        Action = [
+        Action =[
           "iam:AttachUserPolicy",
           "iam:AttachRolePolicy",
           "iam:PutUserPolicy",
@@ -5659,7 +5656,7 @@ resource "aws_organizations_policy" "deny_privilege_escalation" {
         Resource = "*"
         Condition = {
           StringNotLike = {
-            "aws:PrincipalArn" = [
+            "aws:PrincipalArn" =[
               "arn:aws:iam::*:role/OrganizationAdminRole",
               "arn:aws:iam::*:role/SecurityTeamRole"
             ]
@@ -5669,7 +5666,7 @@ resource "aws_organizations_policy" "deny_privilege_escalation" {
       {
         Sid    = "DenyCloudTrailDisable"
         Effect = "Deny"
-        Action = [
+        Action =[
           "cloudtrail:StopLogging",
           "cloudtrail:DeleteTrail",
           "guardduty:DeleteDetector",
@@ -5691,14 +5688,14 @@ resource "aws_cloudwatch_event_rule" "guardduty_iam_anomaly" {
 
   event_pattern = jsonencode({
     source      = ["aws.guardduty"]
-    detail-type = ["GuardDuty Finding"]
+    detail-type =["GuardDuty Finding"]
     detail = {
-      type = [
+      type =[
         { prefix = "Persistence:IAMUser/" },
         { prefix = "PrivilegeEscalation:" },
         { prefix = "UnauthorizedAccess:IAMUser/" }
       ]
-      severity = [{ numeric = [">=", 7] }]
+      severity = [{ numeric =[">=", 7] }]
     }
   })
 }
@@ -5735,7 +5732,7 @@ def handler(event, context):
         PolicyName='GuardDuty-AutoRemediation-DenyAll',
         PolicyDocument=json.dumps({
             "Version": "2012-10-17",
-            "Statement": [{
+            "Statement":[{
                 "Effect": "Deny",
                 "Action": "*",
                 "Resource": "*"
@@ -5788,47 +5785,44 @@ resource "aws_cloudwatch_metric_alarm" "iam_policy_changes" {
   statistic           = "Sum"
   threshold           = 0
   alarm_description   = "IAM policy attachment detected — investigate immediately"
-  alarm_actions       = [aws_sns_topic.security_alerts.arn]
+  alarm_actions       =[aws_sns_topic.security_alerts.arn]
 }
 ```
 
 **Complete Systemic Fix Summary:**
 
-```
-ATTACK CHAIN vs. SYSTEMIC FIXES
-═══════════════════════════════════════════════════════════════════════
-
-CHAIN LINK                          FIX
-────────────────────────────────    ──────────────────────────────────
-S3 bucket with public access     → Account-level public access block
-                                   + SCP preventing public S3
-                                   + Config auto-remediation
-
-Jenkins backup contained creds   → Eliminate long-lived keys (use OIDC)
-                                   + Never back up credential stores
-                                   + Encrypt all backups with KMS
-
-ci-deployer had iam:Attach*      → Least-privilege policy
-                                   + Permissions boundary
-                                   + SCP blocking iam:Attach* 
-                                   for non-admin roles
-
-No detection of privilege        → GuardDuty auto-response Lambda
-escalation                         + CloudWatch alarm on IAM changes
-                                   + Anomaly detection for off-hours
-
-Secrets Manager too broad access → Per-service secret access policies
-                                   + VPC endpoint policies for SM
-                                   + Secret resource policies
-
-No automated containment         → EventBridge → Lambda auto-disable
-                                   + <60 second response time
-                                   vs. manual investigation
-
-Single account blast radius      → Multi-account strategy (prod
-                                   secrets in separate account)
-                                   + Cross-account role conditions
-═══════════════════════════════════════════════════════════════════════
+```text
+┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 ATTACK CHAIN vs. SYSTEMIC FIXES                                 │
+├──────────────────────────────────┬──────────────────────────────────────────────────────────────┤
+│ CHAIN LINK                       │ FIX                                                          │
+├──────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ S3 bucket with public access     │ → Account-level public access block                          │
+│                                  │ + SCP preventing public S3                                   │
+│                                  │ + Config auto-remediation                                    │
+├──────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ Jenkins backup contained creds   │ → Eliminate long-lived keys (use OIDC)                       │
+│                                  │ + Never back up credential stores                            │
+│                                  │ + Encrypt all backups with KMS                               │
+├──────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ ci-deployer had iam:Attach*      │ → Least-privilege policy                                     │
+│                                  │ + Permissions boundary                                       │
+│                                  │ + SCP blocking iam:Attach* for non-admin roles               │
+├──────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ No detection of privilege        │ → GuardDuty auto-response Lambda                             │
+│ escalation                       │ + CloudWatch alarm on IAM changes                            │
+│                                  │ + Anomaly detection for off-hours                            │
+├──────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ Secrets Manager too broad access │ → Per-service secret access policies                         │
+│                                  │ + VPC endpoint policies for SM                               │
+│                                  │ + Secret resource policies                                   │
+├──────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ No automated containment         │ → EventBridge → Lambda auto-disable                          │
+│                                  │ + <60 second response time vs. manual investigation          │
+├──────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ Single account blast radius      │ → Multi-account strategy (prod secrets in separate account)  │
+│                                  │ + Cross-account role conditions                              │
+└──────────────────────────────────┴──────────────────────────────────────────────────────────────┘
 ```
 
 The fundamental lesson: **defense in depth means that NO SINGLE compromise gives an attacker escalation to AdministratorAccess.** The combination of least-privilege IAM, permissions boundaries, SCPs, and automated response ensures that even if credentials are stolen, the attacker's actions are limited and detected within seconds, not minutes.
